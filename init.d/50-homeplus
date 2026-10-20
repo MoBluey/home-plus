@@ -1,0 +1,33 @@
+#!/bin/sh
+# Home+ boot script, run as root by Homebrew Channel at startup.
+# Install to /var/lib/webosbrew/init.d/50-homeplus (chmod 755). The name must
+# have no extension: Homebrew Channel runs these with run-parts.
+#
+# 1. Elevates the Home+ service so it can list/launch apps (idempotent).
+# 2. Starts the service. It watches the foreground app and replaces LG's home
+#    screen with Home+ (native if installed, else web) - including at boot.
+
+SVC=com.atvlauncher.app.service
+ELEVATE=/media/developer/apps/usr/palm/services/org.webosbrew.hbchannel.service/elevate-service
+LOG=/tmp/homeplus-boot.log
+
+(
+  echo "homeplus boot $(date)"
+
+  if [ -x "$ELEVATE" ]; then
+    "$ELEVATE" "$SVC" && echo "elevated $SVC"
+  else
+    echo "elevate-service not found at $ELEVATE"
+  fi
+
+  # Retry until the bus answers (up to ~60s); the first answer starts the service.
+  i=0
+  while [ $i -lt 30 ]; do
+    if luna-send -n 1 -w 3000 "luna://$SVC/ping" '{}' 2>/dev/null | grep -q '"returnValue":true'; then
+      echo "service up"
+      break
+    fi
+    i=$((i + 1))
+    sleep 2
+  done
+) >>"$LOG" 2>&1 &

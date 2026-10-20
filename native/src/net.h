@@ -1,0 +1,51 @@
+/* Home+ native: talking to the Home+ service, off the render thread.
+ *
+ * The service (com.atvlauncher.app.service) listens on 127.0.0.1:47823.
+ * Jobs are queued from the main thread; worker threads do the HTTP request
+ * (and image decoding) and post results back, which the main thread drains
+ * once per frame. */
+#ifndef HOMEPLUS_NET_H
+#define HOMEPLUS_NET_H
+
+#include <SDL.h>
+#include <stddef.h>
+
+#define SERVICE_PORT 47823
+
+/* Blocking request. Returns the HTTP status (0 on connection failure); *body
+ * is malloc'd and NUL-terminated (caller frees). post_body NULL means GET. */
+int http_request(const char *path, const char *post_body, char **body, size_t *len);
+
+typedef enum { JOB_JSON, JOB_IMAGE, JOB_POST, JOB_WAKE } JobKind;
+
+typedef struct {
+    JobKind kind;
+    int tag;        /* caller-defined: which request this answers */
+    int index;      /* caller-defined: e.g. which app */
+    int generation; /* lets the caller drop answers to stale requests */
+    int status;     /* HTTP status, 0 = unreachable */
+    char *body;     /* JOB_JSON / JOB_POST: response text */
+    unsigned char *rgba; /* JOB_IMAGE: decoded pixels */
+    int w, h;
+    /* JOB_IMAGE with sample: edge colour of the icon (see net.c) */
+    int sampled, fullbleed;
+    unsigned char rgb[3];
+} Result;
+
+/* SDL event type pushed whenever a result is ready (valid after net_start). */
+extern Uint32 net_event;
+
+void net_start(void);
+void net_stop(void);
+
+void net_get_json(const char *path, int tag, int index, int generation);
+void net_post(const char *path, const char *body, int tag);
+void net_get_image(const char *path, int tag, int index, int generation, int sample);
+/* Starts the service via luna-send (the HTTP server only runs while it's alive). */
+void net_wake_service(void);
+
+/* Pops one finished result; returns 0 when none are waiting. */
+int net_poll(Result *out);
+void net_result_free(Result *r);
+
+#endif

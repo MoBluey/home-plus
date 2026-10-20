@@ -1,0 +1,12 @@
+{
+  "id": "com.atvlauncher.native",
+  "version": "0.3.0",
+  "vendor": "atv-launcher",
+  "type": "native",
+  "main": "homeplus",
+  "title": "Home+ Native",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "iconColor": "#1c1c1e",
+  "bgColor": "#000000"
+}

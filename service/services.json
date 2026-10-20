@@ -1,0 +1,11 @@
+{
+  "id": "com.atvlauncher.app.service",
+  "description": "Home+ helper service",
+  "services": [
+    {
+      "name": "com.atvlauncher.app.service",
+      "description": "Home+ helper service"
+    }
+  ],
+  "engine": "node"
+}

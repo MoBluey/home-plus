@@ -1,0 +1,478 @@
+/* Home+ — a tvOS-style launcher for webOS, in a "Liquid Glass" look.
+ * Everything is laid out on a fixed 1920x1080 stage (webOS's app resolution);
+ * in a desktop browser the stage is scaled to fit the window.
+ *
+ * Lite rendering (the TV's GPU is shared with PicCap/HyperHDR):
+ *  - translucency only: rgba fills and 1-2px borders; no box-shadow, blur,
+ *    filter, mask or text-shadow anywhere
+ *  - no full-screen fades: the Top Shelf and dock switch instantly
+ *  - instant mode: no transitions at all; focus and scrolling change in one
+ *    frame, so nothing is ever repainted mid-animation
+ *  - the Top Shelf glow is a tiny gradient the GPU stretches to full screen,
+ *    instead of a full-screen gradient the CPU has to paint */
+
+:root {
+  --tile-w: 300px;
+  --tile-h: 180px;
+  --gap-x: 48px;
+  --row-h: 290px;
+  --radius: 30px;
+  --ease: cubic-bezier(0.25, 0.8, 0.25, 1);
+  --font: "SF Pro Display", "SF Pro Text", -apple-system, "Helvetica Neue", "LG Smart UI", Roboto, Arial, sans-serif;
+  --rim: rgba(255, 255, 255, 0.16);
+  --rim-hi: rgba(255, 255, 255, 0.42);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #08080b;
+  color: #fff;
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+#stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  transform-origin: 0 0;
+  background: #08080b;
+}
+
+/* ---------- glass: translucent fill + hairline rim with a brighter top edge ---------- */
+
+.glass {
+  background: rgba(255, 255, 255, 0.09);
+  border: 1.5px solid var(--rim);
+  border-top-color: var(--rim-hi);
+}
+
+/* ---------- Top Shelf (swapped instantly; no crossfade) ---------- */
+
+#shelf {
+  position: absolute;
+  inset: 0;
+}
+body.scrolled #shelf { visibility: hidden; }
+
+.shelf-layer {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+.shelf-layer.on { display: block; }
+
+.shelf-art {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 25%;
+}
+
+.shelf-gradient {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 192px;
+  height: 108px;
+  transform-origin: 0 0;
+  transform: scale(10);
+  will-change: transform;
+  background: radial-gradient(ellipse 45% 60% at 77% 33%, rgba(var(--c), 0.75) 0%, rgba(var(--c), 0.2) 50%, transparent 75%);
+}
+.shelf-icon {
+  position: absolute;
+  right: 280px;
+  top: 150px;
+  width: 340px;
+  height: 340px;
+  object-fit: contain;
+  border-radius: 76px;
+}
+/* a glass lens over the hero icon */
+.shelf-lens {
+  position: absolute;
+  right: 250px;
+  top: 120px;
+  width: 400px;
+  height: 400px;
+  border-radius: 96px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 2px solid var(--rim);
+  border-top-color: rgba(255, 255, 255, 0.5);
+}
+
+.shelf-text {
+  position: absolute;
+  left: 114px;
+  top: 340px;
+  max-width: 900px;
+}
+.shelf-title {
+  font-size: 84px;
+  font-weight: 700;
+  letter-spacing: -1.5px;
+  line-height: 1.05;
+}
+.shelf-sub {
+  margin-top: 18px;
+  font-size: 28px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+/* darkens artwork so text and the dock stay legible */
+.shelf-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to top, rgba(0, 0, 0, 0.6) 0%, transparent 45%),
+    linear-gradient(to right, rgba(0, 0, 0, 0.5) 0%, transparent 50%);
+}
+#shelf > .shelf-scrim { display: none; }
+body.rail-on #shelf > .shelf-scrim { display: block; }
+
+/* ---------- Stremio "Continue Watching" shelf ---------- */
+
+#rail-shelf, .rail-front { position: absolute; inset: 0; display: none; }
+body.rail-on #rail-shelf, body.rail-on .rail-front { display: block; }
+body.rail-on .shelf-layer { display: none; }
+
+.rail-art {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 20%;
+  display: none;
+}
+.rail-art.on { display: block; }
+
+.rail-info {
+  position: absolute;
+  left: 114px;
+  top: 118px;
+  max-width: 1100px;
+}
+.rail-heading {
+  display: inline-flex;
+  align-items: center;
+  height: 46px;
+  padding: 0 22px;
+  border-radius: 23px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: rgba(255, 255, 255, 0.92);
+}
+.rail-logo {
+  display: block;
+  height: 120px;
+  max-width: 620px;
+  margin-top: 26px;
+  object-fit: contain;
+  object-position: left center;
+}
+.rail-title {
+  margin-top: 26px;
+  font-size: 66px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  line-height: 1.05;
+}
+.rail-meta {
+  margin-top: 14px;
+  font-size: 27px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.rail {
+  position: absolute;
+  left: 114px;
+  top: 452px;
+  display: flex;
+  gap: 34px;
+}
+.rail-card {
+  position: relative;
+  flex: none;
+  width: 300px;
+  height: 169px;
+  border-radius: 24px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08) center/cover no-repeat;
+  border: 1.5px solid var(--rim);
+  opacity: 0.75;
+}
+.rail-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent 55%);
+}
+.rail-card .rail-name {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 22px;
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-progress {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 12px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+.rail-progress b {
+  display: block;
+  height: 100%;
+  background: #fff;
+}
+.rail-card.focused {
+  opacity: 1;
+  border-color: var(--rim-hi);
+  transform: scale(1.12);
+}
+
+/* ---------- clock ---------- */
+
+#clock {
+  position: absolute;
+  right: 100px;
+  top: 52px;
+  height: 56px;
+  padding: 0 26px;
+  line-height: 53px;
+  border-radius: 28px;
+  font-size: 27px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  z-index: 5;
+}
+body.scrolled #clock { visibility: hidden; }
+
+/* ---------- grid ---------- */
+
+#content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  will-change: transform;
+}
+#shelf-spacer { height: 740px; }
+
+.row {
+  position: relative;
+  height: var(--row-h);
+  display: flex;
+  gap: var(--gap-x);
+  padding: 0 114px;
+}
+
+/* the top row sits on a glass dock */
+#dock {
+  position: absolute;
+  left: 72px;
+  right: 72px;
+  top: 704px;
+  height: 288px;
+  border-radius: 56px;
+  background: rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+}
+body.scrolled #dock { visibility: hidden; }
+
+.tile {
+  position: relative;
+  width: var(--tile-w);
+  height: var(--tile-h);
+  flex: none;
+}
+
+/* glass tile: translucent tint, hairline rim; the focused one grows */
+.tile-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: rgba(var(--c, 70, 70, 82), 0.6);
+  border: 1.5px solid var(--rim);
+  border-top-color: rgba(255, 255, 255, 0.3);
+}
+.tile.fullbleed .tile-card { background: rgb(var(--c)); }
+.tile.focused .tile-card {
+  transform: scale(1.12);
+  border-color: rgba(255, 255, 255, 0.6);
+}
+.tile.pressed .tile-card { transform: scale(1.05); }
+
+.tile-icon {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 124px;
+  height: 124px;
+  margin: -62px 0 0 -62px;
+  object-fit: contain;
+  border-radius: 28px;
+}
+.tile.fullbleed .tile-icon {
+  width: 156px;
+  height: 156px;
+  margin: -78px 0 0 -78px;
+}
+
+.tile-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  text-align: center;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.tile-label {
+  position: absolute;
+  left: -30px;
+  right: -30px;
+  top: calc(var(--tile-h) + 26px);
+  text-align: center;
+  font-size: 26px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  visibility: hidden;
+}
+.tile.focused .tile-label { visibility: visible; }
+body.zone-shelf .tile.focused .tile-card { transform: none; border-color: var(--rim); }
+body.zone-shelf .tile.focused .tile-label { visibility: hidden; }
+
+/* move mode: a steady highlight instead of a jiggle animation */
+.tile.moving .tile-card { border: 3px dashed rgba(255, 255, 255, 0.85); }
+.tile.moving .tile-label { visibility: visible; }
+.tile.moving .tile-label::after { content: "  ◂ ▸"; color: rgba(255, 255, 255, 0.6); }
+
+/* pseudo tile that opens the hidden apps list */
+.tile.special .tile-card { background: rgba(255, 255, 255, 0.07); }
+.tile.special .tile-text { font-size: 28px; font-weight: 600; color: rgba(255, 255, 255, 0.8); }
+
+/* ---------- context sheet ---------- */
+
+#sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+#sheet[hidden] { display: none; }
+.sheet-panel {
+  min-width: 640px;
+  max-height: 880px;
+  padding: 40px 36px 30px;
+  border-radius: 48px;
+  overflow: hidden;
+}
+/* no blur behind it, so the panel needs more body to stay legible */
+.sheet-panel.glass { background: rgba(44, 44, 54, 0.95); }
+
+.sheet-title {
+  font-size: 30px;
+  font-weight: 600;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.75);
+  margin-bottom: 24px;
+}
+.sheet-items { max-height: 740px; overflow: hidden; padding: 6px 14px; }
+.sheet-item {
+  height: 84px;
+  margin: 12px 0;
+  padding: 0 34px;
+  display: flex;
+  align-items: center;
+  border-radius: 42px;
+  font-size: 31px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1.5px solid transparent;
+}
+.sheet-item.focused {
+  background: rgba(255, 255, 255, 0.24);
+  border-color: var(--rim);
+  border-top-color: var(--rim-hi);
+}
+.sheet-item.destructive { color: #ff8a80; }
+.sheet-item input {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+}
+.sheet-item input::placeholder { color: rgba(255, 255, 255, 0.5); }
+.sheet-note {
+  margin: 18px 10px 0;
+  max-width: 560px;
+  font-size: 21px;
+  line-height: 1.4;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* ---------- message / launch ---------- */
+
+#message {
+  position: absolute;
+  left: 50%;
+  bottom: 70px;
+  transform: translateX(-50%);
+  max-width: 1400px;
+  padding: 22px 38px;
+  border-radius: 34px;
+  font-size: 26px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.95);
+  z-index: 15;
+  text-align: center;
+}
+#message.glass { background: rgba(44, 44, 54, 0.95); }
+#message[hidden] { display: none; }
+
+#launch-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: #000;
+  display: none;
+}
+body.launching #launch-veil { display: block; }
