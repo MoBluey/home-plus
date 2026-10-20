@@ -30,3 +30,18 @@ for i, (a, b) in enumerate(SHOWS):
     d.ellipse([820, 120, 1160, 460], fill=tuple(min(255, c + 40) for c in b))
     im = im.filter(ImageFilter.GaussianBlur(6))
     im.save(f"{out}/show{i}.jpg", quality=88)
+# A QR-code-like picture for the sign-in sheets (not a real code)
+import random
+random.seed(7)
+N, C = 29, 12
+qr = Image.new("L", (N * C, N * C), 255)
+d = ImageDraw.Draw(qr)
+for y in range(N):
+    for x in range(N):
+        if random.random() < 0.45:
+            d.rectangle([x * C, y * C, x * C + C - 1, y * C + C - 1], fill=0)
+for fx, fy in ((0, 0), (N - 7, 0), (0, N - 7)):  # finder patterns
+    d.rectangle([fx * C, fy * C, (fx + 7) * C - 1, (fy + 7) * C - 1], fill=0)
+    d.rectangle([(fx + 1) * C, (fy + 1) * C, (fx + 6) * C - 1, (fy + 6) * C - 1], fill=255)
+    d.rectangle([(fx + 2) * C, (fy + 2) * C, (fx + 5) * C - 1, (fy + 5) * C - 1], fill=0)
+qr.save(f"{out}/qr.png")

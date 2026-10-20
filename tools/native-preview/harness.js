@@ -52,6 +52,73 @@ https.get = (url, opts, cb) => {
   return new EventEmitter();
 };
 
+// HOMEPLUS_PREVIEW_MEDIA: mock Jellyfin, Plex and Stremio sign-in servers (Jellyfin and Plex
+// first in the dock). "signin": nobody is signed in, and each sign-in is approved on the
+// second poll, as if the code was entered on a phone; anything else: already signed in.
+if (process.env.HOMEPLUS_PREVIEW_MEDIA) {
+  const http = require('http');
+  const PORT = 47900, BASE = `http://127.0.0.1:${PORT}`;
+  const signin = process.env.HOMEPLUS_PREVIEW_MEDIA === 'signin';
+  const polls = { jellyfin: 0, plex: 0, stremio: 0 };
+  const json = (res, code, o) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const image = (res, file, type) => { res.writeHead(200, { 'Content-Type': type }); fs.createReadStream(path.join(assets, file)).pipe(res); };
+  const pick = (s) => [...String(s)].reduce((a, c) => a + c.charCodeAt(0), 0) % 5; // a stable picture per item
+  const ticks = (min) => min * 600000000;
+  const JF = [
+    { Id: 'jf1', Type: 'Episode', Name: 'Signal Lost', SeriesName: 'Orbital', ParentIndexNumber: 1, IndexNumber: 4, RunTimeTicks: ticks(52),
+      UserData: { PlaybackPositionTicks: ticks(19), LastPlayedDate: '2026-10-20T19:00:00Z' }, ImageTags: { Primary: 'p' }, BackdropImageTags: ['b'] },
+    { Id: 'jf2', Type: 'Movie', Name: 'The Quiet Coast', RunTimeTicks: ticks(118), UserData: { PlaybackPositionTicks: ticks(64) },
+      ImageTags: { Thumb: 't' }, BackdropImageTags: ['b'] },
+    { Id: 'jf3', Type: 'Episode', Name: 'Tides', SeriesName: 'Harbor Lights', ParentIndexNumber: 2, IndexNumber: 1, RunTimeTicks: ticks(44),
+      UserData: { PlaybackPositionTicks: 0 }, ImageTags: { Primary: 'p' }, BackdropImageTags: ['b'] }
+  ];
+  const PX = [
+    { ratingKey: '101', type: 'episode', title: 'North Wind', grandparentTitle: 'Glass City', parentIndex: 3, index: 2, viewOffset: 1500000,
+      duration: 2700000, thumb: '/library/metadata/101/thumb', art: '/library/metadata/100/art', lastViewedAt: 1760990000 },
+    { ratingKey: '202', type: 'movie', title: 'Paper Planes', viewOffset: 3100000, duration: 6400000,
+      thumb: '/library/metadata/202/thumb', art: '/library/metadata/202/art', lastViewedAt: 1760900000 }
+  ];
+  http.createServer((req, res) => {
+    const u = new URL(req.url, BASE);
+    const p = u.pathname;
+    // Jellyfin
+    if (p === '/QuickConnect/Initiate') return json(res, 200, { Code: '482913', Secret: 'jf-secret' });
+    if (p === '/QuickConnect/Connect') return json(res, 200, { Authenticated: ++polls.jellyfin >= 2 });
+    if (p === '/Users/AuthenticateWithQuickConnect') return json(res, 200, { AccessToken: 'jf-token', User: { Id: 'u1', Name: 'Paolo' }, ServerId: 's1' });
+    if (p === '/UserItems/Resume') return json(res, 200, { Items: JF.slice(0, 2) });
+    if (p === '/Shows/NextUp') return json(res, 200, { Items: JF.slice(2) });
+    if (/^\/Items\/[^/]+\/Images\//.test(p)) return image(res, `show${pick(p)}.jpg`, 'image/jpeg');
+    // Plex: plex.tv, clients.plex.tv and the server, all here
+    if (p === '/api/v2/pins' && req.method === 'POST') return json(res, 201, { id: 7, code: 'QGVR', qr: `${BASE}/qr.png`, expiresIn: 900 });
+    if (p === '/api/v2/pins/7') return json(res, 200, { authToken: ++polls.plex >= 2 ? 'plex-token' : null });
+    if (p === '/api/v2/resources') {
+      return json(res, 200, [{ name: 'Media Server', provides: 'server', owned: true, accessToken: 'plex-srv', connections: [{ uri: BASE, local: true }] }]);
+    }
+    if (p === '/api/v2/user') return json(res, 200, { username: 'paolo' });
+    if (p === '/identity') return json(res, 200, { MediaContainer: {} });
+    if (p === '/hubs/continueWatching') return json(res, 200, { MediaContainer: { Hub: [{ Metadata: PX }] } });
+    if (p === '/photo/:/transcode') return image(res, `show${pick(u.searchParams.get('url'))}.jpg`, 'image/jpeg');
+    // Stremio's TV sign-in
+    if (p === '/api/v2/create') {
+      return json(res, 200, { result: { success: true, code: 'VTIW', link: 'https://link.stremio.com/VTIW', qrcode: `${BASE}/qr.png` } });
+    }
+    if (p === '/api/v2/read') return json(res, 200, ++polls.stremio >= 2 ? { result: { authKey: 'preview' } } : { error: { code: 101, message: 'pending' } });
+    if (p === '/qr.png') return image(res, 'qr.png', 'image/png');
+    json(res, 404, {});
+  }).listen(PORT, '127.0.0.1');
+  process.env.HOMEPLUS_PLEX_TV = process.env.HOMEPLUS_PLEX_CLIENTS = process.env.HOMEPLUS_STREMIO_LINK = BASE;
+  const cfg = JSON.parse(fs.readFileSync('/var/lib/homeplus/config.json', 'utf8'));
+  cfg.jellyfinServer = BASE; // no LAN broadcast in here: the server's address instead
+  cfg.layout = { order: ['jellyfin', 'plex', 'stremio'], hidden: [] };
+  if (signin) {
+    delete cfg.stremioAuthKey;
+  } else {
+    cfg.jellyfin = { url: BASE, name: 'Living Room', userId: 'u1', user: 'Paolo', token: 'jf-token' };
+    cfg.plex = { token: 'plex-token', user: 'paolo', url: BASE, server: 'Media Server', serverToken: 'plex-srv' };
+  }
+  fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify(cfg));
+}
+
 global.__stubApps = APPS.map(([id, title]) => ({
   id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || ''
 }));

@@ -1,6 +1,6 @@
 # Home+
 
-A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with Stremio and Trakt Continue Watching.
+A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with Continue Watching from Stremio, Trakt, Jellyfin and Plex.
 
 ![Home+ home screen](preview/native-home.png)
 
@@ -8,14 +8,14 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with S
 
 *Screenshots use placeholder apps and shows.*
 
-> **Not affiliated with LG, Apple, Stremio or Trakt.** Home+ is an independent project. tvOS and Liquid Glass are Apple's names for Apple's designs; Home+ only borrows the look. It runs on **rooted** TVs and uses Stremio's and Trakt's web APIs unofficially. Use it at your own risk.
+> **Not affiliated with LG, Apple, Stremio, Trakt, Jellyfin or Plex.** Home+ is an independent project. tvOS and Liquid Glass are Apple's names for Apple's designs; Home+ only borrows the look. It runs on **rooted** TVs and uses Stremio's, Trakt's and Plex's web APIs unofficially. Use it at your own risk.
 
 ## What it does
 
 - **Top Shelf:** focus an app in the top row and the screen fills with its artwork, or with a glow taken from its icon.
 - **Liquid Glass:** the dock, clock, buttons and menus bend the light at their edges and blur only what sits behind text. Focused tiles lift, sway and catch a moving light. The Magic Remote pointer steers that light.
 - **Motion and sound:** everything moves on springs, and menus grow out of the button that opened them. A soft tick plays when focus moves; **Settings → Sounds** turns it off.
-- **Continue Watching:** your Stremio library and Trakt progress in one row, newest first. Focus Stremio in the top row, then press **Up** to browse it.
+- **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. Focus the app in the top row, then press **Up** to browse it. You sign in with a code or a QR code, so no password is typed on the TV.
 - **Recents:** an App Switcher for open apps, most recent first. Open them, close them one by one, or close them all.
 - **Your layout:** hold **OK** on an app to move it, move it to the front or hide it. Hidden apps collect in a "Hidden" tile at the end.
 - **Home button:** optionally, the Home button opens Home+ instead of LG's home screen.
@@ -27,7 +27,7 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with S
 - A **rooted** LG TV running webOS, with the **[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel)** installed.
 - **Tested on:** LG C3 (OLED), webOS 23.20.59. Other recent webOS TVs may well work, but haven't been tried. If you try one, please open an issue saying how it went.
 - **Optional:**
-  - a [Stremio](https://www.stremio.com) account and the Stremio app, for Continue Watching;
+  - for Continue Watching, any of: a [Stremio](https://www.stremio.com) account and the Stremio app; a [Jellyfin](https://jellyfin.org) server and the Jellyfin app; a [Plex](https://www.plex.tv) server and the Plex app;
   - a [Trakt](https://trakt.tv) account;
   - [lginputhook](https://github.com/Simon34545/lginputhook), for a Home button without a flash (see [Home button](#home-button)).
 
@@ -62,7 +62,7 @@ Updates install the same way. An update resets the service's root access, and Ho
 
 **Magic Remote pointer:** point at anything and click. Pressing an arrow hands control back to the keys: then OK presses what the keys focused, wherever the cursor happens to be. Moving the pointer clearly takes over again.
 
-From the top row, press **Up** to reach the round **Recents** and **Settings** buttons next to the clock. On the Stremio tile, Up goes into Continue Watching first. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
+From the top row, press **Up** to reach the round **Recents** and **Settings** buttons next to the clock. On Stremio, Jellyfin or Plex, Up goes into Continue Watching first. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
 
 **Settings** works like tvOS's: each row shows its current value, rows with **›** open a page, and **Back** goes up one page.
 
@@ -73,7 +73,7 @@ From the top row, press **Up** to reach the round **Recents** and **Settings** b
 | **Sounds** | Focus sounds on or off |
 | **Clock** | 12-hour or 24-hour |
 | **Accessibility** | Reduce Motion, Reduce Transparency |
-| **Accounts** | Stremio and Trakt: whether they're connected, and the Trakt sign-in |
+| **Accounts** | Stremio, Trakt, Jellyfin and Plex: whether they're connected, signing in and signing out |
 | **Hidden Apps** | Apps you've hidden, to show them again |
 | **TV Settings** | LG's own settings apps |
 | **About** | Version, whether Home+ is set up, the last remote key it ignored, licence |
@@ -81,17 +81,26 @@ From the top row, press **Up** to reach the round **Recents** and **Settings** b
 
 ## Continue Watching
 
+Focus Stremio, Jellyfin or Plex in the top row, and the Top Shelf shows what you're partway through there. Press **Up** to browse it.
+
+Sign in under **Settings → Accounts**, or hold **OK** on the app and choose **Sign In**. The TV shows a code, and a QR code where the service has one; you approve it on your phone or computer, where you're already signed in. No password is typed on the TV.
+
+![Signing in to Plex with a QR code](preview/native-signin-plex.png)
+
+Pressing **OK** on a card opens the app. The LG apps can't be sent to a specific title from outside, so a notification names the title, ready to pick from the app's own Continue Watching.
+
 ### Stremio
 
-Home+ has no on-screen sign-in yet. Sign in once over SSH (Homebrew Channel → Settings → SSH Server):
+1. Go to **Settings → Accounts → Stremio**.
+2. Scan the QR code, or go to <https://link.stremio.com> and enter the code.
+
+You can also sign in over SSH (Homebrew Channel → Settings → SSH Server):
 
 ```sh
 luna-send -n 1 luna://com.github.pmiraka.homeplus.service/stremioLogin '{"email":"you@example.com","password":"…"}'
 ```
 
-The password goes only to `api.strem.io`. The TV keeps only the session key that Stremio returns.
-
-Pressing **OK** on a card opens Stremio. Stremio's LG app can't jump to a specific title from outside, so a notification names the title, ready to pick from Stremio's own Continue Watching.
+The password goes only to `api.strem.io`. Either way, the TV keeps only the session key that Stremio returns.
 
 ### Trakt
 
@@ -104,6 +113,29 @@ Trakt needs an API app of your own (it's free):
    luna-send -n 1 luna://com.github.pmiraka.homeplus.service/traktSetup '{"clientId":"…","clientSecret":"…"}'
    ```
 3. On the TV, go to **Settings → Accounts → Trakt**, then enter the code it shows at <https://trakt.tv/activate>.
+
+### Jellyfin
+
+![Jellyfin's Continue Watching in the Top Shelf](preview/native-jellyfin.png)
+
+Sign-in uses Jellyfin's Quick Connect, so the server needs it turned on (**Dashboard → General → Enable Quick Connect**).
+1. Go to **Settings → Accounts → Jellyfin**. Home+ finds the server on your network and shows a six-digit code.
+2. In a Jellyfin app where you're signed in, open **Settings → Quick Connect** and enter the code.
+
+The row shows what you're partway through, then the next episode of each show you're watching. The Accounts row appears once the Jellyfin app is installed.
+
+**A server Home+ can't find** (on another network, or behind a reverse proxy): give it the address over SSH, then sign in as above.
+
+```sh
+luna-send -n 1 luna://com.github.pmiraka.homeplus.service/jellyfinServer '{"url":"https://jellyfin.example.com"}'
+```
+
+### Plex
+
+1. Go to **Settings → Accounts → Plex**.
+2. Scan the QR code, or go to <https://plex.tv/link> and enter the code.
+
+Home+ then picks your server, one you own first, and reaches it on your network when it can. The row is the server's Continue Watching (On Deck on older servers). The Accounts row appears once the Plex app is installed.
 
 ## Home button
 
@@ -131,7 +163,7 @@ Change the timings, or turn any of these off, in **Settings → Display & OLED**
 **Settings → Remove Home+** undoes everything Home+ set up, then uninstalls it:
 - it turns off the Home button takeover;
 - it deletes its boot script and settings;
-- it deletes its Stremio and Trakt sign-ins;
+- it deletes its sign-ins (Stremio, Trakt, Jellyfin, Plex);
 - it removes its lginputhook keybinds (your others stay);
 - it deletes the root access files the Homebrew Channel created.
 
@@ -152,11 +184,14 @@ If you added the lginputhook keybind, delete it in the LG Input Hook app. If the
   - `homeplus-native.log`: the launcher's own log, inside its app sandbox. Find it with `find / -name homeplus-native.log`.
   - `/tmp/homeplus-boot.log`: the boot script.
 - **The Home button still opens LG's home screen:** check **Settings → Home Button**. If you use lginputhook, restart the TV after changing its keybinds.
-- **No Continue Watching:** sign in to Stremio (above), and make sure the Stremio tile is in the top row.
+- **No Continue Watching:** sign in under **Settings → Accounts**, and make sure the app's tile is in the top row.
+- **"No Jellyfin server found":** the TV and the server must be on the same network, with the server's auto-discovery on (it is by default). Or give Home+ its address (see [Jellyfin](#jellyfin)).
+- **Plex: "none of your servers answered":** the server must be running and reachable from the TV. If it's only reachable from outside, turn on Remote Access in Plex.
 
 ## Privacy and security
 
-- **What Home+ connects to:** nothing but Stremio's and Trakt's APIs, and only if you sign in. Stremio artwork comes from `images.metahub.space`.
+- **What Home+ connects to:** only the services you sign in to: Stremio's and Trakt's APIs, `plex.tv` and your Plex server, and your Jellyfin server. Stremio artwork comes from `images.metahub.space`; Jellyfin and Plex artwork comes from your server. To find a Jellyfin server, Home+ sends one broadcast on your local network (UDP port 7359), only when you start a Jellyfin sign-in.
+- **Signing out:** Settings → Accounts signs out of Stremio and ends Home+'s session on your Jellyfin server. Plex lists Home+ under your account's **Authorized Devices**; remove it there to revoke its access.
 - **What's stored:** sign-ins, your layout and preferences, in `/var/lib/homeplus/config.json` (readable only by root).
 - **The local API:** the service runs as root and answers only on `127.0.0.1`. Every request needs a token the service writes into Home+'s app folder, and requests from web pages and other hosts are refused.
 
@@ -177,7 +212,7 @@ Every push is built by GitHub Actions. Pushing a `v*` tag publishes a release wi
 
 One package, `com.github.pmiraka.homeplus`, holds three things:
 - **The launcher** (`native/`): C with SDL2 and OpenGL ES 2, using the TV's own libraries. Our renderer (`native/src/render.c`) draws the glass, shapes and shadows with shaders. A frame is a few dozen quads, and glass works on a half-resolution copy of the screen. Animations are springs, and nothing is redrawn while nothing moves.
-- **The service** (`service/`): a Node.js webOS service that runs as root once the Homebrew Channel elevates it. It lists, opens and closes apps and serves their icons. It also talks to Stremio and Trakt, and handles the Home button.
+- **The service** (`service/`): a Node.js webOS service that runs as root once the Homebrew Channel elevates it. It lists, opens and closes apps and serves their icons. It also talks to Stremio, Trakt, Jellyfin and Plex, and handles the Home button.
 - **The boot script** (`init.d/`): makes the Homebrew Channel re-elevate and start the service at every boot.
 
 The launcher talks to the service over a local HTTP API on `127.0.0.1:47823`. It uses the webOS luna bus only to start the service and to ask the Homebrew Channel for root.
@@ -188,13 +223,15 @@ The launcher talks to the service over a local HTTP API on `127.0.0.1:47823`. It
 | `GET /api/apps` | App list |
 | `POST /api/launch` | Open an app |
 | `GET` / `POST /api/layout` | Tile order and hidden apps |
-| `GET /api/continue` | Continue Watching from Stremio and Trakt |
+| `GET /api/continue` | Continue Watching from Stremio and Trakt, or with `?source=jellyfin` or `plex` |
+| `GET /api/<account>/status`, `POST .../link`, `POST .../disconnect` | Accounts (`stremio`, `trakt`, `jellyfin`, `plex`): state, a sign-in code, signing out |
+| `POST /api/jellyfin/server` | A Jellyfin server's address, for one Home+ can't find |
 | `GET /api/system` | LG's settings apps |
 | `GET /api/running`, `POST /api/close` | Recents, and closing apps |
 | `GET` / `POST /api/home` | Home button mode |
-| `GET` / `POST /api/prefs` | `sounds`, `dimMinutes`, `offMinutes`, `reduceMotion`, `reduceTransparency` |
+| `GET` / `POST /api/prefs` | `sounds`, `dimMinutes`, `offMinutes`, `pixelShift`, `calmColours`, `clock24`, `reduceMotion`, `reduceTransparency` |
 | `POST /api/uninstall` | Remove Home+ |
-| `GET /icon/<id>`, `/art/<id>`, `/img/<key>` | App icons, app artwork, Stremio artwork |
+| `GET /icon/<id>`, `/art/<id>`, `/img/<key>` | App icons, app artwork, and artwork and QR codes from the accounts |
 
 ```
 native/     the launcher (C, SDL2 + OpenGL ES 2)

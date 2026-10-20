@@ -13,6 +13,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const pkg = require('./package.json');
+const { requestJSON } = require('./net');
 const Service = require('webos-service');
 
 const service = new Service(pkg.name);
@@ -526,10 +527,24 @@ async function apiApps() {
 }
 
 const trakt = require('./trakt')({ readConfig, writeConfig, log });
+// Media servers: each one's Continue Watching shows in its own app's Top Shelf.
+const media = {
+  jellyfin: require('./jellyfin')({ readConfig, writeConfig, log, version: pkg.version }),
+  plex: require('./plex')({ readConfig, writeConfig, log, version: pkg.version })
+};
 
 // Continue Watching from every connected source: Stremio's library and Trakt's
 // paused playback, newest first. Stremio scrobbles to Trakt too, so the same
 // title can come from both; keep whichever was watched most recently.
+// One media server's row (artwork through the service: its URLs carry tokens).
+async function apiMediaContinue(source) {
+  const m = media[source];
+  let items = [];
+  try { items = await m.items(); } catch (e) { log(source, 'continue failed', e.message); }
+  items = items.map((it) => Object.assign({}, it, { background: proxied(it.background), thumbnail: proxied(it.thumbnail) }));
+  return { source, connected: m.status().connected, items };
+}
+
 async function apiContinue() {
   const cfg = readConfig();
   const sources = [];
@@ -555,7 +570,10 @@ async function apiContinue() {
       background: proxied(it.background), thumbnail: proxied(it.thumbnail), logo: proxied(it.logo), poster: proxied(it.poster)
     }));
   const t = trakt.status();
-  return { connected: !!cfg.stremioAuthKey || t.connected, stremio: !!cfg.stremioAuthKey, trakt: t, items };
+  return {
+    source: 'stremio', connected: !!cfg.stremioAuthKey || t.connected, stremio: !!cfg.stremioAuthKey, trakt: t, items,
+    jellyfin: media.jellyfin.status(), plex: media.plex.status() // for Settings -> Accounts
+  };
 }
 
 // ---- settings apps for the native Control Center (no inputs: the remote's Input key has LG's own menu)
@@ -589,7 +607,20 @@ async function handleApi(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1');
   try {
     if (url.pathname === '/api/apps') return sendJSON(res, 200, { apps: await apiApps() });
-    if (url.pathname === '/api/stremio' || url.pathname === '/api/continue') return sendJSON(res, 200, await apiContinue());
+    if (url.pathname === '/api/stremio' || url.pathname === '/api/continue') {
+      const source = url.searchParams.get('source');
+      return sendJSON(res, 200, media[source] ? await apiMediaContinue(source) : await apiContinue());
+    }
+    const mm = /^\/api\/(stremio|jellyfin|plex)\/(status|link|disconnect|server)$/.exec(url.pathname);
+    if (mm) { /* sign-in: a code (and a QR code, through us, for Stremio and Plex) approved elsewhere */
+      const m = mm[1] === 'stremio' ? { status: stremioStatus, startLink: stremioStartLink, disconnect: stremioSignOut } : media[mm[1]];
+      const withQr = (st) => (st.pending && st.pending.qr ? Object.assign({}, st, { pending: Object.assign({}, st.pending, { qr: proxied(st.pending.qr) }) }) : st);
+      if (mm[2] === 'status') return sendJSON(res, 200, withQr(m.status()));
+      if (req.method !== 'POST') return sendJSON(res, 405, { returnValue: false, errorText: 'POST only' });
+      if (mm[2] === 'link') return sendJSON(res, 200, withQr(await m.startLink()));
+      if (mm[2] === 'disconnect') return sendJSON(res, 200, await m.disconnect());
+      if (mm[2] === 'server' && m.setServer) return sendJSON(res, 200, m.setServer((await readBody(req)).url));
+    }
     if (url.pathname === '/api/system') return sendJSON(res, 200, await apiSystem());
     if (url.pathname === '/api/running') return sendJSON(res, 200, await apiRunning());
     if (url.pathname === '/api/close' && req.method === 'POST') {
@@ -771,6 +802,71 @@ async function continueWatching(authKey) {
     .map(toItem);
 }
 
+// ---- Stremio sign-in on the TV, like Stremio's own TV apps: a code and a QR
+// code for link.stremio.com; you approve it on your phone, signed in to Stremio.
+const STREMIO_LINK = process.env.HOMEPLUS_STREMIO_LINK || 'https://link.stremio.com';
+const stremioLink = { pending: null, error: '', timer: null };
+
+function stremioStatus() {
+  const cfg = readConfig();
+  const p = stremioLink.pending;
+  if (p && Date.now() > p.expires_at) stremioLink.pending = null;
+  return {
+    connected: !!cfg.stremioAuthKey,
+    user: cfg.stremioEmail || '',
+    pending: stremioLink.pending ? { code: p.code, url: 'link.stremio.com', qr: p.qrcode } : null, // the code goes in there
+    error: stremioLink.error
+  };
+}
+
+async function stremioStartLink() {
+  stremioLink.error = '';
+  const r = await requestJSON('GET', `${STREMIO_LINK}/api/v2/create?type=Create`);
+  const res = r.json && r.json.result;
+  if (r.status !== 200 || !res || !res.code) {
+    stremioLink.error = 'Stremio didn\u2019t give a sign-in code. Try again.';
+    return stremioStatus();
+  }
+  stremioLink.pending = { code: res.code, link: res.link, qrcode: res.qrcode, expires_at: Date.now() + 10 * 60 * 1000 };
+  log('stremio: link code issued');
+  clearTimeout(stremioLink.timer);
+  const poll = async () => {
+    const p = stremioLink.pending;
+    if (!p || Date.now() > p.expires_at) { stremioLink.pending = null; return; }
+    try {
+      const c = await requestJSON('GET', `${STREMIO_LINK}/api/v2/read?type=Read&code=${encodeURIComponent(p.code)}`);
+      const key = c.json && c.json.result && c.json.result.authKey;
+      if (key) {
+        const cfg = readConfig();
+        cfg.stremioAuthKey = key;
+        writeConfig(cfg);
+        cache = { at: 0, items: null };
+        stremioLink.pending = null;
+        log('stremio: signed in with a code');
+        return;
+      }
+    } catch (e) {
+      log('stremio: link poll error', e.message);
+    }
+    stremioLink.timer = setTimeout(poll, 3000);
+  };
+  stremioLink.timer = setTimeout(poll, 3000);
+  return stremioStatus();
+}
+
+async function stremioSignOut() {
+  const cfg = readConfig();
+  if (cfg.stremioAuthKey) {
+    try { await stremio('logout', { type: 'Logout', authKey: cfg.stremioAuthKey }); } catch (e) { /* best effort */ }
+  }
+  delete cfg.stremioAuthKey;
+  delete cfg.stremioEmail;
+  writeConfig(cfg);
+  cache = { at: 0, items: null };
+  stremioLink.pending = null;
+  return stremioStatus();
+}
+
 service.register('stremioStatus', (msg) => {
   const cfg = readConfig();
   msg.respond({ returnValue: true, connected: !!cfg.stremioAuthKey, email: cfg.stremioEmail || '' });
@@ -794,14 +890,16 @@ service.register('stremioLogin', async (msg) => {
 });
 
 service.register('stremioLogout', async (msg) => {
-  const cfg = readConfig();
-  if (cfg.stremioAuthKey) {
-    try { await stremio('logout', { type: 'Logout', authKey: cfg.stremioAuthKey }); } catch (e) { /* best effort */ }
-  }
-  delete cfg.stremioAuthKey;
-  delete cfg.stremioEmail;
-  writeConfig(cfg);
-  cache = { at: 0, items: null };
+  await stremioSignOut();
   msg.respond({ returnValue: true, connected: false });
+});
+
+// A Jellyfin server Home+ can't find by itself (another network, a reverse proxy); "" forgets it.
+service.register('jellyfinServer', (msg) => {
+  try {
+    msg.respond(Object.assign({ returnValue: true }, media.jellyfin.setServer(msg.payload.url)));
+  } catch (e) {
+    fail(msg, e.message);
+  }
 });
 

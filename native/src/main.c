@@ -78,10 +78,16 @@
 #define MAX_SHEET 64
 #define ID_LEN 160
 
-enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_ICON, TAG_ART, TAG_RAIL_THUMB, TAG_RAIL_BG, TAG_LAUNCH, TAG_WAKE,
+enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, TAG_QR, TAG_ICON, TAG_ART, TAG_RAIL_THUMB, TAG_RAIL_BG, TAG_LAUNCH, TAG_WAKE,
        TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET,
        TAG_STATUS, TAG_ELEVATE, TAG_RESTART, TAG_UNINSTALL,
        TAG_PREFS };
+
+/* Media sources: each one's Continue Watching is the Top Shelf of its own app */
+enum { SRC_NONE, SRC_STREMIO, SRC_JELLYFIN, SRC_PLEX, SRC_COUNT };
+
+/* Settings pages (a sheet's page; 0 = not a Settings page) */
+enum { PAGE_MAIN = 1, PAGE_HOME, PAGE_DISPLAY, PAGE_ACCESS, PAGE_ACCOUNTS, PAGE_TV, PAGE_ABOUT, PAGE_CONFIRM, PAGE_SIGNIN };
 
 /* zones: what the remote is moving through */
 enum { ZONE_GRID, ZONE_RAIL, ZONE_TOP };
@@ -113,8 +119,8 @@ typedef struct {
     float s, sv;
 } RailItem;
 
-typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_STREMIO_HELP, ACT_CANCEL,
-               ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK,
+typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
+               ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP,
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY,
@@ -183,6 +189,12 @@ static struct {
     int nsettings;
 
     int rail_stremio, trakt_configured, trakt_connected;
+    int rail_source, rail_req;        /* whose items the rail holds; the source asked for */
+    int src_connected[SRC_COUNT];     /* signed in (Stremio counts Trakt too) */
+    int media_poll_src;               /* Jellyfin/Plex sign-in: whose code is on screen */
+    Uint32 media_poll;                /* and when to ask again whether it was approved */
+    Tex *connect_tex[SRC_COUNT];      /* "Connect … to see Continue Watching" */
+    int connect_w[SRC_COUNT], connect_h[SRC_COUNT];
     char home_mode[16]; /* "redirect" (no-flash), "watch" or "off" */
     int sounds_off; /* focus sounds switched off in Settings (saved by the service) */
     Uint32 idle_dim_ms, idle_off_ms; /* OLED idle stages (0 = default) */
@@ -273,9 +285,11 @@ static struct {
         int on;
         float t, tv, fx, fy, fw, fh, px, py, pw, ph, pr;
     } ghost;
-    Tex *heading_tex, *sub_tex, *sub_connect_tex, *sheet_big;
+    Tex *heading_tex, *sub_tex, *sheet_big;
+    Tex *sheet_qr; /* sign-in: the service's QR code, scanned with a phone */
+    int sheet_qr_s, qr_gen;
     int sheet_big_w, sheet_big_h;
-    int hw, hh, sw, sh, scw, sch;
+    int hw, hh, sw, sh;
 } S;
 
 /* ------------------------------------------------------------------ helpers */
@@ -397,9 +411,17 @@ static int contains_ci(const char *hay, const char *needle)
     return 0;
 }
 
-static int is_stremio(const App *a)
+static const char *const SRC_ID[SRC_COUNT] = { "", "stremio", "jellyfin", "plex" };
+static const char *const SRC_NAME[SRC_COUNT] = { "", "Stremio", "Jellyfin", "Plex" };
+
+/* The media source an app's Top Shelf shows, by its id or name (store builds differ). */
+static int media_source(const App *a)
 {
-    return a && (contains_ci(a->id, "stremio") || contains_ci(a->title, "stremio"));
+    if (!a) return SRC_NONE;
+    if (contains_ci(a->id, "stremio") || contains_ci(a->title, "stremio")) return SRC_STREMIO;
+    if (contains_ci(a->id, "jellyfin") || contains_ci(a->title, "jellyfin")) return SRC_JELLYFIN;
+    if (contains_ci(a->id, "plex") || contains_ci(a->title, "plex") || !strcmp(a->id, "cdp-30")) return SRC_PLEX;
+    return SRC_NONE;
 }
 
 static int is_hidden(const char *id)
@@ -466,6 +488,10 @@ static void parse_layout(const char *json)
         if (cJSON_IsString(v) && S.nhidden < MAX_APPS) snprintf(S.hidden[S.nhidden++], ID_LEN, "%s", v->valuestring);
     cJSON_Delete(o);
     S.layout_loaded = 1;
+    if (S.napps) { /* the apps arrived first (the requests race): put them in this order now */
+        rebuild_items();
+        S.shelf_cur = S.shelf_prev = -1;
+    }
 }
 
 static void free_app(App *a)
@@ -573,21 +599,56 @@ static void rail_focus(int i)
     S.rail_first = keep_in_view(S.rail_first, S.rail_index, RAIL_VISIBLE, S.nrail, 0);
 }
 
-static void parse_stremio(const char *json)
+/* the source whose rail is wanted now: the focused top-row app's, or below the
+ * dock the last one focused (its picture stays behind the grid) */
+static int want_source(void)
+{
+    return media_source(item_app(S.focus < COLS ? S.focus : S.shelf_cur));
+}
+
+static void rail_request(int src)
+{
+    char path[64];
+    snprintf(path, sizeof path, "/api/continue?source=%s", SRC_ID[src]);
+    S.rail_req = src;
+    net_get_json(path, TAG_STREMIO, src, 0);
+}
+
+static void parse_continue(const char *json, int src)
 {
     cJSON *o = cJSON_Parse(json);
+    if (src == S.rail_req) S.rail_req = SRC_NONE;
     if (!o) return;
-    S.rail_connected = cJSON_IsTrue(cJSON_GetObjectItem(o, "connected"));
-    S.rail_stremio = cJSON_IsTrue(cJSON_GetObjectItem(o, "stremio"));
-    cJSON *tr = cJSON_GetObjectItem(o, "trakt");
-    S.trakt_configured = cJSON_IsTrue(cJSON_GetObjectItem(tr, "configured"));
-    S.trakt_connected = cJSON_IsTrue(cJSON_GetObjectItem(tr, "connected"));
-    {
-        char heading[96];
-        snprintf(heading, sizeof heading, "Continue Watching%s%s", S.rail_stremio ? " \xC2\xB7 Stremio" : "",
-                 S.trakt_connected ? " \xC2\xB7 Trakt" : "");
+    int connected = cJSON_IsTrue(cJSON_GetObjectItem(o, "connected"));
+    S.src_connected[src] = connected;
+    if (src == SRC_STREMIO) { /* this answer also carries every account's state, for Settings */
+        S.rail_connected = connected;
+        S.rail_stremio = cJSON_IsTrue(cJSON_GetObjectItem(o, "stremio"));
+        cJSON *tr = cJSON_GetObjectItem(o, "trakt");
+        S.trakt_configured = cJSON_IsTrue(cJSON_GetObjectItem(tr, "configured"));
+        S.trakt_connected = cJSON_IsTrue(cJSON_GetObjectItem(tr, "connected"));
+        S.src_connected[SRC_JELLYFIN] = cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(o, "jellyfin"), "connected"));
+        S.src_connected[SRC_PLEX] = cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(o, "plex"), "connected"));
+    }
+    if (src != want_source()) { /* another app's rail: not on show */
+        cJSON_Delete(o);
+        return;
+    }
+    if (src != S.rail_source) { /* the heading and hint name the source */
+        char heading[96], hint[64];
+        if (src == SRC_STREMIO)
+            snprintf(heading, sizeof heading, "Continue Watching%s%s", S.rail_stremio ? " \xC2\xB7 Stremio" : "",
+                     S.trakt_connected ? " \xC2\xB7 Trakt" : "");
+        else
+            snprintf(heading, sizeof heading, "Continue Watching \xC2\xB7 %s", SRC_NAME[src]);
         tex_free(&S.heading_tex);
         S.heading_tex = text_render(S.f_semi, 24, heading, 0, &S.hw, &S.hh);
+        snprintf(hint, sizeof hint, "Opens in %s", SRC_NAME[src]);
+        tex_free(&S.rail_hint);
+        S.rail_hint = text_render(S.f_medium, 26, hint, 0, &S.rail_hint_w, &S.rail_hint_h);
+        S.rail_source = src;
+        S.rail_sig[0] = 0;
+        S.rail_index = S.rail_first = 0;
     }
     cJSON *arr = cJSON_GetObjectItem(o, "items"), *v;
     char sig[2048] = "";
@@ -652,7 +713,8 @@ static void request_data(void)
 {
     if (!S.layout_loaded) net_get_json("/api/layout", TAG_LAYOUT, 0, 0);
     net_get_json("/api/apps", TAG_APPS, 0, 0);
-    net_get_json("/api/continue", TAG_STREMIO, 0, 0);
+    rail_request(SRC_STREMIO);
+    if (want_source() > SRC_STREMIO) rail_request(want_source());
     net_get_json("/api/system", TAG_SYSTEM, 0, 0);
     net_get_json("/api/home", TAG_HOME, 0, 0);
     net_get_json("/api/prefs", TAG_PREFS, 0, 0);
@@ -919,7 +981,8 @@ static void handle_result(Result *r)
         if (S.service_ok && S.toast_until > SDL_GetTicks() + 100000) S.toast_until = 0;
         break;
     case TAG_STREMIO:
-        if (r->status == 200) parse_stremio(r->body);
+        if (r->status == 200) parse_continue(r->body, r->index > SRC_NONE && r->index < SRC_COUNT ? r->index : SRC_STREMIO);
+        else if (r->index == S.rail_req) S.rail_req = SRC_NONE;
         break;
     case TAG_SYSTEM:
         if (r->status == 200) parse_system(r->body);
@@ -962,11 +1025,64 @@ static void handle_result(Result *r)
             cJSON_Delete(o);
         }
         break;
+    case TAG_MEDIA_LINK:
+    case TAG_MEDIA_STATUS: { /* Stremio, Jellyfin and Plex sign-in */
+        int src = S.media_poll_src;
+        cJSON *o = r->status == 200 ? cJSON_Parse(r->body) : NULL;
+        const char *err = o ? jstr(o, "error") : "";
+        cJSON *pend = o ? cJSON_GetObjectItem(o, "pending") : NULL;
+        int code_shown = S.sheet.open && S.sheet.page == PAGE_SIGNIN;
+        if (o && cJSON_IsTrue(cJSON_GetObjectItem(o, "connected"))) {
+            char msg[64];
+            snprintf(msg, sizeof msg, "%s connected", SRC_NAME[src]);
+            S.media_poll = 0;
+            S.src_connected[src] = 1;
+            if (code_shown) sheet_dismiss();
+            toast(msg, 3000);
+            if (want_source() == src) rail_request(src);
+        } else if (cJSON_IsObject(pend)) {
+            if (r->tag == TAG_MEDIA_LINK) { /* the code, big, with where to enter it */
+                char title[64];
+                snprintf(title, sizeof title, "Connect %s", SRC_NAME[src]);
+                sheet_open(title);
+                S.toast_until = SDL_GetTicks(); /* "Asking for a code…": the sheet takes over */
+                const char *qr = jstr(pend, "qr");
+                if (src == SRC_JELLYFIN) {
+                    sheet_body("In any Jellyfin app you\xE2\x80\x99re signed in to, open\n"
+                               "Settings \xE2\x86\x92 Quick Connect and enter this code:");
+                } else {
+                    char body[200];
+                    snprintf(body, sizeof body, "Scan this with your phone, or go to %s\nand enter the code below.", jstr(pend, "url"));
+                    sheet_body(body);
+                }
+                if (qr[0]) { /* room for it now; the picture follows */
+                    S.qr_gen++;
+                    S.sheet_qr_s = 360;
+                    net_get_image(qr, TAG_QR, 0, S.qr_gen, 0, 0, 0);
+                }
+                tex_free(&S.sheet_big);
+                S.sheet_big = text_render(S.f_bold, 96, jstr(pend, "code"), 0, &S.sheet_big_w, &S.sheet_big_h);
+                sheet_add("Cancel", ACT_UP, 0, 0);
+                S.sheet.page = PAGE_SIGNIN;
+                if (S.at_page == PAGE_ACCOUNTS) /* Cancel goes back there; from an app's options it closes */
+                    S.sheet.parent = PAGE_ACCOUNTS, S.sheet.parent_index = S.at_index;
+            }
+            S.media_poll = SDL_GetTicks() + 3000;
+        } else {
+            S.media_poll = 0;
+            if (code_shown) sheet_dismiss();
+            if (err[0]) toast(err, 7000);
+            else if (r->tag == TAG_MEDIA_LINK) toast("Couldn\xE2\x80\x99t start the sign-in. Try again.", 5000);
+            else if (code_shown) toast("The code expired. Try again.", 5000);
+        }
+        cJSON_Delete(o);
+        break;
+    }
     case TAG_TRAKT_LINK:
     case TAG_TRAKT_STATUS: {
         cJSON *o = r->status == 200 ? cJSON_Parse(r->body) : NULL;
         if (!o) {
-            if (r->tag == TAG_TRAKT_LINK) toast("Trakt isn\xE2\x80\x99t set up yet \xE2\x80\x94 run traktSetup from your Mac (see README).", 7000);
+            if (r->tag == TAG_TRAKT_LINK) toast("Trakt isn\xE2\x80\x99t set up yet. The README\xE2\x80\x99s Trakt section says how.", 7000);
             S.trakt_poll = 0;
             break;
         }
@@ -977,7 +1093,7 @@ static void handle_result(Result *r)
             S.trakt_connected = 1;
             if (S.sheet.open && S.sheet_big) sheet_dismiss();
             toast("Trakt connected", 3000);
-            net_get_json("/api/continue", TAG_STREMIO, 0, 0);
+            rail_request(SRC_STREMIO);
         } else if (cJSON_IsObject(pend)) {
             if (r->tag == TAG_TRAKT_LINK) {
                 /* show the code big, like tvOS sign-in screens */
@@ -1019,6 +1135,12 @@ static void handle_result(Result *r)
             }
         }
         break;
+    case TAG_QR:
+        if (r->generation == S.qr_gen && S.sheet.open && S.sheet_qr_s && r->rgba) {
+            tex_free(&S.sheet_qr);
+            S.sheet_qr = r_tex(r->rgba, r->w, r->h);
+        }
+        break;
     case TAG_RAIL_THUMB:
     case TAG_RAIL_BG:
         if (r->generation == S.rail_generation && r->index < S.nrail) {
@@ -1043,7 +1165,8 @@ static void handle_result(Result *r)
 
 static int rail_active(void)
 {
-    return S.focus < COLS && is_stremio(item_app(S.focus)) && S.nrail > 0;
+    int src = S.focus < COLS ? media_source(item_app(S.focus)) : SRC_NONE;
+    return src && src == S.rail_source && S.nrail > 0;
 }
 
 /* hint: optional message the system shows over the app once it has opened */
@@ -1063,6 +1186,9 @@ static void sheet_close(void)
 {
     tex_free(&S.sheet.title);
     tex_free(&S.sheet_big);
+    tex_free(&S.sheet_qr);
+    S.sheet_qr_s = 0;
+    S.media_poll = 0;
     for (int i = 0; i < S.sheet.nbody; i++) tex_free(&S.sheet.body[i]);
     S.sheet.nbody = 0;
     S.sheet.locked = 0;
@@ -1448,16 +1574,17 @@ static void setup_retry_now(void)
     setup_check();
 }
 
-static int stremio_installed(void)
+static int source_installed(int src)
 {
     for (int i = 0; i < S.napps; i++)
-        if (is_stremio(&S.apps[i])) return 1;
+        if (media_source(&S.apps[i]) == src) return 1;
     return 0;
 }
 
+static int stremio_installed(void) { return source_installed(SRC_STREMIO); }
+
 /* ---- Settings, like tvOS's: each row shows its current value, › opens a page,
  * and Back goes up one. */
-enum { PAGE_MAIN = 1, PAGE_HOME, PAGE_DISPLAY, PAGE_ACCESS, PAGE_ACCOUNTS, PAGE_TV, PAGE_ABOUT };
 
 static void settings_row(const char *label, const char *value, Action act, int arg, int chevron, int destructive)
 {
@@ -1473,6 +1600,20 @@ static const char *minutes(Uint32 ms, Uint32 dflt, char *buf, size_t cap)
     if (ms == IDLE_NEVER) return "Never";
     snprintf(buf, cap, "%u min", (unsigned)((ms ? ms : dflt) / 60000));
     return buf;
+}
+
+/* the row a page has on the main Settings page */
+static int main_index(int page)
+{
+    switch (page) {
+    case PAGE_HOME: return 0;
+    case PAGE_DISPLAY: return 1;
+    case PAGE_ACCESS: return 4;
+    case PAGE_ACCOUNTS: return 5;
+    case PAGE_TV: return 6 + (S.nhidden > 0);
+    case PAGE_ABOUT: return 6 + (S.nhidden > 0) + (S.nsettings > 0);
+    default: return 0;
+    }
 }
 
 static void settings_page(int page, int index)
@@ -1506,10 +1647,15 @@ static void settings_page(int page, int index)
     case PAGE_ACCOUNTS:
         sheet_open("Accounts");
         if (S.rail_stremio || stremio_installed())
-            settings_row("Stremio", S.rail_stremio ? "Signed In" : "Not Signed In", S.rail_stremio ? ACT_NONE : ACT_STREMIO_HELP, 0, 0, 0);
+            settings_row("Stremio", S.rail_stremio ? "Signed In" : "Not Signed In",
+                         S.rail_stremio ? ACT_ACCOUNT_ASK : ACT_MEDIA_LINK, SRC_STREMIO, 0, 0);
         settings_row("Trakt", S.trakt_connected ? "Connected" : S.trakt_configured ? "Not Connected" : "Not Set Up",
-                     S.trakt_connected ? ACT_TRAKT_UNLINK : ACT_TRAKT_LINK, 0, 0, 0);
-        sheet_body("Continue Watching comes from these accounts.");
+                     S.trakt_connected ? ACT_ACCOUNT_ASK : ACT_TRAKT_LINK, SRC_COUNT, 0, 0); /* SRC_COUNT: Trakt */
+        for (int src = SRC_JELLYFIN; src < SRC_COUNT; src++)
+            if (S.src_connected[src] || source_installed(src))
+                settings_row(SRC_NAME[src], S.src_connected[src] ? "Connected" : "Not Connected",
+                             S.src_connected[src] ? ACT_ACCOUNT_ASK : ACT_MEDIA_LINK, src, 0, 0);
+        sheet_body("Each app\xE2\x80\x99s Continue Watching shows when you focus it in the top row.");
         break;
     case PAGE_TV:
         sheet_open("TV Settings");
@@ -1539,9 +1685,15 @@ static void settings_page(int page, int index)
         settings_row("Sounds", S.sounds_off ? "Off" : "On", ACT_SOUNDS, 0, 0, 0);
         settings_row("Clock", S.clock24 ? "24-Hour" : "12-Hour", ACT_CLOCK, 0, 0, 0);
         settings_row("Accessibility", S.reduce_motion || S.reduce_transparency ? "On" : "Off", ACT_PAGE, PAGE_ACCESS, 1, 0);
-        const char *acc = S.rail_stremio && S.trakt_connected ? "Stremio, Trakt" : S.rail_stremio ? "Stremio"
-                        : S.trakt_connected ? "Trakt" : "None";
-        settings_row("Accounts", acc, ACT_PAGE, PAGE_ACCOUNTS, 1, 0);
+        char acc[96] = "";
+        const char *names[] = { S.rail_stremio ? "Stremio" : "", S.trakt_connected ? "Trakt" : "",
+                                S.src_connected[SRC_JELLYFIN] ? "Jellyfin" : "", S.src_connected[SRC_PLEX] ? "Plex" : "" };
+        for (int i = 0; i < 4; i++) {
+            if (!names[i][0]) continue;
+            if (acc[0]) append(acc, sizeof acc, ", ");
+            append(acc, sizeof acc, names[i]);
+        }
+        settings_row("Accounts", acc[0] ? acc : "None", ACT_PAGE, PAGE_ACCOUNTS, 1, 0);
         if (S.nhidden) {
             snprintf(v, sizeof v, "%d", S.nhidden);
             settings_row("Hidden Apps", v, ACT_HIDDEN, 0, 1, 0);
@@ -1554,6 +1706,7 @@ static void settings_page(int page, int index)
     sheet_add("Done", ACT_CANCEL, 0, 0);
     S.sheet.page = page;
     S.sheet.parent = page == PAGE_MAIN ? 0 : PAGE_MAIN;
+    S.sheet.parent_index = main_index(page);
     S.sheet.wide = 1;
     /* back on the row it was on, already scrolled to it */
     int nfoot = sheet_footer(), nlist = S.sheet.n - nfoot, rows = sheet_rows(nfoot);
@@ -1590,7 +1743,12 @@ static void open_app_sheet(void)
     sheet_open(a->title);
     sheet_add("Move", ACT_MOVE, 0, 0);
     sheet_add("Move to Front", ACT_FRONT, 0, 0);
-    if (is_stremio(a) && !S.rail_connected) sheet_add("Connect Stremio Account", ACT_STREMIO_HELP, 0, 0);
+    int src = media_source(a);
+    if (src && !(src == SRC_STREMIO ? S.rail_stremio : S.src_connected[src])) {
+        char t[48];
+        snprintf(t, sizeof t, "Sign In to %s", SRC_NAME[src]);
+        sheet_add(t, ACT_MEDIA_LINK, src, 0);
+    }
     sheet_add("Hide App", ACT_HIDE, 0, 1);
     sheet_add("Cancel", ACT_CANCEL, 0, 0);
 }
@@ -1683,13 +1841,36 @@ static void run_action(Action act, int arg)
         sheet_open("Remove Home+?");
         sheet_body("This deletes Home+\xE2\x80\x99s boot script, settings and sign-ins (Stremio, Trakt),\nturns off the Home button takeover and uninstalls Home+.");
         sheet_add("Remove Home+", ACT_REMOVE, 0, 1);
-        sheet_add("Cancel", ACT_CANCEL, 0, 0);
-        if (S.at_page) S.sheet.parent = PAGE_MAIN, S.sheet.parent_index = S.at_index;
+        sheet_add("Cancel", ACT_UP, 0, 0);
+        if (S.at_page) S.sheet.page = PAGE_CONFIRM, S.sheet.parent = PAGE_MAIN, S.sheet.parent_index = S.at_index;
         break;
     case ACT_REMOVE:
         setup_set(SETUP_REMOVING);
         net_post("/api/uninstall", "{}", TAG_UNINSTALL);
         break;
+    case ACT_MEDIA_LINK: { /* the service gets a code (Jellyfin: after finding the server) */
+        char path[48];
+        snprintf(path, sizeof path, "/api/%s/link", SRC_ID[arg]);
+        char wait[64];
+        if (arg == SRC_JELLYFIN) snprintf(wait, sizeof wait, "Looking for your Jellyfin server\xE2\x80\xA6");
+        else snprintf(wait, sizeof wait, "Asking %s for a code\xE2\x80\xA6", SRC_NAME[arg]);
+        toast(wait, 6000);
+        net_post(path, "{}", TAG_MEDIA_LINK);
+        S.media_poll_src = arg;
+        settings_again();
+        break;
+    }
+    case ACT_MEDIA_UNLINK: {
+        char path[48];
+        snprintf(path, sizeof path, "/api/%s/disconnect", SRC_ID[arg]);
+        net_post(path, "{}", 0);
+        S.src_connected[arg] = 0;
+        if (arg == SRC_STREMIO) S.rail_stremio = 0;
+        if (S.rail_source == arg) S.rail_source = SRC_NONE, S.nrail = 0;
+        if (S.at_page == PAGE_CONFIRM) settings_page(PAGE_ACCOUNTS, S.at_parent_index);
+        else settings_again();
+        break;
+    }
     case ACT_TRAKT_LINK:
         toast("Asking Trakt for a code\xE2\x80\xA6", 4000);
         net_post("/api/trakt/link", "{}", TAG_TRAKT_LINK);
@@ -1698,13 +1879,26 @@ static void run_action(Action act, int arg)
         net_post("/api/trakt/disconnect", "{}", 0);
         S.trakt_connected = 0;
         S.rail_sig[0] = 0;
-        net_get_json("/api/continue", TAG_STREMIO, 0, 0);
+        rail_request(SRC_STREMIO);
         toast("Trakt disconnected", 3000);
-        settings_again();
+        if (S.at_page == PAGE_CONFIRM) settings_page(PAGE_ACCOUNTS, S.at_parent_index);
+        else settings_again();
         break;
-    case ACT_STREMIO_HELP:
-        toast("To see Continue Watching, sign in to Stremio from a computer (see the Home+ README)", 8000);
-        settings_again();
+    case ACT_ACCOUNT_ASK: { /* signing out asks first; Cancel and Back go back to Accounts */
+        char title[64];
+        snprintf(title, sizeof title, "Sign Out of %s?", arg == SRC_COUNT ? "Trakt" : SRC_NAME[arg]);
+        sheet_open(title);
+        sheet_body("Its Continue Watching leaves the Top Shelf until you sign in again.");
+        sheet_add("Sign Out", arg == SRC_COUNT ? ACT_TRAKT_UNLINK : ACT_MEDIA_UNLINK, arg, 1);
+        sheet_add("Cancel", ACT_UP, 0, 0);
+        S.sheet.page = PAGE_CONFIRM;
+        S.sheet.parent = PAGE_ACCOUNTS;
+        S.sheet.parent_index = S.at_index;
+        break;
+    }
+    case ACT_UP:
+        if (S.sheet.parent) settings_page(S.sheet.parent, S.sheet.parent_index);
+        else sheet_dismiss();
         break;
     case ACT_ACCESSIBILITY:
         settings_page(PAGE_ACCESS, 0);
@@ -1790,9 +1984,10 @@ static void activate(void)
         if (a && S.rail_index < S.nrail) {
             /* Stremio's LG app can't open a title directly: open it and say where the title is */
             char hint[300];
-            snprintf(hint, sizeof hint, "\xE2\x80\x9C%s\xE2\x80\x9D is in Stremio\xE2\x80\x99s Continue Watching", S.rail[S.rail_index].name);
+            const char *app = SRC_NAME[S.rail_source];
+            snprintf(hint, sizeof hint, "\xE2\x80\x9C%s\xE2\x80\x9D is in %s\xE2\x80\x99s Continue Watching", S.rail[S.rail_index].name, app);
             launch(a->id, hint);
-            snprintf(hint, sizeof hint, "Opening Stremio. Look for \xE2\x80\x9C%s\xE2\x80\x9D in Continue Watching", S.rail[S.rail_index].name);
+            snprintf(hint, sizeof hint, "Opening %s. Look for \xE2\x80\x9C%s\xE2\x80\x9D in Continue Watching", app, S.rail[S.rail_index].name);
             toast(hint, 6000);
         }
         return;
@@ -2215,6 +2410,8 @@ static int update(float dt)
         S.shelf_a = 0;
     }
     approach(&S.shelf_a, 1, 9, dt, &anim);
+    int want = want_source();
+    if (want && want != S.rail_source && want != S.rail_req && S.service_ok) rail_request(want);
     if (rail_active()) {
         RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
         /* background art: lazy-load the focused one, crossfade between items */
@@ -2438,8 +2635,16 @@ static void draw_app_text(App *a, Uint8 alpha, float dy)
     if (!a || !alpha) return;
     ensure_big(a);
     draw_text(a->big, a->bw, a->bh, LEFT - 4, 340 + dy, alpha);
-    Tex *sub = is_stremio(a) && !S.rail_connected ? S.sub_connect_tex : S.sub_tex;
-    int sw = sub == S.sub_tex ? S.sw : S.scw, sh = sub == S.sub_tex ? S.sh : S.sch;
+    Tex *sub = S.sub_tex;
+    int sw = S.sw, sh = S.sh, src = media_source(a);
+    if (src && !S.src_connected[src]) { /* a media app: sign in from Settings */
+        if (!S.connect_tex[src]) {
+            char t[120];
+            snprintf(t, sizeof t, "Connect %s in Settings \xE2\x86\x92 Accounts to see Continue Watching", SRC_NAME[src]);
+            S.connect_tex[src] = text_render(S.f_medium, 28, t, 0, &S.connect_w[src], &S.connect_h[src]);
+        }
+        sub = S.connect_tex[src], sw = S.connect_w[src], sh = S.connect_h[src];
+    }
     if (S.zone == ZONE_TOP) { /* while the top bar has focus, the hint is about it */
         sub = S.top_hint[S.top_index];
         sw = S.top_hw[S.top_index];
@@ -2506,13 +2711,13 @@ static void draw_rail_content(Uint8 alpha, int backdrop)
     }
 }
 
-/* the shelf shows the rail when Stremio (with something to resume) was the last
- * top-row app focused, even after focus moves on below the dock */
+/* the shelf shows the rail when a media app (with something to resume) was the
+ * last top-row app focused, even after focus moves on below the dock */
 static int shelf_rail(void)
 {
     if (rail_active()) return 1;
     App *a = S.focus >= COLS ? item_app(S.shelf_cur) : NULL;
-    return a && is_stremio(a) && S.nrail > 0;
+    return a && media_source(a) && media_source(a) == S.rail_source && S.nrail > 0;
 }
 
 static void draw_shelf_art(Uint8 alpha)
@@ -2704,7 +2909,7 @@ static float sheet_body_h(void)
 
 static float sheet_head(void)
 {
-    return PAD + S.sheet.th + 24 + sheet_body_h() + (S.sheet_big ? S.sheet_big_h + 24 : 0);
+    return PAD + S.sheet.th + 24 + sheet_body_h() + (S.sheet_qr_s ? S.sheet_qr_s + 24 : 0) + (S.sheet_big ? S.sheet_big_h + 24 : 0);
 }
 
 /* List rows on screen: all of them when they fit, else as many as fit above the
@@ -2788,6 +2993,12 @@ static void draw_sheet(void)
         y += S.sheet.bh[i] + 6;
     }
     if (S.sheet.nbody) y += 18;
+    if (S.sheet_qr_s) { /* on white, like a printed code: phones read it at any brightness */
+        float q = (float)S.sheet_qr_s, qx = px + (pw - q) / 2;
+        r_shape(qx, y, q, q, 24, 255, 255, 255, ca, 0, 1, 1);
+        if (S.sheet_qr) r_image(S.sheet_qr, qx + 18, y + 18, q - 36, q - 36, 255, 255, 255, ca, 0);
+        y += q + 24;
+    }
     if (S.sheet_big) {
         draw_text(S.sheet_big, S.sheet_big_w, S.sheet_big_h, px + (pw - S.sheet_big_w) / 2, y, ca);
         y += big;
@@ -2957,7 +3168,6 @@ static int load_assets(void)
         S.top_hint[i] = text_render(S.f_medium, 28, hint, 0, &S.top_hw[i], &S.top_hh[i]);
     }
     S.sub_tex = text_render(S.f_medium, 28, "Press OK to open \xC2\xB7 Hold for options", 0, &S.sw, &S.sh);
-    S.sub_connect_tex = text_render(S.f_medium, 28, "Connect your Stremio account to see Continue Watching", 0, &S.scw, &S.sch);
     static const int kinds[TOP_COUNT] = { ICON_RECENTS, ICON_SETTINGS };
     for (int i = 0; i < TOP_COUNT; i++) {
         S.top_tex[i] = gfx_icon(kinds[i], 64); /* drawn at 34 px; 64 keeps it sharp when focused */
@@ -3044,12 +3254,12 @@ static int next_wake_ms(void)
     Uint32 now = SDL_GetTicks();
     Uint32 dim_ms = S.idle_dim_ms ? S.idle_dim_ms : IDLE_DIM_MS, off_ms = S.idle_off_ms ? S.idle_off_ms : IDLE_OFF_MS;
     int visible = !S.offscreen && S.idle_stage < 2;
-    Uint32 due[8] = { S.setup_retry, S.next_retry, S.trakt_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0,
+    Uint32 due[9] = { S.setup_retry, S.next_retry, S.trakt_poll, S.media_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0,
                       S.toast_tex && S.toast_until > now ? S.toast_until : 0,
                       S.offscreen || S.idle_stage >= 2 ? 0 : idle_due(dim_ms, off_ms),
                       snd_active() ? now + 1000 : 0, visible ? now + (60000 - now % 60000) : 0 };
     int wait = -1;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 9; i++) {
         if (!due[i]) continue;
         int d = (Sint32)(due[i] - now) > 0 ? (int)(due[i] - now) : 0;
         if (wait < 0 || d < wait) wait = d;
@@ -3288,6 +3498,12 @@ int main(int argc, char **argv)
             S.trakt_poll = 0;
             net_get_json("/api/trakt/status", TAG_TRAKT_STATUS, 0, 0);
         }
+        if (S.media_poll && now >= S.media_poll) {
+            char path[48];
+            S.media_poll = 0;
+            snprintf(path, sizeof path, "/api/%s/status", SRC_ID[S.media_poll_src]);
+            net_get_json(path, TAG_MEDIA_STATUS, 0, 0);
+        }
         if (S.setup_retry && now >= S.setup_retry) {
             S.setup_retry = 0;
             net_wake_service();
@@ -3296,7 +3512,7 @@ int main(int argc, char **argv)
         if (S.next_retry && now >= S.next_retry) {
             S.next_retry = 0;
             net_get_json("/api/apps", TAG_APPS, 0, 0);
-            net_get_json("/api/continue", TAG_STREMIO, 0, 0);
+            rail_request(SRC_STREMIO);
             if (!S.layout_loaded) net_get_json("/api/layout", TAG_LAYOUT, 0, 0);
         }
         if (shot) homeplus_preview_input(now - start);

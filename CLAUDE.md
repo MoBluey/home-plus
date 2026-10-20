@@ -11,7 +11,10 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
 - `service/` — Node 16 webOS service `com.github.pmiraka.homeplus.service`, elevated with Homebrew
   Channel's `elevateService` (the launcher asks; see First run). Luna methods + a local HTTP API on `127.0.0.1:47823` (see README).
   Also: Home button takeover (`watch` mode, and `redirect` = no-flash bind mount over LG home's
-  start page, approved by the owner), Stremio + Trakt Continue Watching, settings apps, recents.
+  start page, approved by the owner), settings apps, recents, and Continue Watching from
+  Stremio + Trakt (`service.js`, `trakt.js`), Jellyfin (`jellyfin.js`) and Plex (`plex.js`). Sign-ins
+  are codes/QR codes approved on another device (Stremio's link.stremio.com, Jellyfin Quick Connect,
+  Plex's PIN at plex.tv/link). `tools/native-preview/harness.js` mocks all three (`HOMEPLUS_PREVIEW_MEDIA`).
   Logs to `/tmp/homeplus-service.log` (the native app logs there too, via `POST /api/log`).
 - `native/` — the launcher (`com.github.pmiraka.homeplus`): C, SDL2 + our own GLES2 renderer
   (`src/render.c`: Liquid Glass shader, SDF shapes, Kawase blur; GL loaded at run time),

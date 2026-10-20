@@ -43,6 +43,12 @@ shot pointer-then-keys "MUC" 4200 "1660,850"
 shot back-recents "B" 3500
 service HOMEPLUS_PREVIEW_PREFS='{"reduceTransparency":true}'
 shot reduce-transparency "UO" 3500
+# media servers: Jellyfin's and Plex's Continue Watching, and a sign-in with a QR code
+service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=1
+shot jellyfin "" 4500
+shot plex "R" 4500
+service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=signin
+shot signin-plex "UODDDDDODDDO" 5600
 service HOMEPLUS_PREVIEW=1
 # first run: a fresh install asks about the Home button; an unelevated service
 # with no Homebrew Channel (no luna-send here) shows that screen
