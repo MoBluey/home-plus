@@ -2,7 +2,9 @@
  *
  * Runs on the TV as a webOS JS service. Once elevated (see README) it can call
  * the application manager on the launcher's behalf, and it talks to the Stremio
- * API so the web page never holds your Stremio auth key or hits CORS.
+ * API so the launcher never holds your Stremio auth key. The native launcher
+ * (com.atvlauncher.native) uses its local HTTP API; Luna methods are for
+ * terminal setup (Trakt, Stremio, Home button) and the boot script.
  */
 'use strict';
 
@@ -175,20 +177,16 @@ async function imageFile(kind, id) {
 // button), launches Home+ instead. Settings live in config.json:
 //   homeOverride: true/false (default true)
 //   homeApps:     app ids that count as "LG home" (default below)
-//   homeTarget:   app to open (default: native Home+ if installed, else web Home+)
+//   homeTarget:   app to open (default: Home+, com.atvlauncher.native)
 
 const DEFAULT_HOME_APPS = ['com.webos.app.home'];
 const NATIVE_ID = 'com.atvlauncher.native';
-const WEB_ID = 'com.atvlauncher.app';
 let lastForeground = '';
 let lastTakeover = 0;
 let takeoverLanded = true; // did the launcher reach the front after our last takeover?
 
-async function homeTarget(cfg) {
-  if (cfg.homeTarget) return cfg.homeTarget;
-  const r = await luna(APPMGR + '/listApps', {});
-  const ids = ((r && r.apps) || []).map((a) => a.id);
-  return ids.includes(NATIVE_ID) ? NATIVE_ID : WEB_ID;
+function homeTarget(cfg) {
+  return cfg.homeTarget || NATIVE_ID;
 }
 
 // ---- no-flash mode (user-approved): replace LG home's start page while the service runs.
@@ -201,7 +199,7 @@ const { execFile } = require('child_process');
 let redirectTarget = null; // path we mounted over, if any
 
 function redirectPage(target) {
-  const ids = JSON.stringify([target, target === NATIVE_ID ? WEB_ID : NATIVE_ID]);
+  const ids = JSON.stringify([target]);
   return `<!doctype html><html><head><meta charset="utf-8">
 <style>html,body{margin:0;width:100%;height:100%;background:#000}</style></head><body><script>
 // Home+ no-flash page: LG's home app now just opens Home+ (see com.atvlauncher.app.service).
@@ -249,7 +247,7 @@ async function mountRedirect() {
   const entry = await lgHomeEntry();
   if (entry.error) { log('no-flash mode unavailable:', entry.error); return false; }
   const src = path.join(path.dirname(findConfigPath()), 'home-redirect.html');
-  fs.writeFileSync(src, redirectPage(await homeTarget(readConfig())));
+  fs.writeFileSync(src, redirectPage(homeTarget(readConfig())));
   const mounts = fs.readFileSync('/proc/mounts', 'utf8');
   if (!mounts.includes(' ' + entry.main + ' ')) {
     const r = await run('mount', ['--bind', src, entry.main]);
@@ -287,8 +285,9 @@ async function onForeground(appId) {
   if (!appId || appId === lastForeground) return;
   log('foreground', lastForeground || '-', '->', appId);
   lastForeground = appId;
-  if (appId === NATIVE_ID || appId === WEB_ID) takeoverLanded = true;
   const cfg = readConfig();
+  const target = homeTarget(cfg);
+  if (appId === target) takeoverLanded = true;
   if (cfg.homeOverride === false) return;
   const homeApps = Array.isArray(cfg.homeApps) && cfg.homeApps.length ? cfg.homeApps : DEFAULT_HOME_APPS;
   if (!homeApps.includes(appId)) return;
@@ -297,7 +296,6 @@ async function onForeground(appId) {
   if (!takeoverLanded && Date.now() - lastTakeover < 3000) return;
   lastTakeover = Date.now();
   takeoverLanded = false;
-  const target = await homeTarget(cfg);
   const r = await luna(APPMGR + '/launch', { id: target });
   log('home takeover ->', target, r && r.returnValue === false ? r.errorText : 'ok');
 }
@@ -542,49 +540,8 @@ service.register('traktLink', async (msg) => {
 });
 service.register('traktDisconnect', (msg) => msg.respond(Object.assign({ returnValue: true }, trakt.disconnect())));
 
-// The page reports problems (e.g. icons failing to load) here.
-service.register('log', (msg) => {
-  log('page:', String(msg.payload.message || '').slice(0, 500));
-  msg.respond({ returnValue: true });
-});
-
 service.register('ping', (msg) => {
   msg.respond({ returnValue: true, version: pkg.version, uid: process.getuid ? process.getuid() : null, imagePort: IMAGE_PORT });
-});
-
-service.register('listApps', async (msg) => {
-  const r = await listApps();
-  if (r && r.apps) {
-    const base = `http://127.0.0.1:${IMAGE_PORT}`;
-    r.apps = r.apps.map((a) => {
-      const v = encodeURIComponent(a.version || '0');
-      const e = images[a.id] || {};
-      return Object.assign({}, a, {
-        iconUrl: e.icon && e.icon.length ? `${base}/icon/${encodeURIComponent(a.id)}?v=${v}` : '',
-        artUrl: e.art && e.art.length ? `${base}/art/${encodeURIComponent(a.id)}?v=${v}` : ''
-      });
-    });
-  }
-  msg.respond(r);
-});
-
-// Fallback for when the page can't reach localhost: the icon as a data: URL.
-service.register('icon', async (msg) => {
-  const file = await imageFile('icon', msg.payload.id);
-  if (!file) { log('icon (data) failed for', msg.payload.id); return fail(msg, 'no icon'); }
-  try {
-    const mime = MIME[path.extname(file).toLowerCase()] || 'image/png';
-    msg.respond({ returnValue: true, dataUrl: `data:${mime};base64,` + fs.readFileSync(file).toString('base64') });
-  } catch (e) {
-    fail(msg, e.message);
-  }
-});
-
-service.register('launch', async (msg) => {
-  const { id, params } = msg.payload;
-  if (!id) return fail(msg, 'id is required');
-  const r = await luna(APPMGR + '/launch', params ? { id, params } : { id });
-  msg.respond(r);
 });
 
 // ------------------------------------------------------------------ Stremio
@@ -675,18 +632,3 @@ service.register('stremioLogout', async (msg) => {
   msg.respond({ returnValue: true, connected: false });
 });
 
-service.register('stremioContinue', async (msg) => {
-  const cfg = readConfig();
-  if (!cfg.stremioAuthKey) return msg.respond({ returnValue: true, connected: false, items: [] });
-  const fresh = msg.payload && msg.payload.refresh;
-  try {
-    if (fresh || !cache.items || Date.now() - cache.at > CACHE_MS) {
-      cache = { at: Date.now(), items: await continueWatching(cfg.stremioAuthKey) };
-    }
-    msg.respond({ returnValue: true, connected: true, items: cache.items });
-  } catch (e) {
-    // Serve stale data rather than an empty shelf when the network blips.
-    if (cache.items) return msg.respond({ returnValue: true, connected: true, stale: true, items: cache.items });
-    fail(msg, e.message);
-  }
-});

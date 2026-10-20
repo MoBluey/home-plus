@@ -1,15 +1,14 @@
 {
   "id": "com.atvlauncher.app",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "vendor": "atv-launcher",
   "type": "web",
   "main": "index.html",
-  "title": "Home+",
+  "title": "Home+ Service",
   "icon": "img/icon.png",
   "largeIcon": "img/largeIcon.png",
   "iconColor": "#1c1c1e",
   "bgColor": "#000000",
-  "resolution": "1920x1080",
-  "disableBackHistoryAPI": true,
+  "visible": false,
   "handlesRelaunch": true
 }

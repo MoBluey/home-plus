@@ -14,7 +14,9 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
 - `native/` — the launcher people actually use (`com.atvlauncher.native`): C, SDL2 + GLES2,
   liquid-glass panels via render targets (`src/glass.c`). Build only against the vendored
   SDL **2.0.14** headers in `third_party/SDL2` — newer SDL functions don't exist on the TV.
-- `app/` — the older web launcher; ships the service and the boot script, so it must stay installed.
+- `app/` — the hidden "Home+ Service" package (`com.atvlauncher.app`, `visible: false`). It carries the
+  service and the boot script, so it must stay installed. Its page only hands over to the native app;
+  the old web launcher was removed (owner only wants the native one).
 
 ## Building
 - Native for the TV needs the Linux toolchain `openlgtv/buildroot-nc4`
