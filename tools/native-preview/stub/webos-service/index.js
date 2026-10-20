@@ -6,6 +6,8 @@ module.exports = class Service {
   subscribe() { return new EventEmitter(); }
   call(uri, params, cb) {
     if (uri.endsWith('/launch')) return cb({ payload: { returnValue: true } });
+    const fake = global.__stubLuna && global.__stubLuna(uri, params); // the harness's stand-in TV
+    if (fake) return cb({ payload: fake });
     cb({ payload: { returnValue: true, apps: global.__stubApps || [] } });
   }
 };

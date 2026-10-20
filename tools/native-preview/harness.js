@@ -157,6 +157,23 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
   fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify(cfg));
 }
 
+// A stand-in TV for the Control Center: inputs (a soundbar with a PS5 behind it), sound output,
+// sleep timer and Wi-Fi, as webOS 23's services answer them; settings changes are kept.
+const tv = { soundOutput: 'external_arc', sleepTimer: 'off' };
+global.__stubLuna = (uri, params) => {
+  if (uri.endsWith('/getAllInputStatus')) {
+    return { returnValue: true, arcDevice: true, devices: [
+      { id: 'HDMI_1', appId: 'com.webos.app.hdmi1', label: 'HDMI 1', hdmiPlugIn: false },
+      { id: 'HDMI_2', appId: 'com.webos.app.hdmi2', label: 'Soundbar', spdProductDescription: 'PS5', hdmiPlugIn: true },
+      { id: 'HDMI_3', appId: 'com.webos.app.hdmi3', label: 'HDMI 3', hdmiPlugIn: false }] };
+  }
+  if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: Object.fromEntries((params.keys || []).map((k) => [k, tv[k]])) };
+  if (uri.endsWith('/setSystemSettings')) { Object.assign(tv, params.settings); return { returnValue: true }; }
+  if (uri.endsWith('connectionmanager/getStatus')) return { returnValue: true, wifi: { state: 'connected', ssid: 'Home Wi-Fi' } };
+  if (/\/power\/(powerOff|turnOffScreen)$/.test(uri)) return { returnValue: true };
+  return null;
+};
+
 global.__stubApps = APPS.map(([id, title]) => ({
   id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || ''
 }));

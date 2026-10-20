@@ -98,6 +98,48 @@ static int icon_inside(int kind, float x, float y)
     }
     case ICON_CHEVRON: /* tvOS's: a wide, shallow caret with round ends */
         return sd_segment(x, y, -0.42f, 0.08f, 0.0f, -0.08f) < 0.04f || sd_segment(x, y, 0.0f, -0.08f, 0.42f, 0.08f) < 0.04f;
+    case ICON_CONTROLS: /* Control Center: two switches, one on (knob right), one off (knob left) */
+        if (in_ring_rrect(x, y, 0, -0.15f, 0.34f, 0.12f, 0.12f, T)) return 1;
+        if (in_ring_rrect(x, y, 0, 0.15f, 0.34f, 0.12f, 0.12f, T)) return 1;
+        return (x + 0.19f) * (x + 0.19f) + (y - 0.15f) * (y - 0.15f) < 0.075f * 0.075f ||
+               (x - 0.19f) * (x - 0.19f) + (y + 0.15f) * (y + 0.15f) < 0.075f * 0.075f;
+    case ICON_POWER: { /* a ring open at the top, and a bar into the gap */
+        float rr = sqrtf(x * x + y * y), up = atan2f(x, -y);
+        return (fabsf(rr - 0.31f) < T / 2 && fabsf(up) > 0.62f) || sd_segment(x, y, 0, -0.42f, 0, -0.06f) < T / 2;
+    }
+    case ICON_WIFI: { /* three arcs over a dot */
+        float dy = y - 0.27f, rr = sqrtf(x * x + dy * dy), up = atan2f(x, -dy);
+        if (rr < 0.06f) return 1;
+        if (fabsf(up) > 0.78f) return 0;
+        return fabsf(rr - 0.18f) < T / 2 || fabsf(rr - 0.33f) < T / 2 || fabsf(rr - 0.48f) < T / 2;
+    }
+    case ICON_SCREEN_OFF: /* a screen on a stand, struck through */
+        if (in_ring_rrect(x, y, 0, -0.05f, 0.38f, 0.25f, 0.06f, T)) return sd_segment(x, y, -0.36f, -0.36f, 0.36f, 0.26f) > T * 1.4f;
+        if (sd_segment(x, y, -0.13f, 0.32f, 0.13f, 0.32f) < T / 2) return 1;
+        return sd_segment(x, y, -0.36f, -0.36f, 0.36f, 0.26f) < T / 2;
+    case ICON_SOUND: { /* a speaker and two waves */
+        if (x >= -0.36f && x <= -0.2f && fabsf(y) <= 0.11f) return 1;
+        if (x >= -0.2f && x <= -0.02f && fabsf(y) <= 0.11f + (x + 0.2f) * 1.0f) return 1;
+        float rr = sqrtf((x + 0.02f) * (x + 0.02f) + y * y), side = atan2f(y, x + 0.02f);
+        return fabsf(side) < 0.8f && (fabsf(rr - 0.2f) < T / 2 || fabsf(rr - 0.36f) < T / 2);
+    }
+    case ICON_TIMER: { /* a stopwatch: a ring, a hand, a button on top */
+        float dy = y - 0.05f, rr = sqrtf(x * x + dy * dy);
+        if (fabsf(rr - 0.3f) < T / 2) return 1;
+        if (sd_segment(x, y, 0, 0.05f, 0, -0.12f) < T / 2 || sd_segment(x, y, 0, 0.05f, 0.12f, 0.05f) < T / 2) return 1;
+        return sd_segment(x, y, -0.09f, -0.38f, 0.09f, -0.38f) < T / 2 || sd_segment(x, y, 0, -0.38f, 0, -0.27f) < T / 2;
+    }
+    case ICON_INPUT: /* a screen with an arrow going in */
+        if (in_ring_rrect(x, y, 0.1f, 0, 0.3f, 0.24f, 0.06f, T) && !(x < -0.1f && fabsf(y) < 0.12f)) return 1;
+        return sd_segment(x, y, -0.44f, 0, 0.1f, 0) < T / 2 || sd_segment(x, y, 0.1f, 0, -0.03f, -0.13f) < T / 2 ||
+               sd_segment(x, y, 0.1f, 0, -0.03f, 0.13f) < T / 2;
+    case ICON_ACCESS: { /* the accessibility figure in a ring */
+        float rr = sqrtf(x * x + y * y);
+        if (fabsf(rr - 0.42f) < T / 2) return 1;
+        if (x * x + (y + 0.2f) * (y + 0.2f) < 0.065f * 0.065f) return 1;
+        return sd_segment(x, y, -0.22f, -0.07f, 0.22f, -0.07f) < T / 2 || sd_segment(x, y, 0, -0.07f, 0, 0.08f) < T / 2 ||
+               sd_segment(x, y, 0, 0.08f, -0.11f, 0.27f) < T / 2 || sd_segment(x, y, 0, 0.08f, 0.11f, 0.27f) < T / 2;
+    }
     }
     return 0;
 }

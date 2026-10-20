@@ -31,17 +31,18 @@ shot stremio-shelf "RRUR" 3500
 shot scrolled "DR" 3000
 shot sheet "H" 3500
 shot topbar "U" 3000
-shot settings "UO" 3500
+shot control-center "UO" 3600
+shot settings "UODDDRO" 4400
 shot recents "B" 3800
-shot settings-display "UODO" 3800
-shot settings-remove "UODDDDDDDDO" 4600
+shot settings-display "UODDDRODO" 4600
+shot settings-remove "UODDDRODDDDDDDDO" 5400
 shot last-row "DD" 3500
 shot move-hint "H.O" 3800
 shot pointer-settings "MCM" 4200 "1790,80 960,600"
 shot crossfade "R" 1590
 shot pointer-then-keys "MUC" 4200 "1660,850"
 service HOMEPLUS_PREVIEW_PREFS='{"reduceTransparency":true}'
-shot reduce-transparency "UO" 3500
+shot reduce-transparency "UODDDRO" 4400
 # media servers: Jellyfin's and Plex's Continue Watching, and a sign-in with a QR code
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=1
 shot jellyfin "" 4500
@@ -51,7 +52,7 @@ service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_TMDB=1
 shot popular "" 5200
 shot popular-browse "URR" 5600
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=signin
-shot signin-plex "UODDDDDODDDO" 5600
+shot signin-plex "UODDDRODDDDDODDDO" 6400
 service HOMEPLUS_PREVIEW=1
 # first run: a fresh install asks about the Home button; an unelevated service
 # with no Homebrew Channel (no luna-send here) shows that screen

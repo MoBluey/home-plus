@@ -545,6 +545,7 @@ async function tvRegion() {
   return tvCountry;
 }
 const tmdb = require('./tmdb')({ readConfig, writeConfig, log, region: tvRegion });
+const control = require('./control')({ luna, log }); /* the Control Center's TV controls */
 
 // What's popular on the service a streaming app is, or trending for an app with no picture,
 // for its Top Shelf (pictures through us).
@@ -645,6 +646,14 @@ async function handleApi(req, res) {
       return sendJSON(res, 200, media[source] ? await apiMediaContinue(source) : await apiContinue());
     }
     if (url.pathname === '/api/featured') return sendJSON(res, 200, await apiFeatured(String(url.searchParams.get('app') || '')));
+    if (url.pathname === '/api/control') { /* the Control Center: GET its state, POST {action, value} */
+      if (req.method === 'POST') {
+        const b = await readBody(req);
+        await control.act(String(b.action || ''), b.value);
+        log('control:', b.action, b.value === undefined ? '' : b.value);
+      }
+      return sendJSON(res, 200, await control.state());
+    }
     const mm = /^\/api\/(stremio|jellyfin|plex)\/(status|link|disconnect|server)$/.exec(url.pathname);
     if (mm) { /* sign-in: a code (and a QR code, through us, for Stremio and Plex) approved elsewhere */
       const m = mm[1] === 'stremio' ? { status: stremioStatus, startLink: stremioStartLink, disconnect: stremioSignOut } : media[mm[1]];
@@ -767,6 +776,18 @@ imageServer.on('error', (e) => log('image server error', e.message));
 imageServer.listen(IMAGE_PORT, '127.0.0.1', () => log('image server listening on', IMAGE_PORT));
 
 // ---- Trakt over Luna (for setup from a terminal)
+// The Control Center's actions, for remote buttons through LG Input Hook: {"action": "powerOff" |
+// "screenOff" | "sound" | "sleepTimer" | "input", "value": ...} (see service/control.js).
+service.register('control', async (msg) => {
+  const p = msg.payload || {};
+  try {
+    await control.act(String(p.action || ''), p.value);
+    msg.respond(Object.assign({ returnValue: true }, await control.state()));
+  } catch (e) {
+    fail(msg, e.message);
+  }
+});
+
 // TMDB, for what's popular on streaming apps: {"key"} is a v3 API key or a Read Access Token
 // ("" removes it); {"region"} the country whose catalogs to show ("" is the TV's store country).
 service.register('tmdbSetup', async (msg) => {

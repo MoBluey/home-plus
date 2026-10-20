@@ -64,9 +64,18 @@ Updates install the same way. An update resets the service's root access, and Ho
 
 **Magic Remote pointer:** point at anything and click. Pressing an arrow hands control back to the keys: then OK presses what the keys focused, wherever the cursor happens to be. Moving the pointer clearly takes over again.
 
-From the top row, press **Up** to reach the clock at the top right, as on tvOS; **OK** on it opens Settings. On Stremio, Jellyfin or Plex, Up goes into Continue Watching first, as the chevron above the dock shows. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
+From the top row, press **Up** to reach the clock at the top right, as on tvOS; **OK** on it opens the Control Center. On Stremio, Jellyfin or Plex, Up goes into Continue Watching first, as the chevron above the dock shows. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
 
 ![Settings](docs/screenshots/settings.jpg)
+
+![Control Center](preview/native-control-center.png)
+
+**Control Center**, like tvOS's, opens from the clock: glass tiles under it for **Power Off**, **Wi-Fi** (your network; OK opens LG's settings), **Screen Off** (sound keeps playing; any key brings the picture back), **Sound** (TV speakers or HDMI ARC; OK switches), **Sleep Timer** (OK steps through LG's 10 to 240 minutes), and round buttons for **Inputs** (Live TV and the HDMI ports by LG's names, with what's plugged in, like "Soundbar · PS5"), **Recents**, **Accessibility** and **Settings**. Each action is also a service method, so anything that can send a luna call (a script, a home automation, a key-mapping tool) can use it:
+
+```sh
+luna-send -n 1 luna://com.github.pmiraka.homeplus.service/control '{"action":"screenOff"}'
+# actions: powerOff, screenOff, sound ("next" or an output), sleepTimer ("next", "off" or minutes), input (an input's app id)
+```
 
 **Settings** works like tvOS's: each row shows its current value, rows with **›** open a page, and **Back** goes up one page.
 
@@ -245,6 +254,7 @@ The launcher talks to the service over a local HTTP API on `127.0.0.1:47823`. It
 | `GET` / `POST /api/layout` | Tile order and hidden apps |
 | `GET /api/continue` | Continue Watching from Stremio and Trakt, or with `?source=jellyfin` or `plex` |
 | `GET /api/featured?app=<id>` | What's popular on a streaming app (TMDB), for its Top Shelf |
+| `GET` / `POST /api/control` | The Control Center: network, sound output, sleep timer and inputs; `{action, value}` acts |
 | `GET /api/<account>/status`, `POST .../link`, `POST .../disconnect` | Accounts (`stremio`, `trakt`, `jellyfin`, `plex`): state, a sign-in code, signing out |
 | `POST /api/jellyfin/server` | A Jellyfin server's address, for one Home+ can't find |
 | `GET /api/system` | LG's settings apps |

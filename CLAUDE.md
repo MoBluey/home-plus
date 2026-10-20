@@ -14,7 +14,10 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   start page, approved by the owner), settings apps, recents, and Continue Watching from
   Stremio + Trakt (`service.js`, `trakt.js`), Jellyfin (`jellyfin.js`) and Plex (`plex.js`), and what's popular
   on streaming apps from TMDB (`tmdb.js`, key via `tmdbSetup`). The launcher shows each as a Top Shelf
-  carousel (one title at a time, turning every 10 s unless Settings keeps it still; Up then Left/Right steps through). Sign-ins
+  carousel (one title at a time, turning every 10 s unless Settings keeps it still; Up then Left/Right steps through).
+  The Control Center (`control.js`, `/api/control`, luna `control`) uses tvpower (`power/powerOff`,
+  `power/turnOffScreen` with `standbyMode: "active"`: "passive" can't bring the picture back), settingsservice
+  (`sound/soundOutput`, `time/sleepTimer`) and eim (inputs). Sign-ins
   are codes/QR codes approved on another device (Stremio's link.stremio.com, Jellyfin Quick Connect,
   Plex's PIN at plex.tv/link). `tools/native-preview/harness.js` mocks all three (`HOMEPLUS_PREVIEW_MEDIA`)
   and TMDB (`HOMEPLUS_PREVIEW_TMDB`). LG's generic backgrounds (`*default_background*`, `*_preview.png`)
