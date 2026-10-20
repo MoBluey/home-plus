@@ -86,7 +86,7 @@ typedef struct {
 } App;
 
 typedef struct {
-    char id[64], type[16], name[200], link[400], bg[40], thumb[40];
+    char id[64], type[16], name[200], bg[40], thumb[40];
     float progress;
     int season, episode, remaining;
     Tex *thumb_tex, *bg_tex, *name_tex, *title_tex, *meta_tex;
@@ -500,7 +500,6 @@ static void parse_stremio(const char *json)
         snprintf(it->id, sizeof it->id, "%s", jstr(v, "id"));
         snprintf(it->type, sizeof it->type, "%s", jstr(v, "type"));
         snprintf(it->name, sizeof it->name, "%s", jstr(v, "name"));
-        snprintf(it->link, sizeof it->link, "%s", jstr(v, "deepLink"));
         snprintf(it->bg, sizeof it->bg, "%s", jstr(v, "background"));
         snprintf(it->thumb, sizeof it->thumb, "%s", jstr(v, "thumbnail"));
         it->progress = (float)jnum(v, "progress");
@@ -907,14 +906,12 @@ static int rail_active(void)
     return S.focus < COLS && is_stremio(item_app(S.focus)) && S.nrail > 0;
 }
 
-static void launch(const char *id, const char *content_target)
+/* hint: optional message the system shows over the app once it has opened */
+static void launch(const char *id, const char *hint)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "id", id);
-    if (content_target && content_target[0]) {
-        cJSON *p = cJSON_AddObjectToObject(o, "params");
-        cJSON_AddStringToObject(p, "contentTarget", content_target);
-    }
+    if (hint && hint[0]) cJSON_AddStringToObject(o, "toast", hint);
     char *body = cJSON_PrintUnformatted(o);
     net_post("/api/launch", body, TAG_LAUNCH);
     free(body);
@@ -1179,7 +1176,12 @@ static void activate(void)
     }
     if (S.zone == 1) {
         App *a = item_app(S.focus);
-        if (a && S.rail_index < S.nrail) launch(a->id, S.rail[S.rail_index].link);
+        if (a && S.rail_index < S.nrail) {
+            /* Stremio's LG app can't open a title directly: open it and say where the title is */
+            char hint[300];
+            snprintf(hint, sizeof hint, "\xE2\x80\x9C%s\xE2\x80\x9D is in Stremio\xE2\x80\x99s Continue Watching", S.rail[S.rail_index].name);
+            launch(a->id, hint);
+        }
         return;
     }
     if (S.moving) {

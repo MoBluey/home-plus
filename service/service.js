@@ -181,6 +181,7 @@ async function imageFile(kind, id) {
 
 const DEFAULT_HOME_APPS = ['com.webos.app.home'];
 const NATIVE_ID = 'com.atvlauncher.native';
+const WEB_HOST_ID = 'com.atvlauncher.app'; // the package that carries this service
 let lastForeground = '';
 let lastTakeover = 0;
 let takeoverLanded = true; // did the launcher reach the front after our last takeover?
@@ -482,9 +483,14 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/trakt/link' && req.method === 'POST') return sendJSON(res, 200, await trakt.startDevice());
     if (url.pathname === '/api/trakt/disconnect' && req.method === 'POST') return sendJSON(res, 200, trakt.disconnect());
     if (url.pathname === '/api/launch' && req.method === 'POST') {
-      const { id, params } = await readBody(req);
+      const { id, params, toast } = await readBody(req);
       if (!id) return sendJSON(res, 400, { returnValue: false, errorText: 'id is required' });
-      return sendJSON(res, 200, await luna(APPMGR + '/launch', params ? { id, params } : { id }));
+      const r = await luna(APPMGR + '/launch', params ? { id, params } : { id });
+      // a hint shown by the system, so it appears over the app that just opened
+      if (toast && r && r.returnValue !== false) {
+        setTimeout(() => luna('luna://com.webos.notification/createToast', { sourceId: WEB_HOST_ID, message: String(toast).slice(0, 200) }), 1500);
+      }
+      return sendJSON(res, 200, r);
     }
     if (url.pathname === '/api/layout') {
       const cfg = readConfig();

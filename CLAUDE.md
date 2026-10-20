@@ -63,9 +63,10 @@ appears in your own SSH command line** — it kills the session. Use:
   (`/tmp/lginput-hook-lginput2.log`). The hook injects once per boot, guarded by the `/tmp/inputhook`
   marker; after updating it, delete the marker and restart its service, or reboot.
 - Developer-installed web apps can't read other apps' files; icons are served by the service.
-- Trakt titles open in Stremio (by IMDb id); whether webOS Stremio honours
-  `contentTarget` deep links is unverified.
+- Stremio's LG app (io.strem.tv 1.13.3) doesn't open titles from launch params (10+ formats
+  tested, cold and warm). Its files are encrypted LG Store content; don't try to work around
+  that. Continue Watching opens Stremio and the service shows a system toast
+  (`com.webos.notification/createToast`) naming the title.
 
 ## Open items
 - Confirm the colour keys on a remote that has them.
-- Confirm Stremio deep links resume the right title.

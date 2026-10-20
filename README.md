@@ -138,8 +138,7 @@ Artwork: the full-screen background uses Stremio's large image size, and the car
 
 Continue Watching shows your library items that have a playback position, newest first. The list is cached for 60 seconds.
 
-Resuming launches Stremio with `{"contentTarget": "stremio:///detail/<type>/<id>/<videoId>"}`, LG's usual deep-link convention.
-**Not yet verified:** whether the webOS Stremio app honours that parameter. If it ignores it, Stremio still opens normally. Check that on the TV and adjust `launch()` in `native/src/main.c`.
+Stremio's LG app can't open a specific title: it ignores every launch parameter we tried (`stremio://` links, its own `#/detail/…` routes, and pointing it at its interface page). Pressing OK on a Continue Watching card opens Stremio, and a system notification names the title to pick from Stremio's own Continue Watching row.
 
 ## Troubleshooting
 

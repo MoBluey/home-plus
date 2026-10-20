@@ -1,6 +1,6 @@
 {
   "id": "com.atvlauncher.app",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "vendor": "atv-launcher",
   "type": "web",
   "main": "index.html",
