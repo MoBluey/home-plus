@@ -1,8 +1,7 @@
-/* Home+ native: calls on the webOS luna bus, as the app itself.
+/* Home+ native: calls on the webOS luna bus from inside the app sandbox.
  *
  * The launcher runs in the app sandbox, where `luna-send` can't reach other
- * services. Registering on the bus under our own app id (which webOS gave
- * role files at install) works from there. libluna-service2 and glib are
+ * services, but the app's own bus connection can. libluna-service2 and glib are
  * the TV's own; they're loaded with dlopen, so the binary still starts (and
  * falls back to luna-send) where they're missing, e.g. on the desktop. */
 #ifndef HOMEPLUS_LUNA_H

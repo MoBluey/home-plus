@@ -2700,7 +2700,8 @@ static void come_back(void)
     S.last_input = SDL_GetTicks();
     S.idle_stage = 0;
     if (S.setup == SETUP_DONE) request_data();
-    else if (S.setup != SETUP_REMOVING) setup_retry_now();
+    /* only a setup that stopped on an error starts over; one in progress carries on */
+    else if (S.setup == SETUP_NO_HBC || S.setup == SETUP_DENIED || S.setup == SETUP_FAILED) setup_retry_now();
 }
 
 /* Any input resets the OLED idle timer. Returns 1 when it only woke a dark

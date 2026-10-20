@@ -1,6 +1,6 @@
 {
   "id": "com.github.pmiraka.homeplus",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "vendor": "Paolo Miraka",
   "type": "native",
   "main": "homeplus",

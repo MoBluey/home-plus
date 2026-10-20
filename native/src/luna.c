@@ -93,9 +93,11 @@ static int luna_init(void)
         luna_diag("luna: a libluna-service2/glib function is missing");
         return 0;
     }
-    /* our app id first (it has role files); then anonymous, as a last resort */
-    const char *names[] = { APP_ID, NULL };
-    for (int i = 0; i < 2; i++) {
+    /* anonymous: the app id itself is already registered by LG's runtime for the
+     * app ("a service name that already exists"), and anonymous calls are allowed
+     * from the sandbox (seen on the C3, webOS 23) */
+    const char *names[] = { NULL };
+    for (int i = 0; i < 1; i++) {
         LSError err;
         L.ErrorInit(&err);
         if (L.Register(names[i], &L.sh, &err)) {

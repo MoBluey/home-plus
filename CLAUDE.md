@@ -6,19 +6,18 @@ SDL2 2.0.14, GLES2/EGL/Wayland). Owner's TV: `192.168.1.50`, root SSH via Homebr
 PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
 
 ## Pieces
-- `service/` — Node 16 webOS service `com.atvlauncher.app.service`, elevated with Homebrew
-  Channel's `elevate-service`. Luna methods + a local HTTP API on `127.0.0.1:47823` (see README).
+- One package, `com.github.pmiraka.homeplus` (launcher, service, boot script). The old
+  `com.atvlauncher.*` ids are gone; the service still skips them in app lists.
+- `service/` — Node 16 webOS service `com.github.pmiraka.homeplus.service`, elevated with Homebrew
+  Channel's `elevateService` (the launcher asks; see First run). Luna methods + a local HTTP API on `127.0.0.1:47823` (see README).
   Also: Home button takeover (`watch` mode, and `redirect` = no-flash bind mount over LG home's
   start page, approved by the owner), Stremio + Trakt Continue Watching, settings apps, recents.
   Logs to `/tmp/homeplus-service.log` (the native app logs there too, via `POST /api/log`).
-- `native/` — the launcher (`com.atvlauncher.native`): C, SDL2 + our own GLES2 renderer
+- `native/` — the launcher (`com.github.pmiraka.homeplus`): C, SDL2 + our own GLES2 renderer
   (`src/render.c`: Liquid Glass shader, SDF shapes, Kawase blur; GL loaded at run time),
   `src/sound.c` (synthesised focus sounds), OLED idle stages and pixel orbit in `main.c`.
   Build only against the vendored SDL **2.0.14** headers in `third_party/SDL2` — newer SDL
   functions don't exist on the TV. Design: `docs/plans/2026-10-20-liquid-glass-design.md`.
-- `app/` — the hidden "Home+ Service" package (`com.atvlauncher.app`, `visible: false`). It carries the
-  service and the boot script, so it must stay installed. Its page only hands over to the native app;
-  the old web launcher was removed (owner only wants the native one).
 
 ## Building
 - Native for the TV needs the Linux toolchain `openlgtv/buildroot-nc4`
@@ -41,22 +40,26 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
 ## Installing on the TV
 Copy the `.ipk`s to `/tmp` on the TV, then for each:
 `luna-send -w 60000 -i luna://com.webos.appInstallService/dev/install '{"id":"com.ares.defaultName","ipkUrl":"/tmp/<file>","subscribe":true}'`
-(stop it after ~20 s), then re-run `elevate-service com.atvlauncher.app.service`.
+(stop it after ~20 s). `tools/install.sh` does all of this from a Mac or Linux machine. Opening
+Home+ then re-elevates the service by itself; by hand it's
+`elevate-service com.github.pmiraka.homeplus.service`.
 Before installing, close the apps and stop the old service. **Never `pkill -f` a pattern that
 appears in your own SSH command line** — it kills the session. Use:
-`for p in $(pgrep -f atvlauncher.app.service); do [ "$p" != "$$" ] && kill "$p"; done`
+`for p in $(pgrep -f homeplus.service); do [ "$p" != "$$" ] && kill "$p"; done`
 - The TV has no `timeout` command, which `tools/install.sh` relies on.
 - `luna-send` prints nothing unless it has a terminal: use `ssh -tt`. The install subscription
   never exits by itself. Run it in the background, wait until the installed file (e.g.
-  `/media/developer/apps/usr/palm/applications/com.atvlauncher.native/homeplus`) matches the new
-  build, then kill it. The install also un-elevates the service, so always re-run `elevate-service`.
+  `/media/developer/apps/usr/palm/applications/com.github.pmiraka.homeplus/homeplus`) matches the
+  new build, then kill it. The install un-elevates the service; the launcher fixes that on its next start.
 - Screenshot: `luna-send -n 1 luna://com.webos.service.capture/executeOneShot '{"path":"/tmp/s.png","method":"DISPLAY","format":"PNG","width":1920,"height":1080}'`.
 
 ## First run and removal
 - The launcher runs in the app sandbox, where `luna-send` can't reach other services (seen on the
   C3: the wake ping and Homebrew Channel's elevateService both failed). `native/src/luna.c` calls
-  the bus itself via the TV's libluna-service2 (dlopen), registered under the app id; luna-send is
-  only the fallback. It logs every call to `/tmp/homeplus-native.log` (inside the app's jail).
+  the bus itself via the TV's libluna-service2 (dlopen) with an anonymous handle (the app id is
+  taken by LG's runtime); luna-send is only the fallback. Verified on the C3 (0.8.1): wake,
+  elevateService and the restart all go through. Every call is logged to `/tmp/homeplus-native.log`
+  (inside the app's jail; `find / -name homeplus-native.log`).
 - Homebrew Channel doesn't elevate other apps' services on install (only its own), and every
   install un-elevates ours, so the launcher's elevation step runs after each update too.
 - The launcher starts with `GET /api/status` (no token needed). No answer: it wakes the service
@@ -84,7 +87,7 @@ appears in your own SSH command line** — it kills the session. Use:
   so the service falls back to `watch` and reports `noFlashAvailable: false`.
 - No flash on the C3 comes from lginputhook (`org.webosbrew.inputhook` 1.5.1; 1.4.0 couldn't
   inject on webOS 23). `/home/root/.config/lginputhook/keybinds.json` binds Home to
-  `{"773":{"action":"launch","id":"com.atvlauncher.native"}}`, so LG's home never starts.
+  `{"773":{"action":"launch","id":"com.github.pmiraka.homeplus"}}`, so LG's home never starts.
   Binding keys are the hook log's `uinput_code`, not `keyid`
   (`/tmp/lginput-hook-lginput2.log`). The hook injects once per boot, guarded by the `/tmp/inputhook`
   marker; after updating it, delete the marker and restart its service, or reboot.
