@@ -237,6 +237,13 @@ async function lgHomeEntry() {
   return { main };
 }
 
+// LG's home app doesn't change while we run, so check once whether no-flash can work at all.
+let lgHomeChecked = null;
+async function noFlashAvailable() {
+  if (!lgHomeChecked) lgHomeChecked = await lgHomeEntry();
+  return !lgHomeChecked.error;
+}
+
 async function mountRedirect() {
   if (redirectTarget) return true;
   const entry = await lgHomeEntry();
@@ -421,7 +428,7 @@ async function apiContinue() {
   return { connected: !!cfg.stremioAuthKey || t.connected, stremio: !!cfg.stremioAuthKey, trakt: t, items };
 }
 
-// ---- inputs and settings for the native Control Center
+// ---- settings apps for the native Control Center (no inputs: the remote's Input key has LG's own menu)
 
 const SETTINGS_APPS = [
   ['com.palm.app.settings', 'All Settings'],
@@ -434,21 +441,8 @@ const SETTINGS_APPS = [
 async function apiSystem() {
   const all = ((await listApps()) || {}).apps || [];
   const ids = new Set(all.map((a) => a.id));
-  let inputs = [];
-  try {
-    const r = await luna('luna://com.webos.service.eim/getAllInputStatus', {});
-    inputs = ((r && r.devices) || []).map((d) => ({
-      id: d.appId || '', label: d.label || d.id || 'Input', connected: d.connected !== false
-    })).filter((d) => d.id);
-  } catch (e) {
-    log('eim failed', e.message);
-  }
-  if (!inputs.length) {
-    inputs = all.filter((a) => /^com\.webos\.app\.(hdmi\d+|externalinput\.)/.test(a.id))
-      .map((a) => ({ id: a.id, label: a.title || a.id, connected: true }));
-  }
   const settings = SETTINGS_APPS.filter(([id]) => ids.has(id)).map(([id, label]) => ({ id, label }));
-  return { inputs, settings };
+  return { settings };
 }
 
 // Recent apps: what's running, minus system/background pieces (only apps that
@@ -484,7 +478,7 @@ async function handleApi(req, res) {
         await unmountRedirect();
         await applyHomeMode();
       }
-      return sendJSON(res, 200, { mode: homeMode(cfg), noFlashActive: !!redirectTarget });
+      return sendJSON(res, 200, { mode: homeMode(cfg), noFlashActive: !!redirectTarget, noFlashAvailable: await noFlashAvailable() });
     }
     if (url.pathname === '/api/trakt/status') return sendJSON(res, 200, trakt.status());
     if (url.pathname === '/api/trakt/link' && req.method === 'POST') return sendJSON(res, 200, await trakt.startDevice());
@@ -600,9 +594,11 @@ let cache = { at: 0, items: null };
 const META = 'https://images.metahub.space';
 
 function parseVideoId(videoId) {
-  // series episodes look like "tt0903747:2:5"
+  // series episodes look like "tt0903747:2:5"; anime ids like "kitsu:42189:1" are show:episode, no season
   const m = /^(.+):(\d+):(\d+)$/.exec(videoId || '');
-  return m ? { season: +m[2], episode: +m[3] } : { season: 0, episode: 0 };
+  if (!m) return { season: 0, episode: 0 };
+  if (/^(kitsu|mal|anilist|anidb)$/.test(m[1])) return { season: 0, episode: +m[3] };
+  return { season: +m[2], episode: +m[3] };
 }
 
 // Stremio ids keep their colons in deep links (tt0903747:2:5).

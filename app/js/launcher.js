@@ -410,7 +410,7 @@
     var left = it.remainingMin ? it.remainingMin + ' min left' : '';
     var parts = it.type === 'series' && it.season
       ? ['Season ' + it.season, 'Episode ' + it.episode]
-      : [it.type === 'movie' ? 'Movie' : ''];
+      : [it.episode ? 'Episode ' + it.episode : it.type === 'movie' ? 'Movie' : ''];
     if (left) parts.push(left);
     return parts.filter(Boolean).join('  ·  ');
   }

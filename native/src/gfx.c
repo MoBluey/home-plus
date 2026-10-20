@@ -153,15 +153,6 @@ static int icon_inside(int kind, float x, float y)
         if (in_ring_rrect(x, y, -0.06f, 0.07f, 0.28f, 0.22f, 0.08f, T)) return 1;
         return in_ring_rrect(x, y, 0.06f, -0.07f, 0.28f, 0.22f, 0.08f, T) &&
                !in_rrect(x, y, -0.06f, 0.07f, 0.28f, 0.22f, 0.08f);
-    case ICON_INPUT: {
-        /* a screen with an arrow entering it from the left */
-        float d = sd_round_box(x - 0.08f, y, 0.32f, 0.26f, 0.08f);
-        int frame = d <= 0 && d > -T && !(x < -0.18f && fabsf(y) < 0.12f); /* gap where the arrow enters */
-        int shaft = x > -0.44f && x < 0.04f && fabsf(y) < T / 2;
-        float ax = x - 0.12f; /* arrow head: a chevron pointing right */
-        int head = ax < 0 && ax > -0.2f && fabsf(fabsf(y) - (-ax)) < T * 0.75f;
-        return frame || shaft || head;
-    }
     case ICON_SETTINGS: {
         /* gear: 8 teeth around a ring with a hole */
         float rr = sqrtf(x * x + y * y), a = atan2f(y, x);

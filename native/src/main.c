@@ -48,8 +48,8 @@ enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_ICON, TAG_ART, TAG_RAIL_THUMB,
 
 /* zones: what the remote is moving through */
 enum { ZONE_GRID, ZONE_RAIL, ZONE_TOP };
-/* top bar buttons, left of the clock */
-enum { TOP_RECENTS, TOP_INPUTS, TOP_SETTINGS, TOP_COUNT };
+/* top bar buttons, left of the clock (no Inputs: the remote's Input key has LG's own menu) */
+enum { TOP_RECENTS, TOP_SETTINGS, TOP_COUNT };
 #define TOP_SIZE 56
 #define MAX_RUNNING 32
 #define MAX_SYS 16
@@ -76,7 +76,7 @@ typedef struct {
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_STREMIO_HELP, ACT_CANCEL,
                ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK,
-               ACT_RECENT_APP, ACT_CLOSE_ID, ACT_CLOSE_ALL, ACT_HOME_MODE } Action;
+               ACT_RECENT_APP, ACT_RECENTS, ACT_CLOSE_ID, ACT_CLOSE_ALL, ACT_HOME_MODE } Action;
 
 typedef struct {
     Action act;
@@ -117,12 +117,12 @@ static struct {
     int top_w[TOP_COUNT], top_h[TOP_COUNT];
 
     /* Control Center data from /api/system */
-    struct { char id[ID_LEN], label[96]; int connected; } inputs[MAX_SYS], settings[MAX_SYS];
-    int ninputs, nsettings;
+    struct { char id[ID_LEN], label[96]; } settings[MAX_SYS];
+    int nsettings;
 
     int rail_stremio, trakt_configured, trakt_connected;
     char home_mode[16]; /* "redirect" (no-flash), "watch" or "off" */
-    int noflash_active;
+    int noflash_active, noflash_available; /* available: LG's home is a web app we can replace */
     Uint32 trakt_poll; /* while showing a Trakt code: next status check */
     int moving;
     float scroll, scroll_target; /* grid y offset */
@@ -134,6 +134,7 @@ static struct {
 
     struct {
         int open, index, n, tw, th;
+        Action back; /* what Back does besides closing: ACT_RECENTS goes up to the Recents list */
         SDL_Texture *title;
         SheetItem it[MAX_SHEET];
     } sheet;
@@ -377,10 +378,12 @@ static void parse_apps(const char *json)
 
 static void make_rail_texts(RailItem *it)
 {
-    /* "Season 2 · Episode 5 · 31 min left" / "Movie · 48 min left" */
+    /* "Season 2 · Episode 5 · 31 min left" / "Episode 5 · ..." (anime) / "Movie · 48 min left" */
     char meta[200] = "";
     if (!strcmp(it->type, "series") && it->season)
         snprintf(meta, sizeof meta, "Season %d  \xC2\xB7  Episode %d", it->season, it->episode);
+    else if (it->episode)
+        snprintf(meta, sizeof meta, "Episode %d", it->episode);
     else if (!strcmp(it->type, "movie"))
         snprintf(meta, sizeof meta, "Movie");
     if (it->remaining) {
@@ -459,14 +462,7 @@ static void parse_system(const char *json)
 {
     cJSON *o = cJSON_Parse(json), *v;
     if (!o) return;
-    S.ninputs = S.nsettings = 0;
-    cJSON_ArrayForEach(v, cJSON_GetObjectItem(o, "inputs")) {
-        if (S.ninputs >= MAX_SYS) break;
-        copy_id(S.inputs[S.ninputs].id, jstr(v, "id"));
-        snprintf(S.inputs[S.ninputs].label, sizeof S.inputs[0].label, "%s", jstr(v, "label"));
-        S.inputs[S.ninputs].connected = cJSON_IsTrue(cJSON_GetObjectItem(v, "connected"));
-        S.ninputs++;
-    }
+    S.nsettings = 0;
     cJSON_ArrayForEach(v, cJSON_GetObjectItem(o, "settings")) {
         if (S.nsettings >= MAX_SYS) break;
         copy_id(S.settings[S.nsettings].id, jstr(v, "id"));
@@ -535,6 +531,7 @@ static void handle_result(Result *r)
             if (o) {
                 snprintf(S.home_mode, sizeof S.home_mode, "%s", jstr(o, "mode"));
                 S.noflash_active = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashActive"));
+                S.noflash_available = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashAvailable"));
                 if (!strcmp(S.home_mode, "redirect") && !S.noflash_active && r->tag == TAG_HOME_SET)
                     toast("No-flash mode isn\xE2\x80\x99t available on this TV; using standard mode.", 5000);
                 cJSON_Delete(o);
@@ -648,6 +645,7 @@ static void sheet_close(void)
     for (int i = 0; i < S.sheet.n; i++) tex_free(&S.sheet.it[i].tex);
     S.sheet.open = 0;
     S.sheet.n = 0;
+    S.sheet.back = ACT_NONE;
 }
 
 static void sheet_open(const char *title)
@@ -706,7 +704,8 @@ static void open_recent_app_sheet(const char *id)
     copy_id(S.sheet.it[S.sheet.n - 1].id, id);
     sheet_add("Close", ACT_CLOSE_ID, 0, 1);
     copy_id(S.sheet.it[S.sheet.n - 1].id, id);
-    sheet_add("Back", ACT_CANCEL, 0, 0);
+    sheet_add("Back", ACT_RECENTS, 0, 0);
+    S.sheet.back = ACT_RECENTS;
 }
 
 static void close_apps(const char *id)
@@ -720,30 +719,27 @@ static void close_apps(const char *id)
     cJSON_Delete(o);
 }
 
-/* Control Center: inputs */
-static void open_inputs_sheet(void)
-{
-    sheet_open("Inputs");
-    for (int i = 0; i < S.ninputs; i++) {
-        char label[140];
-        snprintf(label, sizeof label, "%s%s", S.inputs[i].label, S.inputs[i].connected ? "" : "   (not connected)");
-        sheet_add_id(label, S.inputs[i].id);
-    }
-    if (!S.ninputs) sheet_add("No inputs found", ACT_CANCEL, 0, 0);
-    sheet_add("Cancel", ACT_CANCEL, 0, 0);
-}
-
 /* Control Center: TV settings + accounts */
 static void open_settings_sheet(void)
 {
     sheet_open("Settings");
     for (int i = 0; i < S.nsettings; i++) sheet_add_id(S.settings[i].label, S.settings[i].id);
-    sheet_add(!strcmp(S.home_mode, "watch") ? "Home Button: Standard  (switch to No-flash)"
-                                             : "Home Button: No-flash  (switch to Standard)", ACT_HOME_MODE, 0, 0);
+    /* no-flash needs LG's home to be a web app; on TVs where it's native (the C3)
+     * Home+ always uses standard mode, so there's nothing to switch */
+    if (S.noflash_available)
+        sheet_add(!strcmp(S.home_mode, "watch") ? "Home Button: Standard  (switch to No-flash)"
+                                                 : "Home Button: No-flash  (switch to Standard)", ACT_HOME_MODE, 0, 0);
     if (S.trakt_connected) sheet_add("Disconnect Trakt", ACT_TRAKT_UNLINK, 0, 1);
     else sheet_add("Connect Trakt", ACT_TRAKT_LINK, 0, 0);
     if (!S.rail_stremio) sheet_add("Connect Stremio", ACT_STREMIO_HELP, 0, 0);
     sheet_add("Cancel", ACT_CANCEL, 0, 0);
+}
+
+/* Control Center: what a top-bar button (or its colour key) opens */
+static void open_top(int which)
+{
+    if (which == TOP_RECENTS) net_get_json("/api/running", TAG_RUNNING, 0, 0); /* opens when the list arrives */
+    else open_settings_sheet();
 }
 
 static void open_app_sheet(void)
@@ -834,6 +830,7 @@ static void run_action(Action act, int arg)
     case ACT_STREMIO_HELP:
         toast("Connect Stremio from your Mac: luna://com.atvlauncher.app.service/stremioLogin (see README)", 8000);
         break;
+    case ACT_RECENTS: open_top(TOP_RECENTS); break;
     default: break;
     }
 }
@@ -841,9 +838,7 @@ static void run_action(Action act, int arg)
 static void activate(void)
 {
     if (S.zone == ZONE_TOP) {
-        if (S.top_index == TOP_RECENTS) net_get_json("/api/running", TAG_RUNNING, 0, 0);
-        else if (S.top_index == TOP_INPUTS) open_inputs_sheet();
-        else open_settings_sheet();
+        open_top(S.top_index);
         return;
     }
     if (S.zone == 1) {
@@ -891,7 +886,7 @@ static void move_focus(int dx, int dy)
     }
     if (dy < 0) {
         if (i < COLS) {
-            /* up from the top row: into the Stremio shelf, else the top bar (Inputs / Settings) */
+            /* up from the top row: into the Stremio shelf, else the top bar (Recents / Settings) */
             if (!S.moving) {
                 if (rail_active()) S.zone = ZONE_RAIL;
                 else { S.zone = ZONE_TOP; S.top_index = TOP_COUNT - 1; }
@@ -917,9 +912,23 @@ static void go_home(void)
 
 /* ------------------------------------------------------------------ input */
 
+/* LG's own key numbers: SDL_WEBOS_SCANCODE_* in LG's SDL_webOS.h, which the vendored
+ * 2.0.14 headers don't have. Like the arrows they arrive in keysym.sym (Back is sym=482).
+ * Settings and Input never showed up in the key log on the C3: webOS opens its own menus. */
+enum {
+    WEBOS_KEY_BACK = 482,
+    WEBOS_KEY_CURSOR_SHOW = 484, /* the Magic Remote pointer woke up / went to sleep: not presses */
+    WEBOS_KEY_CURSOR_HIDE = 485,
+    WEBOS_KEY_RED = 486,
+    WEBOS_KEY_GREEN = 487,
+    WEBOS_KEY_YELLOW = 488,
+    WEBOS_KEY_BLUE = 489
+};
+
 /* LG's SDL 2.0.14 reports remote keys with the *scancode* number in keysym.sym
  * (Right arrow arrives as sym=79 = SDL_SCANCODE_RIGHT). Map those back to keycodes;
- * real keycodes (from a USB keyboard or the desktop build) pass through. */
+ * real keycodes (from a USB keyboard or the desktop build) pass through, and so do
+ * the colour keys, which have no SDL keycode. */
 static SDL_Keycode remote_key(const SDL_Keysym *ks)
 {
     switch (ks->sym) {
@@ -932,6 +941,7 @@ static SDL_Keycode remote_key(const SDL_Keysym *ks)
     case SDL_SCANCODE_ESCAPE: return SDLK_ESCAPE;
     case SDL_SCANCODE_BACKSPACE: return SDLK_BACKSPACE;
     case SDL_SCANCODE_AC_BACK: return SDLK_AC_BACK;
+    case WEBOS_KEY_BACK: return SDLK_AC_BACK;
     default: return ks->sym;
     }
 }
@@ -941,11 +951,24 @@ static int is_back(SDL_Keycode k)
     return k == SDLK_ESCAPE || k == SDLK_AC_BACK || k == SDLK_BACKSPACE;
 }
 
+/* keys Home+ acts on; anything else gets logged so it can be mapped */
+static int is_mapped(SDL_Keycode k)
+{
+    switch (k) {
+    case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_LEFT: case SDLK_RIGHT: case SDLK_UP: case SDLK_DOWN:
+    case WEBOS_KEY_RED: case WEBOS_KEY_GREEN: case WEBOS_KEY_YELLOW: case WEBOS_KEY_BLUE:
+        return 1;
+    default:
+        return is_back(k);
+    }
+}
+
 static void on_key_down(SDL_KeyboardEvent *e)
 {
     SDL_Keycode k = remote_key(&e->keysym);
-    if (S.logged_keys < 40 && k == e->keysym.sym && k != SDLK_RETURN && k != SDLK_LEFT && k != SDLK_RIGHT && k != SDLK_UP && k != SDLK_DOWN) {
-        S.logged_keys++; /* only keys we don't recognise yet: Back, colour keys, Settings... */
+    if (k == WEBOS_KEY_CURSOR_SHOW || k == WEBOS_KEY_CURSOR_HIDE) return;
+    if (S.logged_keys < 40 && !is_mapped(k)) {
+        S.logged_keys++;
         log_remote("unknown key sym=%d scancode=%d mod=%d", (int)k, (int)e->keysym.scancode, (int)e->keysym.mod);
     }
     if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
@@ -958,7 +981,11 @@ static void on_key_down(SDL_KeyboardEvent *e)
     if (S.sheet.open) {
         if (k == SDLK_UP && S.sheet.index > 0) S.sheet.index--;
         else if (k == SDLK_DOWN && S.sheet.index < S.sheet.n - 1) S.sheet.index++;
-        else if (is_back(k)) sheet_close();
+        else if (is_back(k)) {
+            Action back = S.sheet.back;
+            sheet_close();
+            run_action(back, 0); /* one level up (an app's Recents sheet -> the list), else just closed */
+        }
         return;
     }
     switch (k) {
@@ -966,6 +993,14 @@ static void on_key_down(SDL_KeyboardEvent *e)
     case SDLK_RIGHT: move_focus(1, 0); break;
     case SDLK_UP: move_focus(0, -1); break;
     case SDLK_DOWN: move_focus(0, 1); break;
+    /* colour keys: Recents, Settings, the focused app's options, move it (again: done) */
+    case WEBOS_KEY_RED: if (!S.moving) open_top(TOP_RECENTS); break;
+    case WEBOS_KEY_GREEN: if (!S.moving) open_top(TOP_SETTINGS); break;
+    case WEBOS_KEY_YELLOW: if (!S.moving) open_app_sheet(); break;
+    case WEBOS_KEY_BLUE:
+        if (S.moving) { S.moving = 0; save_layout(); }
+        else if (S.zone == ZONE_GRID && item_app(S.focus)) S.moving = 1;
+        break;
     default:
         if (is_back(k)) {
             if (S.zone != ZONE_GRID) S.zone = ZONE_GRID;
@@ -1126,7 +1161,7 @@ static void glass_or_flat(SDL_Texture *blur, float x, float y, float w, float h,
     gfx_draw_nine(S.ren, rim, radius > 40 ? 56 : 32, radius, x, y, w, h, 255, 255, 255, (Uint8)(rim_a * alpha / 255));
 }
 
-/* Recents / Inputs / Settings: round glass buttons left of the clock */
+/* Recents / Settings: round glass buttons left of the clock */
 static void draw_top_bar(float right, Uint8 alpha, int *anim, float dt)
 {
     float x = right;
@@ -1346,7 +1381,7 @@ static int load_assets(void)
     S.heading_tex = text_render(S.ren, S.f_semi, 22, "Continue Watching \xC2\xB7 Stremio", 0, &S.hw, &S.hh);
     S.sub_tex = text_render(S.ren, S.f_medium, 28, "Press OK to open \xC2\xB7 Hold for options", 0, &S.sw, &S.sh);
     S.sub_connect_tex = text_render(S.ren, S.f_medium, 28, "Connect your Stremio account to see Continue Watching", 0, &S.scw, &S.sch);
-    static const int kinds[TOP_COUNT] = { ICON_RECENTS, ICON_INPUT, ICON_SETTINGS };
+    static const int kinds[TOP_COUNT] = { ICON_RECENTS, ICON_SETTINGS };
     for (int i = 0; i < TOP_COUNT; i++) {
         S.top_tex[i] = gfx_icon(S.ren, kinds[i], 64); /* drawn at 34 px; 64 keeps it sharp when focused */
         S.top_w[i] = S.top_h[i] = 34;

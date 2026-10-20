@@ -24,7 +24,7 @@ SDL_Texture *gfx_gradient(SDL_Renderer *r, int vertical, float a0, float a1);
 SDL_Texture *gfx_texture_rgba(SDL_Renderer *r, const unsigned char *rgba, int w, int h);
 
 /* White line icons for the top bar, drawn once at start-up. */
-enum { ICON_RECENTS, ICON_INPUT, ICON_SETTINGS };
+enum { ICON_RECENTS, ICON_SETTINGS };
 SDL_Texture *gfx_icon(SDL_Renderer *r, int kind, int size);
 
 /* ---- text ---- */

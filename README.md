@@ -6,7 +6,7 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look. Built 
 - **Glass tiles:** focused tiles float, tilt and catch the light. On the Magic Remote pointer they tilt toward the cursor.
 - **Stremio Continue Watching:** focus Stremio in the top row and the Top Shelf turns into your Continue Watching rail. Press **Up** to browse it and **OK** to resume.
 - **Rearrange and hide:** hold **OK** (or press Play/Pause) on an app to Move, Move to Front or Hide it. Hidden apps collect in a "Hidden" tile at the end.
-- **Remote keys:** **Back** never leaves the home screen. It steps out of the shelf or move mode, then jumps to the top.
+- **Remote keys:** **Back** never leaves the home screen. It closes a menu (from an app in Recents, back to the list), steps out of Continue Watching, the top buttons or move mode, then jumps to the first app. The colour keys are shortcuts: **Red** Recents, **Green** Settings, **Yellow** the focused app's options, **Blue** move the focused app (press again when done). The remote's **Settings** and **Input** keys open LG's own menus; apps never receive them.
 
 ## Native front end (recommended)
 
@@ -25,7 +25,7 @@ It gets its data from the service's local API on `127.0.0.1:47823`, so it needs 
 | `GET` / `POST /api/layout` | Read or save the tile order and hidden apps |
 | `GET /img/<key>` | Stremio artwork, fetched through the service |
 | `GET /api/continue` | Continue Watching from Stremio and Trakt |
-| `GET /api/system` | Inputs and settings apps |
+| `GET /api/system` | Settings apps |
 | `GET /api/running`, `POST /api/close` | Recent apps, and closing them |
 | `GET` / `POST /api/home` | Home button mode |
 
@@ -40,10 +40,9 @@ node tools/build.mjs native
 
 ## Control Center
 
-From the top row, press **Up** to reach the three round buttons next to the clock: **Recents**, **Inputs** and **Settings**. On the Stremio tile, Up goes into Continue Watching instead; press Up again from there.
+From the top row, press **Up** to reach the two round buttons next to the clock: **Recents** and **Settings**. On the Stremio tile, Up goes into Continue Watching instead; press Up again from there. There's no Inputs button: the remote's Input key already opens LG's input menu.
 - **Recents:** lists the apps that are running. Pick one to open or close it, or choose **Close All**.
-- **Inputs:** lists your TV's inputs (from `com.webos.service.eim`) and switches to the one you pick.
-- **Settings:** opens LG's settings apps and has the sign-in options for Trakt and Stremio.
+- **Settings:** opens LG's settings apps and has the sign-in options for Trakt and Stremio, plus the Home button mode on TVs where no-flash mode can work.
 
 ## Trakt
 
@@ -60,6 +59,8 @@ One-time setup:
 The service takes over the Home button in one of two modes:
 - **No-flash (default):** while the service runs, LG's home app (`com.webos.app.home`) has its start page replaced by a black page that opens Home+ immediately, so LG's home screen never appears. The replacement is a bind mount, in memory only; nothing on disk changes, and rebooting without the service brings LG's home back. If LG's home isn't a web app, or the mount fails, Home+ falls back to standard mode.
 - **Standard:** the service watches the foreground app. When LG's home comes up, it opens Home+, the native version if it's installed, otherwise the web version. LG's home flashes for a moment first.
+
+On the LG C3 (webOS 23), LG's home is a native app (`/usr/bin/com.webos.app.home`), so no-flash mode can't work there and Settings doesn't offer the switch. Instead, [lginputhook](https://github.com/Simon34545/lginputhook) 1.5.1 or later (from Homebrew Channel) catches the Home button itself and opens Home+ directly, so LG's home never appears. In the LG Input Hook app, add a keybind for button **773**, choose **Launch App** and pick **Home+ Native**, or put `{"773":{"action":"launch","id":"com.atvlauncher.native"}}` in `/home/root/.config/lginputhook/keybinds.json`. Standard mode still catches LG's home when it appears some other way, such as at boot.
 
 Switch modes in **Settings → Home Button**, or with:
 
