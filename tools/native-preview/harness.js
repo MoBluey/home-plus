@@ -16,6 +16,12 @@ fs.mkdirSync('/var/lib/homeplus', { recursive: true });
 // HOMEPLUS_PREVIEW_FRESH: a first install (Home button question not answered yet)
 fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify(
   process.env.HOMEPLUS_PREVIEW_FRESH ? { stremioAuthKey: 'preview' } : { stremioAuthKey: 'preview', homeAsked: true, homeMode: 'watch' }));
+// HOMEPLUS_PREVIEW_PREFS: launcher preferences to start with, as JSON
+if (process.env.HOMEPLUS_PREVIEW_PREFS) {
+  const cfg = JSON.parse(fs.readFileSync('/var/lib/homeplus/config.json', 'utf8'));
+  cfg.prefs = JSON.parse(process.env.HOMEPLUS_PREVIEW_PREFS);
+  fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify(cfg));
+}
 // HOMEPLUS_PREVIEW_UNROOTED: the service as Homebrew Channel installs it, before elevation
 if (process.env.HOMEPLUS_PREVIEW_UNROOTED) process.getuid = () => 1000;
 const SHOWS = ['Severed Signals', 'The Long Orbit', 'Northbound', 'Glass City', 'Midnight Kitchen'];

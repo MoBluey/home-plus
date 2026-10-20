@@ -83,6 +83,11 @@ appears in your own SSH command line** — it kills the session. Use:
   (sent when the pointer wakes or sleeps, not real presses), Red/Green/Yellow/Blue 486–489 (from
   LG's `SDL_webOS.h`; not seen yet). Settings and Input never reach apps. Keys Home+ doesn't act on
   are logged as `unknown key sym=...`.
+- With the Magic Remote cursor showing, OK arrives as a mouse click at the cursor. `main.c` keeps
+  an input mode: arrow/colour/Back keys (and pointer hide, 485) hand control to the keys, and a
+  click then presses the keys' focus; the pointer takes over again after 40 px of real travel
+  (`PTR_TAKE_PX`), so tremor doesn't. Not yet confirmed whether LG also sends a Return key with that click
+  (if it does, `ok_down` dedupes them).
 - No-flash mode can't work on the C3: LG's home is a native app (`/usr/bin/com.webos.app.home`),
   so the service falls back to `watch` and reports `noFlashAvailable: false`.
 - No flash on the C3 comes from lginputhook (`org.webosbrew.inputhook` 1.5.1; 1.4.0 couldn't

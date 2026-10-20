@@ -23,7 +23,24 @@ int homeplus_screenshot(const char *path)
 }
 
 /* HOMEPLUS_KEYS: a script of remote presses, one every 150 ms from 1.5 s in.
- * L R U D = arrows, O = OK, H = hold OK (opens the sheet), B = back. */
+ * L R U D = arrows, O = OK, H = hold OK (opens the sheet), B = back, . = wait.
+ * Pointer: M moves it to the next point of HOMEPLUS_POINTS ("x,y x,y ...",
+ * logical px), C clicks where it is. */
+static void pointer_event(Uint32 type, int x, int y)
+{
+    SDL_Event e = { 0 };
+    e.type = type;
+    if (type == SDL_MOUSEMOTION) {
+        e.motion.x = x;
+        e.motion.y = y;
+    } else {
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.x = x;
+        e.button.y = y;
+    }
+    SDL_PushEvent(&e);
+}
+
 void homeplus_preview_input(Uint32 elapsed)
 {
     static size_t done;
@@ -39,6 +56,25 @@ void homeplus_preview_input(Uint32 elapsed)
     }
     if (hold_until || done >= strlen(keys) || elapsed < 1500 + done * 150) return;
     char c = keys[done++];
+    static int px = -1, py = -1;
+    static const char *pts;
+    if (c == '.') return;
+    if (c == 'M') {
+        if (!pts) pts = getenv("HOMEPLUS_POINTS");
+        if (pts && sscanf(pts, "%d,%d", &px, &py) == 2) {
+            /* a real move, from a little way off: a pointer that only twitches leaves the keys in charge */
+            pointer_event(SDL_MOUSEMOTION, px > 960 ? px - 120 : px + 120, py);
+            pointer_event(SDL_MOUSEMOTION, px, py);
+            pts = strchr(pts, ' ');
+            if (pts) pts++;
+        }
+        return;
+    }
+    if (c == 'C') {
+        pointer_event(SDL_MOUSEBUTTONDOWN, px, py);
+        pointer_event(SDL_MOUSEBUTTONUP, px, py);
+        return;
+    }
     SDL_Keycode k = c == 'L' ? SDLK_LEFT : c == 'R' ? SDLK_RIGHT : c == 'U' ? SDLK_UP : c == 'D' ? SDLK_DOWN
                   : c == 'B' ? SDLK_ESCAPE : SDLK_RETURN;
     SDL_Event e = { 0 };

@@ -21,8 +21,8 @@ if command -v xvfb-run >/dev/null; then
 else
   RUN=""; DRIVER="SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software"
 fi
-shot() { # name keys ms
-  eval "$RUN env $DRIVER HOMEPLUS_SCREENSHOT='$ROOT/preview/native-$1.png' HOMEPLUS_KEYS='$2' HOMEPLUS_SCREENSHOT_MS='$3' '$ROOT/native/build/host/homeplus'" 2>/dev/null
+shot() { # name keys ms [pointer points]
+  eval "$RUN env $DRIVER HOMEPLUS_SCREENSHOT='$ROOT/preview/native-$1.png' HOMEPLUS_KEYS='$2' HOMEPLUS_SCREENSHOT_MS='$3' HOMEPLUS_POINTS='${4:-}' '$ROOT/native/build/host/homeplus'" 2>/dev/null
   echo "saved preview/native-$1.png"
 }
 shot home "" 2500
@@ -34,6 +34,15 @@ shot topbar "U" 3000
 shot settings "UO" 3500
 shot recents "ULLO" 3800
 shot settings-remove "UODDDO" 4500
+shot last-row "DD" 3500
+shot move-hint "H.O" 3800
+shot pointer-settings "MCM" 4200 "1636,88 960,600"
+shot crossfade "R" 1590
+shot pointer-then-keys "MUC" 4200 "1660,850"
+shot back-recents "B" 3500
+service HOMEPLUS_PREVIEW_PREFS='{"reduceTransparency":true}'
+shot reduce-transparency "UO" 3500
+service HOMEPLUS_PREVIEW=1
 # first run: a fresh install asks about the Home button; an unelevated service
 # with no Homebrew Channel (no luna-send here) shows that screen
 service HOMEPLUS_PREVIEW_FRESH=1

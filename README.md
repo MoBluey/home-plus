@@ -54,15 +54,17 @@ Updates install the same way. An update resets the service's root access, and Ho
 | Key | What it does |
 |---|---|
 | Arrows, **OK** | Move and open. Hold **OK** for an app's options. |
-| **Back** | Closes a menu, steps out of Continue Watching or the top buttons, then jumps to the first app. It never leaves Home+. |
+| **Back** | Closes a menu, steps out of Continue Watching or the top buttons, then jumps to the first app. On the first app it opens Recents. It never leaves Home+. |
 | **Red** | Recents |
 | **Green** | Settings |
 | **Yellow** | The focused app's options |
 | **Blue** | Move the focused app (press again when it's in place) |
 
+**Magic Remote pointer:** point at anything and click. Pressing an arrow hands control back to the keys: then OK presses what the keys focused, wherever the cursor happens to be. Moving the pointer clearly takes over again.
+
 From the top row, press **Up** to reach the round **Recents** and **Settings** buttons next to the clock. On the Stremio tile, Up goes into Continue Watching first. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
 
-**Settings** opens LG's settings apps and has switches for the Home button and sounds. It also has the Trakt sign-in and **Remove Home+**.
+**Settings** opens LG's settings apps and has switches for the Home button and sounds, plus **Accessibility** (Reduce Motion, Reduce Transparency). It also has the Trakt sign-in and **Remove Home+**.
 
 ## Continue Watching
 
@@ -182,7 +184,7 @@ The launcher talks to the service over a local HTTP API on `127.0.0.1:47823`. It
 | `GET /api/system` | LG's settings apps |
 | `GET /api/running`, `POST /api/close` | Recents, and closing apps |
 | `GET` / `POST /api/home` | Home button mode |
-| `GET` / `POST /api/prefs` | `sounds`, `dimMinutes`, `offMinutes` |
+| `GET` / `POST /api/prefs` | `sounds`, `dimMinutes`, `offMinutes`, `reduceMotion`, `reduceTransparency` |
 | `POST /api/uninstall` | Remove Home+ |
 | `GET /icon/<id>`, `/art/<id>`, `/img/<key>` | App icons, app artwork, Stremio artwork |
 
