@@ -13,7 +13,8 @@ WEBOS_SDK ?= $(HOME)/toolchain/arm-webos-linux-gnueabi_sdk-buildroot
 WEBOS_CC := $(WEBOS_SDK)/bin/arm-webos-linux-gnueabi-gcc
 WEBOS_SYSROOT = $(shell $(WEBOS_CC) -print-sysroot)
 
-HOST_SDL ?= $(firstword $(wildcard /usr/lib/x86_64-linux-gnu/libSDL2-2.0.so.0 /usr/lib/libSDL2-2.0.so.0))
+HOST_SDL ?= $(firstword $(wildcard /usr/lib/x86_64-linux-gnu/libSDL2-2.0.so.0 /usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0 \
+                                   /usr/lib/libSDL2-2.0.so.0))
 
 all: build/host/homeplus
 

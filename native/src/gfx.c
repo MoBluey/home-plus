@@ -1,10 +1,14 @@
 /* Home+ native: start-up textures and text. See gfx.h. */
 #include "gfx.h"
 
+#include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -46,7 +50,9 @@ Tex *gfx_gradient(int vertical, float a0, float a1)
     unsigned char px[N * 4];
     for (int i = 0; i < N; i++) {
         px[i * 4 + 0] = px[i * 4 + 1] = px[i * 4 + 2] = 0;
-        px[i * 4 + 3] = (unsigned char)((a0 + (a1 - a0) * i / (float)(N - 1)) * 255.0f);
+        float t = i / (float)(N - 1);
+        t = t * t * (3 - 2 * t); /* smoothstep: no visible edge where it ends */
+        px[i * 4 + 3] = (unsigned char)((a0 + (a1 - a0) * t) * 255.0f);
     }
     return vertical ? r_tex(px, 1, N) : r_tex(px, N, 1);
 }
@@ -108,34 +114,69 @@ Tex *gfx_icon(int kind, int size)
 /* ------------------------------------------------------------------ text */
 
 struct Font {
-    unsigned char *data;
+    unsigned char *data; /* the font file, mapped read-only: pages load as glyphs need them */
+    size_t size;
     stbtt_fontinfo info;
 };
 
 Font *font_load(const char *path)
 {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return NULL;
-    fseek(fp, 0, SEEK_END);
-    long n = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    struct stat st;
+    void *map = fstat(fd, &st) == 0 && st.st_size > 0 ? mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0) : MAP_FAILED;
+    close(fd);
+    if (map == MAP_FAILED) return NULL;
     Font *f = calloc(1, sizeof *f);
-    f->data = malloc(n);
-    if (fread(f->data, 1, n, fp) != (size_t)n || !stbtt_InitFont(&f->info, f->data, stbtt_GetFontOffsetForIndex(f->data, 0))) {
-        fclose(fp);
-        free(f->data);
+    int off = f ? stbtt_GetFontOffsetForIndex(map, 0) : -1;
+    if (!f || off < 0 || !stbtt_InitFont(&f->info, map, off)) {
+        munmap(map, (size_t)st.st_size);
         free(f);
         return NULL;
     }
-    fclose(fp);
+    f->data = map;
+    f->size = (size_t)st.st_size;
     return f;
 }
 
 void font_free(Font *f)
 {
     if (!f) return;
-    free(f->data);
+    munmap(f->data, f->size);
     free(f);
+}
+
+/* System fonts for what Inter lacks, mapped when a title first needs one. On the
+ * TV they're LG's own; on a Linux desktop, common ones. */
+static const char *const FALLBACK_PATHS[] = {
+    "/usr/share/fonts/LG_Smart_UI_AR_HE_TH-SemiBold.ttf", /* Arabic, Hebrew, Thai */
+    "/usr/share/fonts/DroidSansFallback.ttf",             /* Chinese, Japanese, Korean */
+    "/usr/share/fonts/LG_Smart_UI_Devanagari.ttf",
+    "/usr/share/fonts/NotoEmoji-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+};
+enum { NFALLBACK = sizeof FALLBACK_PATHS / sizeof *FALLBACK_PATHS };
+static Font *fallback[NFALLBACK];
+
+/* The font that draws codepoint c, and its glyph: f, else the first fallback that has it. */
+static Font *font_for(Font *f, int c, int *glyph)
+{
+    static int loaded;
+    *glyph = stbtt_FindGlyphIndex(&f->info, c);
+    if (*glyph) return f;
+    if (!loaded) {
+        loaded = 1;
+        for (int i = 0; i < NFALLBACK; i++) fallback[i] = font_load(FALLBACK_PATHS[i]);
+    }
+    for (int i = 0; i < NFALLBACK; i++) {
+        int g = fallback[i] ? stbtt_FindGlyphIndex(&fallback[i]->info, c) : 0;
+        if (g) {
+            *glyph = g;
+            return fallback[i];
+        }
+    }
+    return f; /* its missing-glyph box */
 }
 
 /* Decodes one UTF-8 codepoint; advances *s. Invalid bytes map to '?'. */
@@ -156,58 +197,230 @@ static int utf8_next(const char **s)
     return c;
 }
 
+/* control and zero-width formatting characters: joiners, bidi marks, variation selectors */
+static int ignorable(int c)
+{
+    return c < 0x20 || (c >= 0x200B && c <= 0x200F) || (c >= 0x202A && c <= 0x202E) || (c >= 0x2060 && c <= 0x206F) ||
+           (c >= 0xFE00 && c <= 0xFE0F) || c == 0xFEFF;
+}
+
+/* ---- Arabic: each letter takes the form that joins its neighbours (U+FE70..FEFF) */
+
+/* first presentation form (isolated) of U+0621..064A; 0 = none */
+static const unsigned short AR_BASE[] = {
+    0xFE80, 0xFE81, 0xFE83, 0xFE85, 0xFE87, 0xFE89, 0xFE8D, 0xFE8F, 0xFE93, 0xFE95, 0xFE99, 0xFE9D, 0xFEA1, 0xFEA5,
+    0xFEA9, 0xFEAB, 0xFEAD, 0xFEAF, 0xFEB1, 0xFEB5, 0xFEB9, 0xFEBD, 0xFEC1, 0xFEC5, 0xFEC9, 0xFECD,
+    0, 0, 0, 0, 0, 0, /* 063B..0640 */
+    0xFED1, 0xFED5, 0xFED9, 0xFEDD, 0xFEE1, 0xFEE5, 0xFEE9, 0xFEED, 0xFEEF, 0xFEF1,
+};
+
+/* joining type: 'D' joins both sides, 'R' only the letter before it, 'U' neither,
+ * 'T' marks (skipped when looking for neighbours), 0 not Arabic */
+static int ar_type(int c)
+{
+    if ((c >= 0x064B && c <= 0x065F) || c == 0x0670) return 'T';
+    if (c == 0x0640) return 'D'; /* tatweel */
+    if (c < 0x0621 || c > 0x064A) return 0;
+    switch (c) {
+    case 0x0621: return 'U';
+    case 0x0622: case 0x0623: case 0x0624: case 0x0625: case 0x0627: case 0x0629:
+    case 0x062F: case 0x0630: case 0x0631: case 0x0632: case 0x0648: case 0x0649: return 'R';
+    }
+    return AR_BASE[c - 0x0621] ? 'D' : 0;
+}
+
+static int shape_arabic(const int *in, int n, int *out)
+{
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        int c = in[i], t = ar_type(c);
+        if (t != 'D' && t != 'R' && t != 'U') {
+            out[m++] = c;
+            continue;
+        }
+        int p = i - 1, q = i + 1;
+        while (p >= 0 && ar_type(in[p]) == 'T') p--;
+        while (q < n && ar_type(in[q]) == 'T') q++;
+        int tq = q < n ? ar_type(in[q]) : 0;
+        int join_prev = t != 'U' && p >= 0 && ar_type(in[p]) == 'D';
+        int join_next = t == 'D' && (tq == 'D' || tq == 'R');
+        if (c == 0x0644 && (tq == 'R') && (in[q] == 0x0622 || in[q] == 0x0623 || in[q] == 0x0625 || in[q] == 0x0627)) {
+            /* lam + alef are one ligature */
+            out[m++] = (in[q] == 0x0622 ? 0xFEF5 : in[q] == 0x0623 ? 0xFEF7 : in[q] == 0x0625 ? 0xFEF9 : 0xFEFB) + join_prev;
+            for (int k = i + 1; k < q; k++) out[m++] = in[k];
+            i = q;
+            continue;
+        }
+        int base = c == 0x0640 ? 0 : AR_BASE[c - 0x0621];
+        out[m++] = base ? base + (join_prev && join_next ? 3 : join_prev ? 1 : join_next ? 2 : 0) : c;
+    }
+    return m;
+}
+
+/* ---- Devanagari: the i-matra (ि) is typed after its consonant but drawn before it */
+
+static int deva_consonant(int c) { return (c >= 0x0915 && c <= 0x0939) || (c >= 0x0958 && c <= 0x095F); }
+
+static void order_devanagari(int *c, int n)
+{
+    for (int i = 1; i < n; i++) {
+        if (c[i] != 0x093F) continue;
+        int s = i - 1;
+        if (s > 0 && c[s] == 0x093C) s--; /* nukta */
+        while (s >= 2 && c[s - 1] == 0x094D && deva_consonant(c[s - 2])) s -= 2; /* conjunct */
+        if (!deva_consonant(c[s])) continue;
+        memmove(&c[s + 1], &c[s], (size_t)(i - s) * sizeof *c);
+        c[s] = 0x093F;
+    }
+}
+
+/* ---- right-to-left: lines are drawn left to right, so Hebrew and Arabic runs are
+ * reversed (numbers inside them keep their order). A line that starts with
+ * right-to-left text is laid out right to left as a whole, Latin words in it kept
+ * as they are; its ellipsis then sits on the left. No full Unicode bidi. */
+
+static int is_rtl(int c) { return (c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF); }
+static int is_digit(int c) { return c >= '0' && c <= '9'; }
+static int is_neutral(int c)
+{
+    return (c < 0x80 && !((c | 0x20) >= 'a' && (c | 0x20) <= 'z')) || (c >= 0xA0 && c <= 0xBF) ||
+           (c >= 0x2000 && c <= 0x206F) || (c >= 0x3000 && c <= 0x303F);
+}
+
+static void reverse(int *a, int n)
+{
+    for (int i = 0, j = n - 1; i < j; i++, j--) {
+        int t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+    }
+}
+
+/* reverses each run of characters matching want, with the neutrals inside it;
+ * keep_numbers: numbers inside a run still read left to right */
+static void reverse_runs(int *c, int n, int (*want)(int), int keep_numbers)
+{
+    for (int i = 0; i < n; i++) {
+        if (!want(c[i])) continue;
+        int end = i;
+        for (int j = i + 1; j < n && (want(c[j]) || is_neutral(c[j])); j++)
+            if (want(c[j])) end = j;
+        reverse(c + i, end - i + 1);
+        for (int k = i; keep_numbers && k <= end; k++) {
+            int e = k;
+            while (e <= end && is_digit(c[e])) e++;
+            if (e - k > 1) reverse(c + k, e - k);
+            if (e > k) k = e - 1;
+        }
+        i = end;
+    }
+}
+
+static int is_ltr_word(int c) { return !is_rtl(c) && (!is_neutral(c) || is_digit(c)); }
+
+static void visual_order(int *c, int n)
+{
+    int first = 0; /* the line's direction: its first strong character */
+    for (int i = 0; i < n && !first; i++)
+        if (is_rtl(c[i])) first = 'R';
+        else if (!is_neutral(c[i])) first = 'L';
+    if (first != 'R') {
+        reverse_runs(c, n, is_rtl, 1);
+    } else {
+        reverse(c, n);
+        reverse_runs(c, n, is_ltr_word, 0); /* Latin words and numbers read left to right */
+    }
+}
+
+/* ---- layout */
+
 #define MAX_CPS 512
 
-/* Fills pos[0..n] with pen positions (pos[n] = total width). */
-static float layout_line(Font *f, float scale, const int *cps, int n, float *pos)
+typedef struct {
+    Font *f;
+    int g;
+    float scale;
+} Glyph;
+
+/* Picks each character's font and fills pos[0..n] with pen positions (pos[n] = width). */
+static float layout_line(Font *f, float px, const int *cps, int n, Glyph *gl, float *pos)
 {
     float pen = 0;
     for (int i = 0; i < n; i++) {
+        gl[i].f = font_for(f, cps[i], &gl[i].g);
+        gl[i].scale = stbtt_ScaleForMappingEmToPixels(&gl[i].f->info, px);
+    }
+    for (int i = 0; i < n; i++) {
         int adv, lsb;
         pos[i] = pen;
-        stbtt_GetCodepointHMetrics(&f->info, cps[i], &adv, &lsb);
-        pen += adv * scale;
-        if (i + 1 < n) pen += scale * stbtt_GetCodepointKernAdvance(&f->info, cps[i], cps[i + 1]);
+        stbtt_GetGlyphHMetrics(&gl[i].f->info, gl[i].g, &adv, &lsb);
+        pen += adv * gl[i].scale;
+        if (i + 1 < n && gl[i + 1].f == gl[i].f) pen += gl[i].scale * stbtt_GetGlyphKernAdvance(&gl[i].f->info, gl[i].g, gl[i + 1].g);
     }
     pos[n] = pen;
     return pen;
 }
 
+/* typed text -> what is drawn: Arabic joined, Devanagari reordered */
+static int shape(const int *in, int n, int *out)
+{
+    int m = shape_arabic(in, n, out);
+    order_devanagari(out, m);
+    return m;
+}
+
 Tex *text_render(Font *f, float px, const char *utf8, int max_w,
-                         int *out_w, int *out_h)
+                 int *out_w, int *out_h)
 {
     if (!f || !utf8 || !*utf8) return NULL;
-    int cps[MAX_CPS + 1], n = 0;
-    for (const char *s = utf8; *s && n < MAX_CPS;) cps[n++] = utf8_next(&s);
+    int src[MAX_CPS + 1], n = 0;
+    for (const char *s = utf8; *s && n < MAX_CPS;) {
+        int c = utf8_next(&s);
+        if (!ignorable(c)) src[n++] = c;
+    }
+    if (!n) return NULL;
 
-    float scale = stbtt_ScaleForMappingEmToPixels(&f->info, px);
-    int asc, desc, gap;
-    stbtt_GetFontVMetrics(&f->info, &asc, &desc, &gap);
-
-    /* lay out; if too wide, replace trailing characters with an ellipsis */
-    float pos[MAX_CPS + 2];
-    float width = layout_line(f, scale, cps, n, pos);
-    if (max_w > 0 && width > max_w) {
+    /* lay out; if too wide, replace trailing characters with an ellipsis (cut in
+     * typed order, so joining and right-to-left order are redone around it) */
+    static int cps[MAX_CPS + 1];
+    static Glyph gl[MAX_CPS + 1];
+    static float pos[MAX_CPS + 2];
+    int m = shape(src, n, cps);
+    if (max_w > 0 && layout_line(f, px, cps, m, gl, pos) > max_w) {
         while (n > 1) {
             n--;
-            cps[n - 1] = 0x2026;
-            if (layout_line(f, scale, cps, n, pos) <= max_w) break;
+            src[n - 1] = 0x2026;
+            m = shape(src, n, cps);
+            if (layout_line(f, px, cps, m, gl, pos) <= max_w) break;
         }
     }
+    visual_order(cps, m);
+    layout_line(f, px, cps, m, gl, pos);
 
-    int w = (int)ceilf(pos[n]) + 4;
-    int h = (int)ceilf((asc - desc) * scale) + 4;
-    int baseline = (int)roundf(asc * scale) + 2;
+    /* the line box fits every font used */
+    int asc, desc, gap;
+    stbtt_GetFontVMetrics(&f->info, &asc, &desc, &gap);
+    float scale = stbtt_ScaleForMappingEmToPixels(&f->info, px), top = asc * scale, bottom = desc * scale;
+    for (int i = 0; i < m; i++) {
+        if (gl[i].f == f) continue;
+        stbtt_GetFontVMetrics(&gl[i].f->info, &asc, &desc, &gap);
+        top = fmaxf(top, asc * gl[i].scale);
+        bottom = fminf(bottom, desc * gl[i].scale);
+    }
+    int w = (int)ceilf(pos[m]) + 4;
+    int h = (int)ceilf(top - bottom) + 4;
+    int baseline = (int)roundf(top) + 2;
     unsigned char *cov = calloc((size_t)w * h, 1);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < m; i++) {
         float x = pos[i] + 1;
         int ix = (int)floorf(x);
         int x0, y0, x1, y1;
-        stbtt_GetCodepointBitmapBoxSubpixel(&f->info, cps[i], scale, scale, x - ix, 0, &x0, &y0, &x1, &y1);
+        const stbtt_fontinfo *info = &gl[i].f->info;
+        stbtt_GetGlyphBitmapBoxSubpixel(info, gl[i].g, gl[i].scale, gl[i].scale, x - ix, 0, &x0, &y0, &x1, &y1);
         int gw = x1 - x0, gh = y1 - y0;
         if (gw <= 0 || gh <= 0) continue;
         unsigned char *g = malloc((size_t)gw * gh);
-        stbtt_MakeCodepointBitmapSubpixel(&f->info, g, gw, gh, gw, scale, scale, x - ix, 0, cps[i]);
+        stbtt_MakeGlyphBitmapSubpixel(info, g, gw, gh, gw, gl[i].scale, gl[i].scale, x - ix, 0, gl[i].g);
         for (int yy = 0; yy < gh; yy++) {
             int ty = baseline + y0 + yy;
             if (ty < 0 || ty >= h) continue;

@@ -2,8 +2,8 @@
 # Builds Home+ and installs it on a rooted webOS TV over SSH (from macOS or Linux).
 # usage: tools/install.sh <tv-ip> [--autostart]
 #   --autostart  also installs the boot script so the TV starts in Home+
-# Installs com.atvlauncher.app (web app + service) and, if dist/ has one, com.atvlauncher.native,
-# re-elevates the service (every install of com.atvlauncher.app resets it), then opens Home+.
+# Installs the Home+ package (launcher + service), re-elevates the service (every install
+# resets it), then opens Home+.
 set -eu
 
 USAGE='usage: tools/install.sh <tv-ip> [--autostart]'
@@ -15,20 +15,16 @@ SSH_OPTS='-o ConnectTimeout=8'
 DIR=/tmp/homeplus-install # on the TV; removed again when the install is done
 
 # The native binary needs the webOS toolchain (Linux or Docker); package it when it has been built.
-if [ -f "$ROOT/native/build/webos/homeplus" ]; then
-  node "$ROOT/tools/build.mjs" native
-else
-  node "$ROOT/tools/build.mjs"
-fi
-APP=$(ls -t "$ROOT"/dist/com.atvlauncher.app_*_all.ipk | head -1)
-NATIVE=$(ls -t "$ROOT"/dist/com.atvlauncher.native_*_all.ipk 2>/dev/null | head -1)
+node "$ROOT/tools/build.mjs"
+APP=$(ls -t "$ROOT"/dist/com.github.pmiraka.homeplus_*_all.ipk | head -1)
+NATIVE=
 
 echo "→ copying $(basename "$APP")${NATIVE:+ and $(basename "$NATIVE")} to $TV"
 ssh $SSH_OPTS "root@$TV" "rm -rf $DIR && mkdir -p $DIR && cat > $DIR/install.sh" <<'REMOTE'
 # Runs on the TV (busybox sh): sh install.sh [--autostart] <app.ipk> [<native.ipk>]
 DIR=$(dirname "$0")
 APPS=/media/developer/apps
-SVC=com.atvlauncher.app.service
+SVC=com.github.pmiraka.homeplus.service
 ELEVATE=$APPS/usr/palm/services/org.webosbrew.hbchannel.service/elevate-service
 AUTOSTART=
 [ "$1" = --autostart ] && { AUTOSTART=1; shift; }
@@ -46,9 +42,9 @@ field() { sed -n "s/.*\"$1\":\"*\([^,\"}]*\).*/\1/p" | tail -1; } # echo <json> 
 
 # Never pkill -f here: the pattern could match this SSH session's own command line.
 stop_service() {
-  for p in $(pgrep -f atvlauncher.app.service); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
+  for p in $(pgrep -f pmiraka.homeplus.service); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
   i=0
-  while pgrep -f atvlauncher.app.service >/dev/null; do
+  while pgrep -f pmiraka.homeplus.service >/dev/null; do
     [ $i -ge 10 ] && { fail "couldn't stop $SVC"; return 1; }
     sleep 0.3; i=$((i + 1))
   done
@@ -106,7 +102,7 @@ install_ipk() {
 }
 
 echo "   closing Home+ and stopping its service"
-for id in com.atvlauncher.native com.atvlauncher.app; do
+for id in com.github.pmiraka.homeplus; do
   luna luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$id\"}" >/dev/null
 done
 stop_service
@@ -136,13 +132,12 @@ fi
 
 if [ -n "$AUTOSTART" ]; then
   mkdir -p /var/lib/webosbrew/init.d &&
-    cp $APPS/usr/palm/applications/com.atvlauncher.app/init.d/50-homeplus /var/lib/webosbrew/init.d/ &&
+    cp $APPS/usr/palm/applications/com.github.pmiraka.homeplus/init.d/50-homeplus /var/lib/webosbrew/init.d/ &&
     chmod 755 /var/lib/webosbrew/init.d/50-homeplus &&
     ok "boot script installed" || fail "couldn't install the boot script"
 fi
 
-app=com.atvlauncher.app
-[ -d $APPS/usr/palm/applications/com.atvlauncher.native ] && app=com.atvlauncher.native
+app=com.github.pmiraka.homeplus
 reply=$(luna luna://com.webos.applicationManager/launch "{\"id\":\"$app\"}")
 i=0
 while [ $i -lt 20 ]; do

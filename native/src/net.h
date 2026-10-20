@@ -1,6 +1,6 @@
 /* Home+ native: talking to the Home+ service, off the render thread.
  *
- * The service (com.atvlauncher.app.service) listens on 127.0.0.1:47823.
+ * The service (SERVICE_ID, shipped in the launcher's package) listens on 127.0.0.1:47823.
  * Jobs are queued from the main thread; worker threads do the HTTP request
  * (and image decoding and shrinking) and post results back, which the main
  * thread drains once per frame. */
@@ -11,6 +11,7 @@
 #include <stddef.h>
 
 #define SERVICE_PORT 47823
+#define SERVICE_ID "com.github.pmiraka.homeplus.service"
 
 /* Blocking request. Returns the HTTP status (0 on connection failure); *body
  * is malloc'd and NUL-terminated (caller frees). post_body NULL means GET. */

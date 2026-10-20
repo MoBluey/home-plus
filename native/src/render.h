@@ -27,6 +27,8 @@ void r_present(void);
 /* Shifts everything drawn on screen by (dx, dy) logical px: the OLED pixel
  * orbit. What the glass refracts stays put, so the two stay aligned. */
 void r_set_offset(float dx, float dy);
+/* Moves what's drawn next by (dx, dy) logical pixels, on any target; (0, 0) resets it. */
+void r_translate(float dx, float dy);
 
 /* RGBA8, straight alpha. */
 Tex *r_tex(const unsigned char *rgba, int w, int h);

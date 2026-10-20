@@ -148,3 +148,12 @@ Stremio's LG app can't open a specific title: it ignores every launch parameter 
 - **Undo autostart:** `rm /var/lib/webosbrew/init.d/50-homeplus`.
 - **Boot problems:** Homebrew Channel's failsafe skips `init.d` scripts after a crash during boot.
 - **Layout and hidden apps:** stored in `/var/lib/homeplus/config.json`, along with the Stremio and Trakt sessions.
+
+## License
+
+Home+ is released under the [MIT License](LICENSE). The third-party code it bundles keeps its own license:
+
+- **SDL 2.0.14 headers** (`native/third_party/SDL2`): zlib license, at the top of each header. Only the headers are bundled; the app links the TV's own libSDL2.
+- **cJSON** (`native/third_party/cJSON.*`): MIT, see [LICENSE-cJSON](native/third_party/LICENSE-cJSON). It's compiled into the launcher, so the notice ships in the package.
+- **stb_image, stb_image_write, stb_truetype** (`native/third_party`): public domain or MIT, your choice (at the end of each file).
+- **Inter** font (`native/assets/fonts`): SIL Open Font License 1.1, see [LICENSE-Inter.txt](native/assets/fonts/LICENSE-Inter.txt).

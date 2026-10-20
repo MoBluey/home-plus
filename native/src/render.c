@@ -152,14 +152,14 @@ static const char *FS_UP =
     "    gl_FragColor = s / 12.0;\n"
     "}\n";
 
-/* Liquid Glass: bends the backdrop most at the rim (lensing) and stays clear.
- * Only where the glass carries content (u_legible) and the backdrop behind it
- * is busy does it blur, and over bright content it dims (Apple's 35%), just
- * enough to keep that content readable. A thin rim catches the light. */
+/* Liquid Glass: bends the backdrop most at the rim (lensing). Clear glass stays
+ * clear; glass that carries text or icons (u_legible) blurs evenly, since
+ * blurring only the busy spots broke photos into patches, and over bright
+ * content it dims (Apple's 35%), just enough to keep that content readable.
+ * A thin rim catches the light. */
 static const char *FS_GLASS =
     "uniform sampler2D u_sharp;\n"
     "uniform sampler2D u_soft;\n"
-    "uniform sampler2D u_mid;\n"
     "uniform vec4 u_rect;\n"
     "uniform vec2 u_view;\n"
     "uniform float u_radius;\n"
@@ -185,11 +185,14 @@ static const char *FS_GLASS =
     "    float bevel = 1.0 - sqrt(max(1.0 - t * t, 0.0));\n" /* circular profile: steepest at the rim */
     "    vec2 sp = v_px - n * (bevel * band * 0.85 * u_lens);\n" /* sample further in: the edge magnifies */
     "    vec2 uv = to_uv(sp);\n"
-    "    vec2 duv = vec2(n.x / u_view.x, -n.y / u_view.y) * (bevel * 1.5 * u_lens);\n"
-    "    vec3 col = vec3(texture2D(u_sharp, uv + duv).r, texture2D(u_sharp, uv).g, texture2D(u_sharp, uv - duv).b);\n"
-    "    vec3 soft = texture2D(u_soft, uv).rgb;\n"
-    "    float busy = length(texture2D(u_mid, uv).rgb - soft);\n" /* detail behind the glass */
-    "    col = mix(col, soft, max(smoothstep(0.035, 0.16, busy) * u_legible, bevel * 0.5));\n"
+    "    vec3 col = texture2D(u_soft, uv).rgb;\n"
+    "    float clear = 1.0 - max(u_legible, bevel * 0.5);\n"
+    "    if (clear > 0.0) {\n" /* clear glass: the sharp backdrop, split a little at the rim */
+    "        vec2 duv = vec2(n.x / u_view.x, -n.y / u_view.y) * (bevel * 1.5 * u_lens);\n"
+    "        vec3 sharp = vec3(texture2D(u_sharp, uv + duv).r, texture2D(u_sharp, uv).g, texture2D(u_sharp, uv - duv).b);\n"
+    "        col = mix(col, sharp, clear);\n"
+    "    }\n"
+    "    col *= 1.0 - 0.10 * bevel * u_legible;\n" /* saturated tiles pulled into the rim stay quiet */
     "    float lum = dot(col, vec3(0.299, 0.587, 0.114));\n"
     "    col *= 1.0 - 0.35 * smoothstep(0.35, 0.75, lum) * (0.5 + 0.5 * u_legible);\n"
     "    col = mix(col, u_tint.rgb, u_tint.a);\n"
@@ -208,7 +211,7 @@ static const char *FS_GLASS =
 typedef struct {
     GLuint id;
     GLint rect, view, uv, offset, color, radius, tex, stroke, grad, shape, blur, halfpix;
-    GLint sharp, soft, mid, lens, legible, light, focus, tint, alpha;
+    GLint sharp, soft, lens, legible, light, focus, tint, alpha;
 } Prog;
 
 typedef struct {
@@ -224,6 +227,7 @@ static struct {
     int lw, lh;         /* logical size */
     int dw, dh;         /* drawable size */
     float orbit_x, orbit_y; /* OLED pixel orbit, screen only */
+    float tx, ty;           /* r_translate(), on every target */
     float ox, oy;       /* offset for the current target */
     Prog tex, shape, shadow, rim, down, up, glass;
     const Prog *cur;
@@ -273,7 +277,7 @@ static int program(Prog *p, const char *fs)
 #define U(field, name) p->field = gl.GetUniformLocation(p->id, name);
     U(rect, "u_rect") U(view, "u_view") U(uv, "u_uv") U(offset, "u_offset") U(color, "u_color") U(radius, "u_radius")
     U(tex, "u_tex") U(stroke, "u_stroke") U(grad, "u_grad") U(shape, "u_shape") U(blur, "u_blur")
-    U(halfpix, "u_halfpix") U(sharp, "u_sharp") U(soft, "u_soft") U(mid, "u_mid") U(lens, "u_lens")
+    U(halfpix, "u_halfpix") U(sharp, "u_sharp") U(soft, "u_soft") U(lens, "u_lens")
     U(legible, "u_legible")
     U(light, "u_light") U(focus, "u_focus") U(tint, "u_tint") U(alpha, "u_alpha")
 #undef U
@@ -283,7 +287,6 @@ static int program(Prog *p, const char *fs)
     gl.Uniform1i(p->tex, 0);
     gl.Uniform1i(p->sharp, 0);
     gl.Uniform1i(p->soft, 1);
-    gl.Uniform1i(p->mid, 2);
     return 1;
 }
 
@@ -345,7 +348,7 @@ static void bind_target(const Target *t)
 static void quad(const Prog *p, float x, float y, float w, float h)
 {
     gl.Uniform4f(p->rect, x, y, w, h);
-    gl.Uniform2f(p->offset, R.ox, R.oy);
+    gl.Uniform2f(p->offset, R.ox + R.tx, R.oy + R.ty);
     gl.DrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
@@ -435,6 +438,12 @@ void r_set_offset(float dx, float dy)
 {
     R.orbit_x = dx;
     R.orbit_y = dy;
+}
+
+void r_translate(float dx, float dy)
+{
+    R.tx = dx;
+    R.ty = dy;
 }
 
 /* ------------------------------------------------------------------ textures */
@@ -576,7 +585,6 @@ void r_glass(const Glass *g)
 {
     if (g->alpha <= 0 || g->w <= 0 || g->h <= 0) return;
     use(&R.glass);
-    bind_tex(2, R.d1.tex);
     bind_tex(1, R.u1.tex);
     bind_tex(0, R.backdrop.tex);
     float lx = g->light_x, ly = g->light_y, ll = sqrtf(lx * lx + ly * ly);

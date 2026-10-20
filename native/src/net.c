@@ -23,7 +23,36 @@
 
 /* ------------------------------------------------------------------ HTTP */
 
-int http_request(const char *path, const char *post_body, char **body, size_t *len)
+/* The service answers only the launcher: each request carries the token it
+ * writes into our folder when it starts (see service.js). It's read again
+ * when the service has restarted and refuses the old one (403). */
+static char token_path[600];
+static char token[128];
+static SDL_mutex *token_lock;
+
+static void load_token(void)
+{
+    char buf[128] = "";
+    FILE *f = token_path[0] ? fopen(token_path, "r") : NULL;
+    if (f) {
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        fclose(f);
+        buf[n] = 0;
+        buf[strcspn(buf, "\r\n")] = 0;
+    }
+    SDL_LockMutex(token_lock);
+    snprintf(token, sizeof token, "%s", buf);
+    SDL_UnlockMutex(token_lock);
+}
+
+static void current_token(char *out, size_t cap)
+{
+    SDL_LockMutex(token_lock);
+    snprintf(out, cap, "%s", token);
+    SDL_UnlockMutex(token_lock);
+}
+
+static int http_once(const char *path, const char *post_body, const char *tok, char **body, size_t *len)
 {
     *body = NULL;
     if (len) *len = 0;
@@ -41,11 +70,11 @@ int http_request(const char *path, const char *post_body, char **body, size_t *l
         return 0;
     }
 
-    char head[MAX_PATH_LEN + 256];
+    char head[MAX_PATH_LEN + 384];
     size_t blen = post_body ? strlen(post_body) : 0;
     int hn = snprintf(head, sizeof head,
-                      "%s %s HTTP/1.0\r\nHost: 127.0.0.1\r\n%s%s%zu\r\n\r\n",
-                      post_body ? "POST" : "GET", path,
+                      "%s %s HTTP/1.0\r\nHost: 127.0.0.1\r\nX-Homeplus-Token: %s\r\n%s%s%zu\r\n\r\n",
+                      post_body ? "POST" : "GET", path, tok,
                       post_body ? "Content-Type: application/json\r\n" : "",
                       "Content-Length: ", blen);
     if (send(fd, head, hn, 0) != hn || (blen && send(fd, post_body, blen, 0) != (ssize_t)blen)) {
@@ -79,6 +108,23 @@ int http_request(const char *path, const char *post_body, char **body, size_t *l
     free(buf);
     *body = out;
     if (len) *len = bn;
+    return status;
+}
+
+int http_request(const char *path, const char *post_body, char **body, size_t *len)
+{
+    char tok[128];
+    current_token(tok, sizeof tok);
+    int status = http_once(path, post_body, tok, body, len);
+    if (status == 403) { /* a new token: the service restarted, or our folder was reinstalled */
+        free(*body);
+        char *st = NULL;
+        http_once("/api/status", NULL, "", &st, NULL); /* makes the service write it again */
+        free(st);
+        load_token();
+        current_token(tok, sizeof tok);
+        status = http_once(path, post_body, tok, body, len);
+    }
     return status;
 }
 
@@ -250,7 +296,7 @@ static void run_job(Job *j)
 
     if (j->kind == JOB_WAKE) {
         /* luna-send is how a webOS service gets started; ignore its output. */
-        int rc = system("luna-send -n 1 -w 5000 luna://com.atvlauncher.app.service/ping '{}' >/dev/null 2>&1");
+        int rc = system("luna-send -n 1 -w 5000 luna://" SERVICE_ID "/ping '{}' >/dev/null 2>&1");
         r.status = rc == 0 ? 200 : 0;
         push_done(&r);
         return;
@@ -311,6 +357,13 @@ void net_start(void)
     net_event = SDL_RegisterEvents(1);
     lock = SDL_CreateMutex();
     wake = SDL_CreateCond();
+    /* the token sits next to the binary on the TV; HOMEPLUS_TOKEN_FILE for the desktop preview */
+    const char *env = getenv("HOMEPLUS_TOKEN_FILE");
+    char *base = env ? NULL : SDL_GetBasePath();
+    snprintf(token_path, sizeof token_path, "%s%s", env ? env : base ? base : "./", env ? "" : "api-token");
+    SDL_free(base);
+    token_lock = SDL_CreateMutex();
+    load_token();
     running = 1;
     for (int i = 0; i < WORKERS; i++) threads[i] = SDL_CreateThread(worker, "homeplus-net", NULL);
 }

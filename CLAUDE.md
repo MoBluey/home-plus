@@ -29,7 +29,7 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   that container too. Bump versions in `app/appinfo.json`, `service/package.json`, `native/appinfo.json`.
 - Desktop preview (Linux): `tools/native-preview/run.sh` → `preview/native-*.png`.
   On a Mac: a `linux/arm64` Debian container with `libsdl2-dev xvfb xauth libgles2 libegl1
-  libgl1-mesa-dri python3-pil nodejs`, run with `HOST_SDL=/usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0`.
+  libgl1-mesa-dri python3-pil nodejs` (the Makefile finds the arm64 libSDL2 by itself).
   `tools/native-preview/glass-test.sh <art.jpg> <out.png>` renders a glass test card.
 - Docker on a Mac can see a file before it's fully written: if a build reports
   "expected ... at end of input", just run it again.

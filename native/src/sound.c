@@ -7,7 +7,7 @@
 #include <SDL.h>
 
 #define RATE 48000
-#define QUIET_MS 5000
+#define QUIET_MS 30000 /* a soundbar may clip the first sound after reopening */
 
 static struct {
     SDL_AudioDeviceID dev;
@@ -53,6 +53,11 @@ void snd_enable(int on) { A.on = on; }
 void snd_play(int which)
 {
     if (!A.ready || !A.on || which < 0 || which >= SND_COUNT || !A.buf[which]) return;
+    static Uint32 last_tick;
+    if (which == SND_TICK) { /* held arrows: one tick per 60 ms at most */
+        if (SDL_GetTicks() - last_tick < 60) return;
+        last_tick = SDL_GetTicks();
+    }
     if (!A.dev) {
         SDL_AudioSpec want = { 0 }, have;
         want.freq = RATE;

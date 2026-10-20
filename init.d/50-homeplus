@@ -7,9 +7,13 @@
 # 2. Starts the service. It watches the foreground app and replaces LG's home
 #    screen with Home+ - including at boot.
 
-SVC=com.atvlauncher.app.service
+APP=com.github.pmiraka.homeplus
+SVC=$APP.service
 ELEVATE=/media/developer/apps/usr/palm/services/org.webosbrew.hbchannel.service/elevate-service
 LOG=/tmp/homeplus-boot.log
+
+# Home+ was uninstalled: remove this script too, and leave the TV alone.
+[ -d /media/developer/apps/usr/palm/applications/$APP ] || { rm -f "$0"; exit 0; }
 
 (
   echo "homeplus boot $(date)"

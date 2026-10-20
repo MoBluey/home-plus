@@ -3,7 +3,7 @@
  * Runs on the TV as a webOS JS service. Once elevated (see README) it can call
  * the application manager on the launcher's behalf, and it talks to the Stremio
  * API so the launcher never holds your Stremio auth key. The native launcher
- * (com.atvlauncher.native) uses its local HTTP API; Luna methods are for
+ * (com.github.pmiraka.homeplus) uses its local HTTP API; Luna methods are for
  * terminal setup (Trakt, Stremio, Home button) and the boot script.
  */
 'use strict';
@@ -16,6 +16,11 @@ const pkg = require('./package.json');
 const Service = require('webos-service');
 
 const service = new Service(pkg.name);
+
+// A bad request or a failed fetch must never take the root service (and with it
+// the Home button) down: log it and keep serving.
+process.on('uncaughtException', (e) => log('uncaught:', (e && e.stack) || e));
+process.on('unhandledRejection', (e) => log('unhandled rejection:', (e && e.stack) || e));
 
 // Diagnostics: /tmp/homeplus-service.log (cleared on each service start, capped at 256 KB).
 const LOG = '/tmp/homeplus-service.log';
@@ -144,9 +149,21 @@ async function listApps() {
   return r;
 }
 
-function firstExisting(files) {
+// An image file inside the app's own folder, symlinks resolved (a hostile app
+// can't point its icon at /var/lib/homeplus/config.json); else null.
+function insideApp(file, folder) {
+  try {
+    const real = fs.realpathSync(file), dir = fs.realpathSync(folder);
+    return real.startsWith(dir + path.sep) && MIME[path.extname(real).toLowerCase()] && fs.statSync(real).isFile() ? real : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function firstExisting(files, folder) {
   for (const f of files || []) {
-    try { if (fs.statSync(f).isFile()) return f; } catch (e) { /* next */ }
+    const ok = insideApp(f, folder);
+    if (ok) return ok;
   }
   return null;
 }
@@ -156,7 +173,7 @@ function guessIcon(folder) {
   try {
     const names = fs.readdirSync(folder).filter((n) => /icon.*\.(png|jpe?g|webp)$/i.test(n));
     names.sort((a, b) => (/large|big|130|256|512/i.test(b) ? 1 : 0) - (/large|big|130|256|512/i.test(a) ? 1 : 0));
-    return names.length ? path.join(folder, names[0]) : null;
+    return names.length ? insideApp(path.join(folder, names[0]), folder) : null;
   } catch (e) {
     return null;
   }
@@ -166,8 +183,9 @@ async function imageFile(kind, id) {
   if (!images[id]) await listApps();
   const entry = images[id];
   if (!entry) { log('image: unknown app', id); return null; }
-  let file = firstExisting(entry[kind]);
-  if (!file && kind === 'icon' && entry.folder) file = guessIcon(entry.folder);
+  if (!entry.folder) return null;
+  let file = firstExisting(entry[kind], entry.folder);
+  if (!file && kind === 'icon') file = guessIcon(entry.folder);
   if (!file && kind === 'icon') log('image: no icon file for', id, entry[kind], 'folder', entry.folder);
   return file;
 }
@@ -177,11 +195,10 @@ async function imageFile(kind, id) {
 // button), launches Home+ instead. Settings live in config.json:
 //   homeOverride: true/false (default true)
 //   homeApps:     app ids that count as "LG home" (default below)
-//   homeTarget:   app to open (default: Home+, com.atvlauncher.native)
+//   homeTarget:   app to open (default: Home+)
 
 const DEFAULT_HOME_APPS = ['com.webos.app.home'];
-const NATIVE_ID = 'com.atvlauncher.native';
-const WEB_HOST_ID = 'com.atvlauncher.app'; // the package that carries this service
+const NATIVE_ID = 'com.github.pmiraka.homeplus'; // the launcher; this service ships in its package
 let lastForeground = '';
 let lastTakeover = 0;
 let takeoverLanded = true; // did the launcher reach the front after our last takeover?
@@ -200,10 +217,10 @@ const { execFile } = require('child_process');
 let redirectTarget = null; // path we mounted over, if any
 
 function redirectPage(target) {
-  const ids = JSON.stringify([target]);
+  const ids = JSON.stringify([target]).replace(/</g, '\\u003c'); // no "</script>" from an id
   return `<!doctype html><html><head><meta charset="utf-8">
 <style>html,body{margin:0;width:100%;height:100%;background:#000}</style></head><body><script>
-// Home+ no-flash page: LG's home app now just opens Home+ (see com.atvlauncher.app.service).
+// Home+ no-flash page: LG's home app now just opens Home+ (see the Home+ service).
 var ids = ${ids}, bridges = [];
 function open(i) {
   if (i >= ids.length) return;
@@ -270,7 +287,7 @@ async function unmountRedirect() {
 }
 
 function homeMode(cfg) {
-  return cfg.homeOverride === false ? 'off' : (cfg.homeMode || 'redirect');
+  return cfg.homeOverride === false ? 'off' : (cfg.homeMode || 'watch');
 }
 
 async function applyHomeMode() {
@@ -282,10 +299,14 @@ async function applyHomeMode() {
 }
 setTimeout(() => applyHomeMode().catch((e) => log('home mode error', e.message)), 1500);
 
+// When each app was last in front: Recents lists the most recent first, like tvOS.
+const lastUsed = new Map();
+
 async function onForeground(appId) {
   if (!appId || appId === lastForeground) return;
   log('foreground', lastForeground || '-', '->', appId);
   lastForeground = appId;
+  lastUsed.set(appId, Date.now());
   const cfg = readConfig();
   const target = homeTarget(cfg);
   if (appId === target) takeoverLanded = true;
@@ -331,10 +352,10 @@ service.register('setHomeOverride', (msg) => {
 });
 
 // ------------------------------------------------------------------ local JSON API
-// Used by the native front end (com.atvlauncher.native), which can't speak Luna
+// Used by the native launcher, which can't speak Luna
 // easily. Same rules as the image server: 127.0.0.1 only.
 
-const HIDDEN_APPS = ['com.atvlauncher.app', 'com.atvlauncher.native', 'com.webos.app.home',
+const HIDDEN_APPS = [NATIVE_ID, 'com.webos.app.home',
   'com.webos.app.homeconnect', 'com.webos.app.voice'];
 
 function hexColor(c) {
@@ -353,7 +374,11 @@ function proxied(url) {
 }
 
 function fetchRemote(url, res, depth = 0) {
-  https.get(url, { timeout: 15000 }, (up) => {
+  let u;
+  try { u = new URL(url); } catch (e) { u = null; }
+  const mod = u && u.protocol === 'https:' ? https : u && u.protocol === 'http:' ? http : null;
+  if (!mod) { res.writeHead(404); return res.end(); }
+  mod.get(u, { timeout: 15000 }, (up) => {
     if (up.statusCode >= 300 && up.statusCode < 400 && up.headers.location && depth < 4) {
       up.resume();
       return fetchRemote(new URL(up.headers.location, url).toString(), res, depth + 1);
@@ -362,6 +387,32 @@ function fetchRemote(url, res, depth = 0) {
     res.writeHead(200, { 'Content-Type': up.headers['content-type'] || 'image/jpeg', 'Cache-Control': 'max-age=86400' });
     up.pipe(res);
   }).on('error', () => { res.writeHead(502); res.end(); });
+}
+
+// ------------------------------------------------------------------ API access
+// The service runs as root and listens on 127.0.0.1, where any other app, or a
+// web page through DNS rebinding, could reach it. So only the launcher may use
+// it: each request needs this per-start token, which is written into the
+// launcher's own folder (other apps are jailed and can't read it), and requests
+// from a browser (an Origin header) or for a non-loopback host are refused.
+const crypto = require('crypto');
+const TOKEN = crypto.randomBytes(24).toString('hex');
+
+function writeToken() {
+  const files = [path.join(__dirname, '..', '..', 'applications', NATIVE_ID, 'api-token'), process.env.HOMEPLUS_TOKEN_FILE];
+  let written = 0;
+  for (const f of files.filter(Boolean)) {
+    try { fs.writeFileSync(f, TOKEN, { mode: 0o644 }); written++; } catch (e) { /* not installed there, or not root yet */ }
+  }
+  return written > 0;
+}
+let tokenWritten = writeToken();
+
+function allowed(req) {
+  if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host || ''))) return false;
+  if (req.headers.origin) return false;
+  const got = Buffer.from(String(req.headers['x-homeplus-token'] || '')), want = Buffer.from(TOKEN);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
 }
 
 function sendJSON(res, code, obj) {
@@ -381,7 +432,7 @@ function readBody(req) {
 async function apiApps() {
   const r = await listApps();
   return ((r && r.apps) || [])
-    .filter((a) => a.visible !== false && !HIDDEN_APPS.includes(a.id) && !a.id.startsWith('com.atvlauncher.'))
+    .filter((a) => a.visible !== false && !HIDDEN_APPS.includes(a.id) && !a.id.startsWith('com.atvlauncher.')) // and the pre-1.0 Home+ packages
     .map((a) => {
       const e = images[a.id] || {};
       return {
@@ -445,12 +496,13 @@ async function apiSystem() {
 }
 
 // Recent apps: what's running, minus system/background pieces (only apps that
-// are on the home screen) and Home+ itself.
+// are on the home screen) and Home+ itself, most recently used first.
 async function apiRunning() {
   const [r, apps] = await Promise.all([luna(APPMGR + '/running', {}), apiApps()]);
   const byId = new Map(apps.map((a) => [a.id, a]));
-  const running = ((r && r.running) || []).map((x) => x.id).filter((id) => byId.has(id));
-  return { apps: [...new Set(running)].map((id) => byId.get(id)) };
+  const running = [...new Set(((r && r.running) || []).map((x) => x.id).filter((id) => byId.has(id)))];
+  running.sort((a, b) => (lastUsed.get(b) || 0) - (lastUsed.get(a) || 0)); // stable: unseen keep webOS's order
+  return { apps: running.map((id) => byId.get(id)) };
 }
 
 async function handleApi(req, res) {
@@ -488,7 +540,7 @@ async function handleApi(req, res) {
       const r = await luna(APPMGR + '/launch', params ? { id, params } : { id });
       // a hint shown by the system, so it appears over the app that just opened
       if (toast && r && r.returnValue !== false) {
-        setTimeout(() => luna('luna://com.webos.notification/createToast', { sourceId: WEB_HOST_ID, message: String(toast).slice(0, 200) }), 1500);
+        setTimeout(() => luna('luna://com.webos.notification/createToast', { sourceId: NATIVE_ID, message: String(toast).slice(0, 200) }), 1500);
       }
       return sendJSON(res, 200, r);
     }
@@ -524,20 +576,31 @@ async function handleApi(req, res) {
 }
 
 const imageServer = http.createServer(async (req, res) => {
+  /* without the token: only whether Home+ is set up (the launcher asks before it has one) */
+  if ((req.url || '') === '/api/status' && !req.headers.origin) {
+    tokenWritten = writeToken(); /* again: installing the launcher replaces its folder */
+    return sendJSON(res, 200, { version: pkg.version, elevated: !!(process.getuid && process.getuid() === 0), token: tokenWritten });
+  }
+  if (!allowed(req)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
   if (/^\/(api|img)\//.test(req.url || '')) return handleApi(req, res);
   const m = /^\/(icon|art)\/([^/?]+)/.exec(req.url || '');
-  const file = m ? await imageFile(m[1], decodeURIComponent(m[2])) : null;
+  let id = null;
+  try { id = m ? decodeURIComponent(m[2]) : null; } catch (e) { /* malformed: not found */ }
+  const file = id ? await imageFile(m[1], id) : null;
   if (!file) {
-    res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
+    res.writeHead(404);
     res.end();
     return;
   }
   res.writeHead(200, {
     'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
-    'Cache-Control': 'max-age=604800',
-    'Access-Control-Allow-Origin': '*' // lets the page sample icon colours on a canvas
+    'Cache-Control': 'max-age=604800'
   });
-  fs.createReadStream(file).pipe(res);
+  fs.createReadStream(file).on('error', () => res.end()).pipe(res);
 });
 imageServer.on('error', (e) => log('image server error', e.message));
 imageServer.listen(IMAGE_PORT, '127.0.0.1', () => log('image server listening on', IMAGE_PORT));

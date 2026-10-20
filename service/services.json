@@ -1,9 +1,9 @@
 {
-  "id": "com.atvlauncher.app.service",
+  "id": "com.github.pmiraka.homeplus.service",
   "description": "Home+ helper service",
   "services": [
     {
-      "name": "com.atvlauncher.app.service",
+      "name": "com.github.pmiraka.homeplus.service",
       "description": "Home+ helper service"
     }
   ],

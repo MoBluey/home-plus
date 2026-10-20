@@ -1,9 +1,9 @@
 // Builds the .ipk packages into dist/ without ares-cli or a system tar, so macOS and Linux
 // produce the same packages.
 // An .ipk is an `ar` archive of: debian-binary, control.tar.gz, data.tar.gz.
-//   node tools/build.mjs          -> web app + service (com.atvlauncher.app)
-//   node tools/build.mjs native   -> also the native front end (com.atvlauncher.native);
-//                                    run `make -C native webos` first
+//   node tools/build.mjs   -> dist/com.github.pmiraka.homeplus_<version>_all.ipk: the native
+//                             launcher with its service and boot script (one package, as the
+//                             Homebrew Channel lists one). Run `make -C native webos` first.
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
@@ -109,14 +109,27 @@ function buildPackage({ appinfo, stage: fill, services = [] }) {
   console.log(`built ${path.relative(root, out)} (${fs.statSync(out).size} bytes)`);
 }
 
-// ---- web app + service ----
+// ---- Home+: the launcher, its service and its boot script, in one package ----
+const appinfo = readJSON('native/appinfo.json');
 const svc = readJSON('service/services.json');
+const svcVersion = readJSON('service/package.json').version;
+if (svcVersion !== appinfo.version) throw new Error(`versions differ: native/appinfo.json ${appinfo.version}, service/package.json ${svcVersion}`);
+const bin = path.join(root, 'native/build/webos/homeplus');
+if (!fs.existsSync(bin)) throw new Error('native/build/webos/homeplus missing: run `make -C native webos` first');
 buildPackage({
-  appinfo: readJSON('app/appinfo.json'),
+  appinfo,
   services: [svc.id],
   stage(appDir, data) {
-    fs.cpSync(path.join(root, 'app'), appDir, { recursive: true });
-    // boot script travels with the app so it can be installed on the TV with cp
+    fs.copyFileSync(path.join(root, 'native/appinfo.json'), path.join(appDir, 'appinfo.json'));
+    fs.copyFileSync(bin, path.join(appDir, 'homeplus'));
+    fs.chmodSync(path.join(appDir, 'homeplus'), 0o755);
+    fs.cpSync(path.join(root, 'native/assets'), path.join(appDir, 'assets'), { recursive: true });
+    fs.copyFileSync(path.join(root, 'native/img/icon.png'), path.join(appDir, 'icon.png'));
+    fs.copyFileSync(path.join(root, 'native/img/largeIcon.png'), path.join(appDir, 'largeIcon.png'));
+    // cJSON is compiled into the binary, so its notice ships with it (the font's is in assets/)
+    fs.copyFileSync(path.join(root, 'LICENSE'), path.join(appDir, 'LICENSE'));
+    fs.copyFileSync(path.join(root, 'native/third_party/LICENSE-cJSON'), path.join(appDir, 'LICENSE-cJSON'));
+    // the boot script travels with the app, so it can be installed on the TV with cp
     fs.cpSync(path.join(root, 'init.d'), path.join(appDir, 'init.d'), { recursive: true });
     fs.cpSync(path.join(root, 'service'), path.join(data, 'usr/palm/services', svc.id), {
       recursive: true,
@@ -124,20 +137,3 @@ buildPackage({
     });
   }
 });
-
-// ---- native front end ----
-if (process.argv.includes('native')) {
-  const bin = path.join(root, 'native/build/webos/homeplus');
-  if (!fs.existsSync(bin)) throw new Error('native/build/webos/homeplus missing: run `make -C native webos` first');
-  buildPackage({
-    appinfo: readJSON('native/appinfo.json'),
-    stage(appDir) {
-      fs.copyFileSync(path.join(root, 'native/appinfo.json'), path.join(appDir, 'appinfo.json'));
-      fs.copyFileSync(bin, path.join(appDir, 'homeplus'));
-      fs.chmodSync(path.join(appDir, 'homeplus'), 0o755);
-      fs.cpSync(path.join(root, 'native/assets'), path.join(appDir, 'assets'), { recursive: true });
-      fs.copyFileSync(path.join(root, 'app/img/icon.png'), path.join(appDir, 'icon.png'));
-      fs.copyFileSync(path.join(root, 'app/img/largeIcon.png'), path.join(appDir, 'largeIcon.png'));
-    }
-  });
-}
