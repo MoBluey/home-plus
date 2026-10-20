@@ -5,7 +5,7 @@
 #
 # 1. Elevates the Home+ service so it can list/launch apps (idempotent).
 # 2. Starts the service. It watches the foreground app and replaces LG's home
-#    screen with Home+ (native if installed, else web) - including at boot.
+#    screen with Home+ - including at boot.
 
 SVC=com.atvlauncher.app.service
 ELEVATE=/media/developer/apps/usr/palm/services/org.webosbrew.hbchannel.service/elevate-service

@@ -1,7 +1,6 @@
 /* Home+ native — a tvOS-style home screen for webOS, drawn with SDL2 + GLES2.
  *
- * Same layout and behaviour as the web version (app/), but rendered on the GPU:
- * every frame is a few dozen tinted textured quads, animations are springs at
+ * Rendered on the GPU: every frame is a few dozen tinted textured quads, animations are springs at
  * the display refresh rate, and when nothing moves the loop sleeps.
  *
  * Data comes from the Home+ service's local API (see service/service.js). */
@@ -507,7 +506,7 @@ static void handle_result(Result *r)
                 net_wake_service();
                 S.next_retry = SDL_GetTicks() + 2000;
             }
-            toast(S.wake_tries < 10 ? "Starting the Home+ service\xE2\x80\xA6" : "Home+ service isn't responding. Is the Home+ web package installed?", 600000);
+            toast(S.wake_tries < 10 ? "Starting the Home+ service\xE2\x80\xA6" : "Home+ service isn't responding. Is the Home+ Service package installed?", 600000);
         }
         if (S.service_ok && S.toast_until > SDL_GetTicks() + 100000) S.toast_until = 0;
         break;

@@ -1,59 +1,11 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=1920, height=1080">
-  <title>Home+</title>
-  <link rel="stylesheet" href="css/style.css">
-</head>
-<body>
-  <div id="stage">
-
-    <!-- Top Shelf: two layers that crossfade as focus moves along the top row -->
-    <div id="shelf">
-      <div class="shelf-layer" id="shelfA"></div>
-      <div class="shelf-layer" id="shelfB"></div>
-      <div id="rail-shelf">
-        <div class="rail-art" id="railArtA"></div>
-        <div class="rail-art" id="railArtB"></div>
-      </div>
-      <div class="shelf-scrim"></div>
-      <div id="rail-front" class="rail-front">
-        <div class="rail-info">
-          <div class="rail-heading glass">Continue Watching · Stremio</div>
-          <img class="rail-logo" alt="">
-          <div class="rail-title"></div>
-          <div class="rail-meta"></div>
-        </div>
-        <div class="rail"></div>
-      </div>
-    </div>
-
-    <div id="dock" class="glass"></div>
-
-    <div id="clock" class="glass"></div>
-
-    <div id="content">
-      <div id="shelf-spacer"></div>
-      <div id="rows"></div>
-    </div>
-
-    <div id="message" class="glass" hidden></div>
-
-    <div id="sheet" hidden>
-      <div class="sheet-panel glass">
-        <div class="sheet-title"></div>
-        <div class="sheet-items"></div>
-        <div class="sheet-note" hidden></div>
-      </div>
-    </div>
-
-    <div id="launch-veil"></div>
-  </div>
-
-  <script src="js/luna.js"></script>
-  <script src="js/mock.js"></script>
-  <script src="js/apps.js"></script>
-  <script src="js/launcher.js"></script>
-</body>
-</html>
+<!-- Home+ Service: this hidden package only carries com.atvlauncher.app.service and
+     the boot script. If it's ever opened, it hands over to Home+ (native). -->
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;width:100%;height:100%;background:#000}</style></head><body><script>
+function open() {
+  new PalmServiceBridge().call('luna://com.webos.applicationManager/launch', JSON.stringify({ id: 'com.atvlauncher.native' }));
+}
+open();
+document.addEventListener('webOSRelaunch', open);
+</script></body></html>

@@ -5,17 +5,17 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look. Built 
 - **Top Shelf:** focus any app in the top row and the screen fills with its artwork (or a glow generated from its icon).
 - **Glass tiles:** focused tiles float, tilt and catch the light. On the Magic Remote pointer they tilt toward the cursor.
 - **Stremio Continue Watching:** focus Stremio in the top row and the Top Shelf turns into your Continue Watching rail. Press **Up** to browse it and **OK** to resume.
-- **Rearrange and hide:** hold **OK** (or press Play/Pause) on an app to Move, Move to Front or Hide it. Hidden apps collect in a "Hidden" tile at the end.
+- **Rearrange and hide:** hold **OK** (or press **Yellow**) on an app to Move, Move to Front or Hide it. Hidden apps collect in a "Hidden" tile at the end.
 - **Remote keys:** **Back** never leaves the home screen. It closes a menu (from an app in Recents, back to the list), steps out of Continue Watching, the top buttons or move mode, then jumps to the first app. The colour keys are shortcuts: **Red** Recents, **Green** Settings, **Yellow** the focused app's options, **Blue** move the focused app (press again when done). The remote's **Settings** and **Input** keys open LG's own menus; apps never receive them.
 
-## Native front end (recommended)
+## How it works
 
-`native/` is the same launcher written in C with SDL2 and OpenGL ES 2, the libraries the TV already has. The web engine is skipped entirely:
-- **Drawing:** every frame is a few dozen tinted textured rectangles drawn by the GPU.
-- **Animation:** focus, scrolling and crossfades are springs that run at the display's refresh rate.
-- **Idle:** the loop sleeps when nothing is moving.
-
-It gets its data from the service's local API on `127.0.0.1:47823`, so it needs the `com.atvlauncher.app` package installed too:
+Home+ comes as two packages, and both need to be installed:
+- **Home+ Native** (`com.atvlauncher.native`, built from `native/`): the launcher itself. It's written in C with SDL2 and OpenGL ES 2, the libraries the TV already has.
+  - **Drawing:** every frame is a few dozen tinted textured rectangles drawn by the GPU. The TV's GPU is shared with PicCap and HyperHDR, so glass is computed from small downscaled copies.
+  - **Animation:** focus, scrolling and crossfades are springs that run at the display's refresh rate.
+  - **Idle:** nothing is redrawn while nothing moves.
+- **Home+ Service** (`com.atvlauncher.app`, hidden from the app list): it carries the service in `service/` and the boot script. The launcher gets its data from the service's local API on `127.0.0.1:47823`:
 
 | Endpoint | What it does |
 |---|---|
@@ -58,7 +58,7 @@ One-time setup:
 
 The service takes over the Home button in one of two modes:
 - **No-flash (default):** while the service runs, LG's home app (`com.webos.app.home`) has its start page replaced by a black page that opens Home+ immediately, so LG's home screen never appears. The replacement is a bind mount, in memory only; nothing on disk changes, and rebooting without the service brings LG's home back. If LG's home isn't a web app, or the mount fails, Home+ falls back to standard mode.
-- **Standard:** the service watches the foreground app. When LG's home comes up, it opens Home+, the native version if it's installed, otherwise the web version. LG's home flashes for a moment first.
+- **Standard:** the service watches the foreground app. When LG's home comes up, it opens Home+. LG's home flashes for a moment first.
 
 On the LG C3 (webOS 23), LG's home is a native app (`/usr/bin/com.webos.app.home`), so no-flash mode can't work there and Settings doesn't offer the switch. Instead, [lginputhook](https://github.com/Simon34545/lginputhook) 1.5.1 or later (from Homebrew Channel) catches the Home button itself and opens Home+ directly, so LG's home never appears. In the LG Input Hook app, add a keybind for button **773**, choose **Launch App** and pick **Home+ Native**, or put `{"773":{"action":"launch","id":"com.atvlauncher.native"}}` in `/home/root/.config/lginputhook/keybinds.json`. Standard mode still catches LG's home when it appears some other way, such as at boot.
 
@@ -72,34 +72,20 @@ luna-send -n 1 luna://com.atvlauncher.app.service/setHomeOverride '{"enabled":fa
 
 Each foreground change and mode change is written to `/tmp/homeplus-service.log`.
 
-## Performance
-
-The TV's GPU is shared with PicCap and HyperHDR, so Home+ draws only what it must:
-- **Glass look:** translucent fills and thin borders only. There's no shadow, blur, filter, mask or text shadow.
-- **No full-screen effects:** the Top Shelf and dock switch instantly, with no fades.
-- **Animation:** only the focused tile's short scale and the grid scroll move. Nothing animates while idle.
-- **Returning home:** the grid isn't rebuilt unless the app list changed.
-- **Icon colours:** sampled once, then cached.
-
 ## Icons
 
-webOS won't let a developer-installed web app read other apps' files. Instead, the service, running as root, serves icons and artwork on `http://127.0.0.1:47823/icon/<appId>` and `http://127.0.0.1:47823/art/<appId>`. The server only accepts connections from the TV itself, and it only serves paths that the application manager reported for that app. If that port can't be reached, the page asks the service for each icon as a `data:` URL instead.
+Developer-installed apps can't read other apps' files, so the service, running as root, serves icons and artwork on `http://127.0.0.1:47823/icon/<appId>` and `http://127.0.0.1:47823/art/<appId>`. The server only accepts connections from the TV itself, and it only serves paths that the application manager reported for that app. Icon colours are sampled once, then cached.
 
 ## Layout
 
 ```
-app/        the webOS web app (HTML/CSS/JS, no build step, no dependencies)
-service/    Node JS service: app list/launch + Stremio API (elevated via Homebrew Channel)
+native/     the launcher (C, SDL2 + OpenGL ES 2)
+service/    Node JS service: app list/launch, Stremio + Trakt, Home button (elevated via Homebrew Channel)
+app/        the hidden "Home+ Service" package that carries the service and the boot script
 init.d/     boot script for /var/lib/webosbrew/init.d (elevate + start Home+ at boot)
-tools/      build.mjs (makes the .ipk), install.sh (build + install over SSH), preview.mjs, make-icons.py
-preview/    screenshots rendered from the mock data
+tools/      build.mjs (makes the .ipks), install.sh (build + install over SSH), native-preview/, make-icons.py
+preview/    screenshots from tools/native-preview
 ```
-
-## Preview on a computer
-
-Open `app/index.html` in Chrome. With no webOS bridge it uses mock apps and mock Stremio data. Arrow keys move focus. **Enter** opens, and holding **Enter** opens the options sheet. **Esc** is Back.
-To jump straight to a state, add `?state=shelf`, `grid`, `scrolled`, `sheet` or `login` to the URL.
-`node tools/preview.mjs` re-renders the screenshots in `preview/`.
 
 ## Install on the TV
 
@@ -110,7 +96,7 @@ tools/install.sh 192.168.1.50 --autostart
 ```
 
 That command does five things:
-1. builds `dist/com.atvlauncher.app_<version>_all.ipk`;
+1. builds the packages in `dist/`;
 2. installs it with `appInstallService/dev/install`;
 3. elevates `com.atvlauncher.app.service` with Homebrew Channel's `elevate-service`, so it may call `listApps`;
 4. with `--autostart`, copies `init.d/50-homeplus`, so the TV boots into Home+ and the service is re-elevated on every boot;
@@ -119,12 +105,15 @@ That command does five things:
 You can also install the `.ipk` by hand (`ares-install`, or the Homebrew Channel app) and then run this on the TV:
 `/media/developer/apps/usr/palm/services/org.webosbrew.hbchannel.service/elevate-service com.atvlauncher.app.service`
 
-**Quick access without root tricks:** long-press a number key on the Magic Remote and assign Home+.
+**Quick access without root tricks:** long-press a number key on the Magic Remote and assign Home+ Native.
 
 ## Stremio
 
-1. Hold **OK** on Stremio and choose **Connect Stremio Account**.
-2. Sign in. The webOS on-screen keyboard appears when a field is selected.
+Home+ has no sign-in form. Sign in once from a terminal over SSH:
+
+```sh
+luna-send -n 1 luna://com.atvlauncher.app.service/stremioLogin '{"email":"…","password":"…"}'
+```
 
 The password goes only to `api.strem.io`. The service stores just the session key, in `/var/lib/homeplus/config.json` (mode 600).
 
@@ -133,17 +122,13 @@ Artwork: the full-screen background uses Stremio's large image size, and the car
 Continue Watching shows your library items that have a playback position, newest first. The list is cached for 60 seconds.
 
 Resuming launches Stremio with `{"contentTarget": "stremio:///detail/<type>/<id>/<videoId>"}`, LG's usual deep-link convention.
-**Not yet verified:** whether the webOS Stremio app honours that parameter. If it ignores it, Stremio still opens normally. Check that on the TV and adjust `openRailItem()` in `app/js/launcher.js`.
+**Not yet verified:** whether the webOS Stremio app honours that parameter. If it ignores it, Stremio still opens normally. Check that on the TV and adjust `launch()` in `native/src/main.c`.
 
 ## Troubleshooting
 
-- **"Couldn't read the app list"**: the service isn't elevated. Re-run `elevate-service`, as shown above.
+- **No apps on the home screen:** the service isn't elevated. Re-run `elevate-service`, as shown above.
 - **Boot log:** `/tmp/homeplus-boot.log` on the TV.
-- **Service log:** `/tmp/homeplus-service.log` on the TV. It records the start-up, a sample of what `listApps` returns, missing icon files and icon errors the page reports.
+- **Service log:** `/tmp/homeplus-service.log` on the TV. It records the start-up, a sample of what `listApps` returns, missing icon files, and what the launcher reports (lines starting `native:`).
 - **Undo autostart:** `rm /var/lib/webosbrew/init.d/50-homeplus`.
 - **Boot problems:** Homebrew Channel's failsafe skips `init.d` scripts after a crash during boot.
-- **Layout and hidden apps:** stored in the app's `localStorage`. Uninstalling Home+ resets them.
-
-## Roadmap
-
-- **Option 3 (Home button takeover):** a root daemon will watch `getForegroundAppInfo`. When LG's `com.webos.app.home` comes to the front, it relaunches Home+. Home+ already handles relaunch: it returns to the top like tvOS.
+- **Layout and hidden apps:** stored in `/var/lib/homeplus/config.json`, along with the Stremio and Trakt sessions.
