@@ -135,6 +135,7 @@ static struct {
     int rail_stremio, trakt_configured, trakt_connected;
     char home_mode[16]; /* "redirect" (no-flash), "watch" or "off" */
     int sounds_off; /* focus sounds switched off in Settings (saved by the service) */
+    Uint32 idle_dim_ms, idle_off_ms; /* OLED idle stages (0 = default) */
     int noflash_active, noflash_available; /* available: LG's home is a web app we can replace */
     Uint32 trakt_poll; /* while showing a Trakt code: next status check */
     int moving;
@@ -590,6 +591,9 @@ static void handle_result(Result *r)
             cJSON *o = cJSON_Parse(r->body);
             S.sounds_off = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "sounds"));
             snd_enable(!S.sounds_off);
+            double dm = jnum(o, "dimMinutes"), om = jnum(o, "offMinutes");
+            S.idle_dim_ms = dm > 0 ? (Uint32)(dm * 60000) : 0;
+            S.idle_off_ms = om > 0 ? (Uint32)(om * 60000) : 0;
             cJSON_Delete(o);
         }
         break;
@@ -1137,7 +1141,7 @@ static int hit_item(int mx, int my)
 
 /* OLED protection: after a while without input the screen dims (all but the
  * focused tile, like tvOS), then fades to black and stops drawing. */
-#define IDLE_DIM_MS (2 * 60 * 1000)
+#define IDLE_DIM_MS (2 * 60 * 1000)  /* defaults; /api/prefs dimMinutes / offMinutes override */
 #define IDLE_OFF_MS (10 * 60 * 1000)
 
 static float special_s, special_v; /* focus animation of the "Hidden" tile */
@@ -1751,7 +1755,8 @@ int main(int argc, char **argv)
         /* OLED: idle stages, and a 1 px step of the pixel orbit every minute (within +-4 px) */
         {
             Uint32 idle = now - S.last_input;
-            int stage = idle >= IDLE_OFF_MS ? 2 : idle >= IDLE_DIM_MS ? 1 : 0;
+            Uint32 dim_ms = S.idle_dim_ms ? S.idle_dim_ms : IDLE_DIM_MS, off_ms = S.idle_off_ms ? S.idle_off_ms : IDLE_OFF_MS;
+            int stage = idle >= off_ms ? 2 : idle >= dim_ms ? 1 : 0;
             if (stage != S.idle_stage && !shot) {
                 S.idle_stage = stage;
                 dirty = 1;

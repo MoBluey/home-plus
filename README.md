@@ -3,7 +3,9 @@
 A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look. Built and laid out for an LG C3 on webOS 23.20.59.
 
 - **Top Shelf:** focus any app in the top row and the screen fills with its artwork (or a glow generated from its icon).
-- **Glass tiles:** focused tiles float, tilt and catch the light. On the Magic Remote pointer they tilt toward the cursor.
+- **Liquid Glass:** the dock, clock, buttons and menus are real Liquid Glass: they bend the light at their edges and stay clear, blurring only behind text or icons that would otherwise be hard to read. Focused tiles lift, sway for a moment and catch a moving light; the Magic Remote pointer steers it.
+- **Motion and sound:** everything moves on springs, and menus grow out of the button or tile that opened them. A soft tick plays when focus moves and a click on select (**Settings → Sounds** turns them off).
+- **OLED care:** the picture drifts by a pixel every minute, and an idle Home+ dims, then fades to black (see [OLED protection](#oled-protection)).
 - **Stremio Continue Watching:** focus Stremio in the top row and the Top Shelf turns into your Continue Watching rail. Press **Up** to browse it and **OK** to resume.
 - **Rearrange and hide:** hold **OK** (or press **Yellow**) on an app to Move, Move to Front or Hide it. Hidden apps collect in a "Hidden" tile at the end.
 - **Remote keys:** **Back** never leaves the home screen. It closes a menu (from an app in Recents, back to the list), steps out of Continue Watching, the top buttons or move mode, then jumps to the first app. The colour keys are shortcuts: **Red** Recents, **Green** Settings, **Yellow** the focused app's options, **Blue** move the focused app (press again when done). The remote's **Settings** and **Input** keys open LG's own menus; apps never receive them.
@@ -12,7 +14,7 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look. Built 
 
 Home+ comes as two packages, and both need to be installed:
 - **Home+ Native** (`com.atvlauncher.native`, built from `native/`): the launcher itself. It's written in C with SDL2 and OpenGL ES 2, the libraries the TV already has.
-  - **Drawing:** every frame is a few dozen tinted textured rectangles drawn by the GPU. The TV's GPU is shared with PicCap and HyperHDR, so glass is computed from small downscaled copies.
+  - **Drawing:** our own OpenGL ES 2 renderer (`native/src/render.c`) with shaders for Liquid Glass, rounded shapes and soft shadows; a frame is a few dozen quads. The TV's GPU is shared with PicCap and HyperHDR, so glass refracts a half-resolution copy of the screen and blurs it in two cheap passes (about 3 MB in total).
   - **Animation:** focus, scrolling and crossfades are springs that run at the display's refresh rate.
   - **Idle:** nothing is redrawn while nothing moves.
 - **Home+ Service** (`com.atvlauncher.app`, hidden from the app list): it carries the service in `service/` and the boot script. The launcher gets its data from the service's local API on `127.0.0.1:47823`:
@@ -28,6 +30,7 @@ Home+ comes as two packages, and both need to be installed:
 | `GET /api/system` | Settings apps |
 | `GET /api/running`, `POST /api/close` | Recent apps, and closing them |
 | `GET` / `POST /api/home` | Home button mode |
+| `GET` / `POST /api/prefs` | Launcher preferences: `sounds`, `dimMinutes`, `offMinutes` |
 
 To build:
 
@@ -42,7 +45,7 @@ node tools/build.mjs native
 
 From the top row, press **Up** to reach the two round buttons next to the clock: **Recents** and **Settings**. On the Stremio tile, Up goes into Continue Watching instead; press Up again from there. There's no Inputs button: the remote's Input key already opens LG's input menu.
 - **Recents:** lists the apps that are running. Pick one to open or close it, or choose **Close All**.
-- **Settings:** opens LG's settings apps and has the sign-in options for Trakt and Stremio, plus the Home button mode on TVs where no-flash mode can work.
+- **Settings:** opens LG's settings apps, switches focus sounds, and has the sign-in options for Trakt and Stremio, plus the Home button mode on TVs where no-flash mode can work.
 
 ## Trakt
 
@@ -71,6 +74,20 @@ luna-send -n 1 luna://com.atvlauncher.app.service/setHomeOverride '{"enabled":fa
 ```
 
 Each foreground change and mode change is written to `/tmp/homeplus-service.log`.
+
+## OLED protection
+
+A home screen keeps bright static elements (the clock, glass rims, labels) in place for hours, so Home+ looks after an OLED panel on top of LG's own Pixel Refresher and Screen Shift:
+- **Pixel orbit:** every minute the whole picture moves by one pixel along a slow path, never more than 4 px from centre.
+- **Idle dimming:** after 2 minutes without input everything but the focused tile dims, as on tvOS.
+- **Black screen:** after 10 minutes it fades to black, with the pixels off, and Home+ stops drawing. The first press only wakes it.
+- **Static text** stays at about 85% white.
+
+Change the timings (in minutes) with:
+
+```sh
+wget -qO- --post-data '{"dimMinutes":5,"offMinutes":20}' --header 'Content-Type: application/json' http://127.0.0.1:47823/api/prefs
+```
 
 ## Icons
 

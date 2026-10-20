@@ -11,9 +11,11 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   Also: Home button takeover (`watch` mode, and `redirect` = no-flash bind mount over LG home's
   start page, approved by the owner), Stremio + Trakt Continue Watching, settings apps, recents.
   Logs to `/tmp/homeplus-service.log` (the native app logs there too, via `POST /api/log`).
-- `native/` — the launcher people actually use (`com.atvlauncher.native`): C, SDL2 + GLES2,
-  liquid-glass panels via render targets (`src/glass.c`). Build only against the vendored
-  SDL **2.0.14** headers in `third_party/SDL2` — newer SDL functions don't exist on the TV.
+- `native/` — the launcher (`com.atvlauncher.native`): C, SDL2 + our own GLES2 renderer
+  (`src/render.c`: Liquid Glass shader, SDF shapes, Kawase blur; GL loaded at run time),
+  `src/sound.c` (synthesised focus sounds), OLED idle stages and pixel orbit in `main.c`.
+  Build only against the vendored SDL **2.0.14** headers in `third_party/SDL2` — newer SDL
+  functions don't exist on the TV. Design: `docs/plans/2026-10-20-liquid-glass-design.md`.
 - `app/` — the hidden "Home+ Service" package (`com.atvlauncher.app`, `visible: false`). It carries the
   service and the boot script, so it must stay installed. Its page only hands over to the native app;
   the old web launcher was removed (owner only wants the native one).
@@ -26,6 +28,11 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
 - Packages: `node tools/build.mjs native` → `dist/*.ipk`. It needs GNU tar, so on a Mac run it in
   that container too. Bump versions in `app/appinfo.json`, `service/package.json`, `native/appinfo.json`.
 - Desktop preview (Linux): `tools/native-preview/run.sh` → `preview/native-*.png`.
+  On a Mac: a `linux/arm64` Debian container with `libsdl2-dev xvfb xauth libgles2 libegl1
+  libgl1-mesa-dri python3-pil nodejs`, run with `HOST_SDL=/usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0`.
+  `tools/native-preview/glass-test.sh <art.jpg> <out.png>` renders a glass test card.
+- Docker on a Mac can see a file before it's fully written: if a build reports
+  "expected ... at end of input", just run it again.
 
 ## Installing on the TV
 Copy the `.ipk`s to `/tmp` on the TV, then for each:
