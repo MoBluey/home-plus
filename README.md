@@ -64,7 +64,20 @@ Updates install the same way. An update resets the service's root access, and Ho
 
 From the top row, press **Up** to reach the round **Recents** and **Settings** buttons next to the clock. On the Stremio tile, Up goes into Continue Watching first. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
 
-**Settings** opens LG's settings apps and has switches for the Home button and sounds, plus **Accessibility** (Reduce Motion, Reduce Transparency). It also has the Trakt sign-in and **Remove Home+**.
+**Settings** works like tvOS's: each row shows its current value, rows with **›** open a page, and **Back** goes up one page.
+
+| Row | What's there |
+|---|---|
+| **Home Button** | Whether the Home button opens Home+ or LG's home screen, and No Flash on TVs that support it |
+| **Display & OLED** | Dim After, Turn Off After, Pixel Shift, and Calm Colours (dark app backgrounds, so ambient lights don't flood the room) |
+| **Sounds** | Focus sounds on or off |
+| **Clock** | 12-hour or 24-hour |
+| **Accessibility** | Reduce Motion, Reduce Transparency |
+| **Accounts** | Stremio and Trakt: whether they're connected, and the Trakt sign-in |
+| **Hidden Apps** | Apps you've hidden, to show them again |
+| **TV Settings** | LG's own settings apps |
+| **About** | Version, whether Home+ is set up, the last remote key it ignored, licence |
+| **Remove Home+** | Undoes everything and uninstalls (see below) |
 
 ## Continue Watching
 
@@ -90,11 +103,11 @@ Trakt needs an API app of your own (it's free):
    ```sh
    luna-send -n 1 luna://com.github.pmiraka.homeplus.service/traktSetup '{"clientId":"…","clientSecret":"…"}'
    ```
-3. On the TV, go to **Settings → Connect Trakt**, then enter the code it shows at <https://trakt.tv/activate>.
+3. On the TV, go to **Settings → Accounts → Trakt**, then enter the code it shows at <https://trakt.tv/activate>.
 
 ## Home button
 
-With **Settings → Home Button: Opens Home+**, Home+ watches for LG's home screen and opens itself instead. LG's home screen shows for a moment first.
+With **Settings → Home Button** set to **Opens Home+**, Home+ watches for LG's home screen and opens itself instead. LG's home screen shows for a moment first.
 
 To remove that flash, use lginputhook (1.5.1 or later, from the Homebrew Channel). It catches the Home button before LG's home screen starts. In the LG Input Hook app, add a keybind for button **773**, choose **Launch App** and pick **Home+**. Or put this in `/home/root/.config/lginputhook/keybinds.json`:
 
@@ -102,7 +115,7 @@ To remove that flash, use lginputhook (1.5.1 or later, from the Homebrew Channel
 {"773": {"action": "launch", "id": "com.github.pmiraka.homeplus"}}
 ```
 
-On TVs where LG's home screen is a web app (not the C3), Settings also offers **Home Button: No Flash**. In that mode, Home+ replaces LG's home page in memory while it runs; nothing on disk changes.
+On TVs where LG's home screen is a web app (not the C3), **Settings → Home Button** also offers **No Flash**. In that mode, Home+ replaces LG's home page in memory while it runs; nothing on disk changes.
 
 ## OLED protection
 
@@ -111,12 +124,7 @@ A home screen keeps bright, static things in place for hours, so Home+ adds to L
 - **Idle dimming:** after 2 minutes without input, everything but the focused tile dims.
 - **Black screen:** after 10 minutes it fades to black and stops drawing. The first key press only wakes it.
 
-To change the timings (in minutes), run this on the TV:
-
-```sh
-T=$(cat /media/developer/apps/usr/palm/applications/com.github.pmiraka.homeplus/api-token)
-curl -s -H "X-Homeplus-Token: $T" -H 'Content-Type: application/json' -d '{"dimMinutes":5,"offMinutes":20}' http://127.0.0.1:47823/api/prefs
-```
+Change the timings, or turn any of these off, in **Settings → Display & OLED**. Calm Colours keeps app backgrounds dark there too, which HyperHDR and other ambient lights pick up.
 
 ## Removing Home+
 

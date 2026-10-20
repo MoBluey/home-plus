@@ -33,7 +33,8 @@ shot sheet "H" 3500
 shot topbar "U" 3000
 shot settings "UO" 3500
 shot recents "ULLO" 3800
-shot settings-remove "UODDDO" 4500
+shot settings-display "UODO" 3800
+shot settings-remove "UODDDDDDDDO" 4600
 shot last-row "DD" 3500
 shot move-hint "H.O" 3800
 shot pointer-settings "MCM" 4200 "1636,88 960,600"

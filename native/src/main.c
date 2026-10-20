@@ -66,6 +66,7 @@
 #define SW_CY 500                      /* their centre line */
 #define SHEET_BH 80                    /* sheet buttons, and the gap between them */
 #define SHEET_GAP 16
+#define SHEET_TINT 16, 16, 20, 115 /* sheets' glass: dark tint, 45% */
 #define ICON_FIT 256                   /* icons feed logos, covers and the big Top Shelf tile */
 #define THUMB_FIT_W 480                /* rail thumbnails: cards, and briefly the background */
 #define THUMB_FIT_H 270
@@ -116,14 +117,18 @@ typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_A
                ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK,
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
-               ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY } Action;
+               ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY,
+               ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN } Action;
 
 /* First run: the service has to be running and elevated (root, via Homebrew
  * Channel) before Home+ can list apps. Each step that can fail has a screen. */
 enum { SETUP_CHECK, SETUP_STARTING, SETUP_ELEVATING, SETUP_RESTARTING, SETUP_NO_HBC, SETUP_DENIED,
        SETUP_FAILED, SETUP_REMOVING, SETUP_DONE };
 #define HBC_ELEVATE "luna://org.webosbrew.hbchannel.service/elevateService"
-#define SHEET_BODY_LINES 3
+#define SHEET_BODY_LINES 5
+#define IDLE_DIM_MS (2 * 60 * 1000)  /* defaults; /api/prefs dimMinutes / offMinutes override */
+#define IDLE_OFF_MS (10 * 60 * 1000)
+#define IDLE_NEVER 0xFFFFFFFFu /* Settings: never dim / never turn off */
 
 typedef struct {
     Action act;
@@ -132,6 +137,9 @@ typedef struct {
     char id[ID_LEN]; /* ACT_LAUNCH_ID */
     Tex *tex;
     int w, h;
+    Tex *val; /* Settings rows: the current value, drawn on the right */
+    int vw, vh;
+    int chevron; /* opens a page */
 } SheetItem;
 
 static struct {
@@ -213,6 +221,8 @@ static struct {
         Tex *body[SHEET_BODY_LINES];
         int bw[SHEET_BODY_LINES], bh[SHEET_BODY_LINES], nbody;
         int first;            /* first list button on screen: long lists scroll */
+        int page, parent, parent_index; /* Settings pages: Back opens the parent at that row */
+        int wide;             /* label-and-value rows need the room */
         float scroll, scroll_v; /* where the list is drawn from, springing to first */
         float t, tv;          /* morph: 0 = still the button it grew from, 1 = open */
         float fx, fy, fw, fh; /* that button's rect */
@@ -231,6 +241,11 @@ static struct {
     int service_ok, wake_tries;
     int setup, setup_tries, elevate_tries, home_asked;
     int reduce_motion, reduce_transparency; /* Settings -> Accessibility (tvOS's names) */
+    int clock24, orbit_off, vivid_covers;    /* Settings: 24-hour clock, no pixel shift, brand-colour covers */
+    int at_page, at_index, at_parent_index;  /* the Settings row an action came from */
+    int last_unknown_key;                    /* Settings -> About: what a remote sent that Home+ ignores */
+    char svc_version[24];                    /* from /api/status */
+    int svc_elevated;
     int ptr_press, ptr_dismiss;             /* the pointer's OK went down on something / outside a sheet */
     /* Which input is in charge. The remote's keys take over from the pointer: then the
      * pointer doesn't move focus, and its click (what OK sends while the cursor shows)
@@ -646,6 +661,7 @@ static void request_data(void)
 static void sheet_open(const char *title);
 static void on_status(Result *r);
 static void sheet_body(const char *text);
+static void settings_page(int page, int index);
 static void on_elevate(Result *r);
 static void open_top(int which);
 static void sw_fill(const char *json);
@@ -725,12 +741,12 @@ static void make_cover(App *a, const unsigned char *px, int w, int h)
             float dx = (x - CW / 2.0f) / (CW / 2.0f), dy = (y - CH / 2.0f) / (CH / 2.0f);
             /* calm: halfway to grey and dark, so a focused app doesn't flood the room
              * (HyperHDR mirrors the screen into the lights); darker towards the edges */
-            float shade = 0.45f * (1 - 0.35f * fminf(1, (dx * dx + dy * dy) * 0.6f));
+            float shade = (S.vivid_covers ? 0.82f : 0.45f) * (1 - 0.35f * fminf(1, (dx * dx + dy * dy) * 0.6f));
             const float *pc = &f[(y * CW + x) * 3];
             float luma = 0.299f * pc[0] + 0.587f * pc[1] + 0.114f * pc[2];
             unsigned char *o = out + ((size_t)y * CW + x) * 4;
             for (int c = 0; c < 3; c++) {
-                float v = (pc[c] + (luma - pc[c]) * 0.55f) * shade;
+                float v = (pc[c] + (luma - pc[c]) * (S.vivid_covers ? 0 : 0.55f)) * shade;
                 o[c] = (unsigned char)(v > 255 ? 255 : v);
             }
             o[3] = 255;
@@ -936,9 +952,13 @@ static void handle_result(Result *r)
             snd_enable(!S.sounds_off);
             S.reduce_motion = o && cJSON_IsTrue(cJSON_GetObjectItem(o, "reduceMotion"));
             S.reduce_transparency = o && cJSON_IsTrue(cJSON_GetObjectItem(o, "reduceTransparency"));
-            double dm = jnum(o, "dimMinutes"), om = jnum(o, "offMinutes");
-            S.idle_dim_ms = dm > 0 ? (Uint32)(dm * 60000) : 0;
-            S.idle_off_ms = om > 0 ? (Uint32)(om * 60000) : 0;
+            double dm = jnum(o, "dimMinutes"), om = jnum(o, "offMinutes"); /* -1: never */
+            S.idle_dim_ms = dm > 0 ? (Uint32)(dm * 60000) : dm < 0 ? IDLE_NEVER : 0;
+            S.idle_off_ms = om > 0 ? (Uint32)(om * 60000) : om < 0 ? IDLE_NEVER : 0;
+            int c24 = o && cJSON_IsTrue(cJSON_GetObjectItem(o, "clock24"));
+            if (c24 != S.clock24) S.clock24 = c24, S.clock_min = -1;
+            S.orbit_off = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "pixelShift"));
+            S.vivid_covers = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "calmColours"));
             cJSON_Delete(o);
         }
         break;
@@ -1047,9 +1067,14 @@ static void sheet_close(void)
     S.sheet.nbody = 0;
     S.sheet.locked = 0;
     S.trakt_poll = 0;
-    for (int i = 0; i < S.sheet.n; i++) tex_free(&S.sheet.it[i].tex);
+    for (int i = 0; i < S.sheet.n; i++) {
+        tex_free(&S.sheet.it[i].tex);
+        tex_free(&S.sheet.it[i].val);
+        S.sheet.it[i].chevron = 0;
+    }
     S.sheet.open = 0;
     S.sheet.n = 0;
+    S.sheet.page = S.sheet.parent = S.sheet.parent_index = S.sheet.wide = 0;
 }
 
 /* Tiles, Continue Watching cards and the top-bar buttons all line up with the
@@ -1174,12 +1199,6 @@ static void sheet_body(const char *text)
         S.sheet.body[i] = text_render(S.f_medium, 26, line, 900, &S.sheet.bw[i], &S.sheet.bh[i]);
         p = e ? e + 1 : p + n;
     }
-}
-
-static void sheet_add_id(const char *label, const char *id)
-{
-    sheet_add(label, ACT_LAUNCH_ID, 0, 0);
-    copy_id(S.sheet.it[S.sheet.n - 1].id, id);
 }
 
 static void close_apps(const char *id)
@@ -1380,6 +1399,8 @@ static void on_status(Result *r)
         return;
     }
     int elevated = cJSON_IsTrue(cJSON_GetObjectItem(o, "elevated"));
+    snprintf(S.svc_version, sizeof S.svc_version, "%s", jstr(o, "version"));
+    S.svc_elevated = elevated;
     S.home_asked = cJSON_IsTrue(cJSON_GetObjectItem(o, "homeAsked"));
     cJSON_Delete(o);
     if (elevated) {
@@ -1434,24 +1455,126 @@ static int stremio_installed(void)
     return 0;
 }
 
+/* ---- Settings, like tvOS's: each row shows its current value, › opens a page,
+ * and Back goes up one. */
+enum { PAGE_MAIN = 1, PAGE_HOME, PAGE_DISPLAY, PAGE_ACCESS, PAGE_ACCOUNTS, PAGE_TV, PAGE_ABOUT };
+
+static void settings_row(const char *label, const char *value, Action act, int arg, int chevron, int destructive)
+{
+    if (S.sheet.n >= MAX_SHEET) return;
+    sheet_add(label, act, arg, destructive);
+    SheetItem *it = &S.sheet.it[S.sheet.n - 1];
+    it->chevron = chevron;
+    if (value && *value) it->val = text_render(S.f_medium, 31, value, 380, &it->vw, &it->vh);
+}
+
+static const char *minutes(Uint32 ms, Uint32 dflt, char *buf, size_t cap)
+{
+    if (ms == IDLE_NEVER) return "Never";
+    snprintf(buf, cap, "%u min", (unsigned)((ms ? ms : dflt) / 60000));
+    return buf;
+}
+
+static void settings_page(int page, int index)
+{
+    char v[96], v2[32];
+    int home_on = S.home_mode[0] && strcmp(S.home_mode, "off");
+    switch (page) {
+    case PAGE_HOME:
+        sheet_open("Home Button");
+        settings_row("Home Button", home_on ? "Opens Home+" : "Opens LG Home", ACT_HOME_TOGGLE, 0, 0, 0);
+        if (home_on && S.noflash_available) settings_row("No Flash", S.noflash_active ? "On" : "Off", ACT_HOME_MODE, 0, 0, 0);
+        if (!S.noflash_available)
+            sheet_body("On this TV, LG Input Hook from Homebrew Channel opens Home+\n"
+                       "without LG\xE2\x80\x99s home screen showing first (see the README).");
+        break;
+    case PAGE_DISPLAY:
+        sheet_open("Display & OLED");
+        sheet_body("An idle screen dims, then goes black,\n"
+                   "and the picture moves a pixel every minute.\n"
+                   "Calm Colours keeps ambient lights from flooding the room.");
+        settings_row("Dim After", minutes(S.idle_dim_ms, IDLE_DIM_MS, v, sizeof v), ACT_DIM, 0, 0, 0);
+        settings_row("Turn Off After", minutes(S.idle_off_ms, IDLE_OFF_MS, v2, sizeof v2), ACT_OFF, 0, 0, 0);
+        settings_row("Pixel Shift", S.orbit_off ? "Off" : "On", ACT_ORBIT, 0, 0, 0);
+        settings_row("Calm Colours", S.vivid_covers ? "Off" : "On", ACT_CALM, 0, 0, 0);
+        break;
+    case PAGE_ACCESS:
+        sheet_open("Accessibility");
+        settings_row("Reduce Motion", S.reduce_motion ? "On" : "Off", ACT_REDUCE_MOTION, 0, 0, 0);
+        settings_row("Reduce Transparency", S.reduce_transparency ? "On" : "Off", ACT_REDUCE_TRANSPARENCY, 0, 0, 0);
+        break;
+    case PAGE_ACCOUNTS:
+        sheet_open("Accounts");
+        if (S.rail_stremio || stremio_installed())
+            settings_row("Stremio", S.rail_stremio ? "Signed In" : "Not Signed In", S.rail_stremio ? ACT_NONE : ACT_STREMIO_HELP, 0, 0, 0);
+        settings_row("Trakt", S.trakt_connected ? "Connected" : S.trakt_configured ? "Not Connected" : "Not Set Up",
+                     S.trakt_connected ? ACT_TRAKT_UNLINK : ACT_TRAKT_LINK, 0, 0, 0);
+        sheet_body("Continue Watching comes from these accounts.");
+        break;
+    case PAGE_TV:
+        sheet_open("TV Settings");
+        for (int i = 0; i < S.nsettings && S.sheet.n < MAX_SHEET - 1; i++) {
+            settings_row(S.settings[i].label, "", ACT_LAUNCH_ID, 0, 1, 0);
+            copy_id(S.sheet.it[S.sheet.n - 1].id, S.settings[i].id);
+        }
+        break;
+    case PAGE_ABOUT: {
+        sheet_open("About");
+        char keys[64] = "Every remote key so far is one Home+ knows.";
+        if (S.last_unknown_key) snprintf(keys, sizeof keys, "Last remote key Home+ ignored: %d", S.last_unknown_key);
+        char about[700];
+        snprintf(about, sizeof about, "Home+ %s, %s\n%s\nMIT licence \xC2\xB7 github.com/pmiraka/home-\n"
+                 "Not affiliated with LG, Apple, Stremio or Trakt.",
+                 S.svc_version[0] ? S.svc_version : "\xE2\x80\x93",
+                 S.svc_elevated ? "set up with Homebrew Channel" : "not set up yet", keys);
+        sheet_body(about);
+        break;
+    }
+    default: {
+        page = PAGE_MAIN;
+        sheet_open("Settings");
+        settings_row("Home Button", home_on ? "Opens Home+" : "Opens LG Home", ACT_PAGE, PAGE_HOME, 1, 0);
+        snprintf(v, sizeof v, "Dims After %s", minutes(S.idle_dim_ms, IDLE_DIM_MS, v2, sizeof v2));
+        settings_row("Display & OLED", S.idle_dim_ms == IDLE_NEVER ? "Never Dims" : v, ACT_PAGE, PAGE_DISPLAY, 1, 0);
+        settings_row("Sounds", S.sounds_off ? "Off" : "On", ACT_SOUNDS, 0, 0, 0);
+        settings_row("Clock", S.clock24 ? "24-Hour" : "12-Hour", ACT_CLOCK, 0, 0, 0);
+        settings_row("Accessibility", S.reduce_motion || S.reduce_transparency ? "On" : "Off", ACT_PAGE, PAGE_ACCESS, 1, 0);
+        const char *acc = S.rail_stremio && S.trakt_connected ? "Stremio, Trakt" : S.rail_stremio ? "Stremio"
+                        : S.trakt_connected ? "Trakt" : "None";
+        settings_row("Accounts", acc, ACT_PAGE, PAGE_ACCOUNTS, 1, 0);
+        if (S.nhidden) {
+            snprintf(v, sizeof v, "%d", S.nhidden);
+            settings_row("Hidden Apps", v, ACT_HIDDEN, 0, 1, 0);
+        }
+        if (S.nsettings) settings_row("TV Settings", "", ACT_PAGE, PAGE_TV, 1, 0);
+        settings_row("About", S.svc_version, ACT_PAGE, PAGE_ABOUT, 1, 0);
+        settings_row("Remove Home+", "", ACT_REMOVE_ASK, 0, 1, 1);
+    }
+    }
+    sheet_add("Done", ACT_CANCEL, 0, 0);
+    S.sheet.page = page;
+    S.sheet.parent = page == PAGE_MAIN ? 0 : PAGE_MAIN;
+    S.sheet.wide = 1;
+    /* back on the row it was on, already scrolled to it */
+    int nfoot = sheet_footer(), nlist = S.sheet.n - nfoot, rows = sheet_rows(nfoot);
+    S.sheet.index = index > 0 && index < S.sheet.n ? index : 0;
+    S.sheet.first = S.sheet.index < nlist ? keep_in_view(0, S.sheet.index, rows, nlist, rows > 4) : 0;
+    S.sheet.scroll = (float)S.sheet.first;
+}
+
+/* after changing a setting: its page again, on the same row */
+static void settings_again(void)
+{
+    if (!S.at_page) return;
+    settings_page(S.at_page, S.at_index);
+    if (S.at_page != PAGE_MAIN) S.sheet.parent_index = S.at_parent_index;
+}
+
 static void open_settings_sheet(void)
 {
-    sheet_open("Settings");
-    for (int i = 0; i < S.nsettings; i++) sheet_add_id(S.settings[i].label, S.settings[i].id);
-    /* no-flash needs LG's home to be a web app; on TVs where it's native (the C3)
-     * Home+ always uses standard mode, so there's nothing to switch */
-    int home_on = S.home_mode[0] && strcmp(S.home_mode, "off");
-    sheet_add(home_on ? "Home Button: Opens Home+" : "Home Button: Opens LG Home", ACT_HOME_TOGGLE, 0, 0);
-    if (home_on && S.noflash_available)
-        sheet_add(S.noflash_active ? "Home Button: No Flash" : "Home Button: Standard", ACT_HOME_MODE, 0, 0);
-    sheet_add(S.sounds_off ? "Sounds: Off" : "Sounds: On", ACT_SOUNDS, 0, 0);
-    sheet_add("Accessibility\xE2\x80\xA6", ACT_ACCESSIBILITY, 0, 0);
-    if (S.trakt_connected) sheet_add("Disconnect Trakt", ACT_TRAKT_UNLINK, 0, 1);
-    else if (S.trakt_configured) sheet_add("Connect Trakt", ACT_TRAKT_LINK, 0, 0);
-    if (!S.rail_stremio && stremio_installed()) sheet_add("Connect Stremio", ACT_STREMIO_HELP, 0, 0);
-    sheet_add("Remove Home+\xE2\x80\xA6", ACT_REMOVE_ASK, 0, 1);
-    sheet_add("Cancel", ACT_CANCEL, 0, 0);
+    settings_page(PAGE_MAIN, 0);
 }
+
 
 /* Control Center: what a top-bar button (or its colour key) opens */
 static void open_top(int which)
@@ -1535,6 +1658,7 @@ static void run_action(Action act, int arg)
         net_post("/api/home", body, TAG_HOME_SET);
         snprintf(S.home_mode, sizeof S.home_mode, "%s", next);
         toast(!strcmp(next, "redirect") ? "Home button: no-flash mode" : "Home button: standard mode", 3000);
+        settings_again();
         break;
     }
     case ACT_SETUP_RETRY:
@@ -1552,6 +1676,7 @@ static void run_action(Action act, int arg)
         int on = S.home_mode[0] && strcmp(S.home_mode, "off");
         set_home_mode(on ? "off" : S.noflash_available ? "redirect" : "watch", 1);
         toast(on ? "The Home button opens LG\xE2\x80\x99s home screen" : "The Home button now opens Home+", 3000);
+        settings_again();
         break;
     }
     case ACT_REMOVE_ASK:
@@ -1559,6 +1684,7 @@ static void run_action(Action act, int arg)
         sheet_body("This deletes Home+\xE2\x80\x99s boot script, settings and sign-ins (Stremio, Trakt),\nturns off the Home button takeover and uninstalls Home+.");
         sheet_add("Remove Home+", ACT_REMOVE, 0, 1);
         sheet_add("Cancel", ACT_CANCEL, 0, 0);
+        if (S.at_page) S.sheet.parent = PAGE_MAIN, S.sheet.parent_index = S.at_index;
         break;
     case ACT_REMOVE:
         setup_set(SETUP_REMOVING);
@@ -1574,15 +1700,63 @@ static void run_action(Action act, int arg)
         S.rail_sig[0] = 0;
         net_get_json("/api/continue", TAG_STREMIO, 0, 0);
         toast("Trakt disconnected", 3000);
+        settings_again();
         break;
     case ACT_STREMIO_HELP:
         toast("To see Continue Watching, sign in to Stremio from a computer (see the Home+ README)", 8000);
+        settings_again();
         break;
     case ACT_ACCESSIBILITY:
-        sheet_open("Accessibility");
-        sheet_add(S.reduce_motion ? "Reduce Motion: On" : "Reduce Motion: Off", ACT_REDUCE_MOTION, 0, 0);
-        sheet_add(S.reduce_transparency ? "Reduce Transparency: On" : "Reduce Transparency: Off", ACT_REDUCE_TRANSPARENCY, 0, 0);
-        sheet_add("Done", ACT_CANCEL, 0, 0);
+        settings_page(PAGE_ACCESS, 0);
+        break;
+    case ACT_PAGE: /* a Settings page; Back returns to the row that opened it */
+        settings_page(arg, 0);
+        S.sheet.parent_index = S.at_index;
+        break;
+    case ACT_HIDDEN:
+        open_hidden_sheet();
+        S.sheet.parent = PAGE_MAIN;
+        S.sheet.parent_index = S.at_index;
+        break;
+    case ACT_CLOCK:
+        S.clock24 = !S.clock24;
+        S.clock_min = -1; /* redraw the clock now */
+        net_post("/api/prefs", S.clock24 ? "{\"clock24\":true}" : "{\"clock24\":false}", 0);
+        settings_again();
+        break;
+    case ACT_DIM:
+    case ACT_OFF: { /* each press steps to the next choice */
+        static const int dim[] = { 1, 2, 5, 10, -1 }, off[] = { 5, 10, 20, 30, 60, -1 };
+        int is_dim = act == ACT_DIM, n = is_dim ? 5 : 6;
+        const int *opt = is_dim ? dim : off;
+        Uint32 cur = is_dim ? S.idle_dim_ms : S.idle_off_ms, dflt = is_dim ? IDLE_DIM_MS : IDLE_OFF_MS;
+        int now = cur == IDLE_NEVER ? -1 : (int)((cur ? cur : dflt) / 60000), k = 0;
+        while (k < n && opt[k] != now) k++;
+        int next = opt[(k + 1) % n];
+        Uint32 ms = next < 0 ? IDLE_NEVER : (Uint32)next * 60000;
+        if (is_dim) S.idle_dim_ms = ms;
+        else S.idle_off_ms = ms;
+        char body[48];
+        snprintf(body, sizeof body, "{\"%s\":%d}", is_dim ? "dimMinutes" : "offMinutes", next);
+        net_post("/api/prefs", body, 0);
+        settings_again();
+        break;
+    }
+    case ACT_ORBIT:
+        S.orbit_off = !S.orbit_off;
+        net_post("/api/prefs", S.orbit_off ? "{\"pixelShift\":false}" : "{\"pixelShift\":true}", 0);
+        settings_again();
+        break;
+    case ACT_CALM: /* covers are made from the icons: fetch them again to remake them */
+        S.vivid_covers = !S.vivid_covers;
+        net_post("/api/prefs", S.vivid_covers ? "{\"calmColours\":false}" : "{\"calmColours\":true}", 0);
+        for (int i = 0; i < S.napps; i++) {
+            App *ca = &S.apps[i];
+            if (!ca->icon[0]) continue;
+            ca->icon_state = 1;
+            net_get_image(ca->icon, TAG_ICON, i, S.generation, 1, ICON_FIT, ICON_FIT);
+        }
+        settings_again();
         break;
     case ACT_REDUCE_MOTION:
     case ACT_REDUCE_TRANSPARENCY: {
@@ -1592,15 +1766,14 @@ static void run_action(Action act, int arg)
         snprintf(body, sizeof body, "{\"%s\":%s}", act == ACT_REDUCE_MOTION ? "reduceMotion" : "reduceTransparency",
                  *flag ? "true" : "false");
         net_post("/api/prefs", body, 0);
-        run_action(ACT_ACCESSIBILITY, 0); /* back to the list, with the new label */
-        S.sheet.index = act == ACT_REDUCE_MOTION ? 0 : 1;
+        settings_again();
         break;
     }
     case ACT_SOUNDS:
         S.sounds_off = !S.sounds_off;
         snd_enable(!S.sounds_off);
         net_post("/api/prefs", S.sounds_off ? "{\"sounds\":false}" : "{\"sounds\":true}", 0);
-        toast(S.sounds_off ? "Sounds off" : "Sounds on", 2000);
+        settings_again();
         break;
     default: break;
     }
@@ -1822,6 +1995,7 @@ static void on_key_down(SDL_KeyboardEvent *e)
     if (k == SDLK_LEFT || k == SDLK_RIGHT || k == SDLK_UP || k == SDLK_DOWN) S.tick_armed = 1;
     if (S.logged_keys < 40 && !is_mapped(k)) {
         S.logged_keys++;
+        S.last_unknown_key = (int)k;
         log_remote("unknown key sym=%d scancode=%d mod=%d", (int)k, (int)e->keysym.scancode, (int)e->keysym.mod);
     }
     if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
@@ -1839,7 +2013,8 @@ static void on_key_down(SDL_KeyboardEvent *e)
         if (k == SDLK_UP && S.sheet.index > 0) S.sheet.index--;
         else if (k == SDLK_DOWN && S.sheet.index < S.sheet.n - 1) S.sheet.index++;
         else if (is_back(k) && !S.sheet.locked) {
-            sheet_dismiss();
+            if (S.sheet.parent) settings_page(S.sheet.parent, S.sheet.parent_index);
+            else sheet_dismiss();
         }
         return;
     }
@@ -1878,7 +2053,10 @@ static void ok_release(void)
     } else if (S.sheet.open) {
         if (!S.sheet.n) return; /* "Setting up…": nothing to press */
         SheetItem it = S.sheet.it[S.sheet.index];
-        sheet_dismiss();
+        S.at_page = S.sheet.page; /* a Settings action rebuilds its page in place */
+        S.at_index = S.sheet.index;
+        S.at_parent_index = S.sheet.parent_index;
+        if (!S.at_page || it.act == ACT_CANCEL || it.act == ACT_LAUNCH_ID) sheet_dismiss(); /* else its page is rebuilt */
         if (it.act == ACT_LAUNCH_ID) launch(it.id, NULL);
         else run_action(it.act, it.arg);
     } else {
@@ -1992,8 +2170,6 @@ static int pointer_at(int mx, int my, int apply)
 
 /* OLED protection: after a while without input the screen dims (all but the
  * focused tile, like tvOS), then fades to black and stops drawing. */
-#define IDLE_DIM_MS (2 * 60 * 1000)  /* defaults; /api/prefs dimMinutes / offMinutes override */
-#define IDLE_OFF_MS (10 * 60 * 1000)
 
 static float special_s, special_v; /* focus animation of the "Hidden" tile */
 
@@ -2005,7 +2181,8 @@ static void update_clock(void)
     if (m == S.clock_min && S.clock_tex) return;
     char buf[16];
     int h12 = t->tm_hour % 12 ? t->tm_hour % 12 : 12;
-    snprintf(buf, sizeof buf, "%d:%02d %s", h12, t->tm_min, t->tm_hour < 12 ? "AM" : "PM");
+    if (S.clock24) snprintf(buf, sizeof buf, "%02d:%02d", t->tm_hour, t->tm_min);
+    else snprintf(buf, sizeof buf, "%d:%02d %s", h12, t->tm_min, t->tm_hour < 12 ? "AM" : "PM");
     tex_free(&S.clock_tex);
     S.clock_tex = text_render(S.f_semi, 27, buf, 0, &S.clock_w, &S.clock_h);
     S.clock_min = m;
@@ -2543,16 +2720,37 @@ static void draw_sheet_button(const SheetItem *it, int focused, float bx, float 
 {
     const float BH = SHEET_BH;
     Uint8 a = (Uint8)(ca * k);
-    float tx = bx + (bw - it->w) / 2, ty = y + (BH - it->h) / 2;
+    /* Settings rows (a value or a page): label on the left, value and › on the right */
+    int row = it->val || it->chevron;
+    float tx = row ? bx + 36 : bx + (bw - it->w) / 2, ty = y + (BH - it->h) / 2;
+    Uint8 lr, lg, lb, la;
     if (focused) { /* tvOS: the focused button turns opaque white with a dark label */
         r_shadow(bx, y, bw, BH, BH / 2, 18, 8, 0.4f * a / 255);
         r_shape(bx, y, bw, BH, BH / 2, 245, 245, 247, a, 0, 1, 1);
-        if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 215, 40, 40, a, 0);
-        else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 28, 28, 30, a, 0);
+        if (it->destructive) lr = 215, lg = 40, lb = 40;
+        else lr = 28, lg = 28, lb = 30;
+        la = a;
     } else {
         r_shape(bx, y, bw, BH, BH / 2, 255, 255, 255, (Uint8)(26 * a / 255), 0, 1, 1);
-        if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 138, 128, (Uint8)(235 * a / 255), 0);
-        else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 255, 255, (Uint8)(235 * a / 255), 0);
+        if (it->destructive) lr = 255, lg = 138, lb = 128;
+        else lr = lg = lb = 255;
+        la = (Uint8)(235 * a / 255);
+    }
+    r_image(it->tex, tx, ty, (float)it->w, (float)it->h, lr, lg, lb, la, 0);
+    if (!row) return;
+    float right = bx + bw - 36;
+    if (it->chevron) {
+        static Tex *chev;
+        static int cw, ch;
+        if (!chev) chev = text_render(S.f_semi, 34, "\xE2\x80\xBA", 0, &cw, &ch);
+        Uint8 c = focused ? 120 : 255;
+        r_image(chev, right - cw, y + (BH - ch) / 2 - 2, (float)cw, (float)ch, c, c, focused ? 126 : 255, (Uint8)(a * (focused ? 1 : 0.5f)), 0);
+        right -= cw + 14;
+    }
+    if (it->val) {
+        Uint8 c = focused ? 88 : 255;
+        r_image(it->val, right - it->vw, y + (BH - it->vh) / 2, (float)it->vw, (float)it->vh, c, c, focused ? 94 : 255,
+                (Uint8)(a * (focused ? 1 : 0.58f)), 0);
     }
 }
 
@@ -2564,7 +2762,7 @@ static void draw_sheet(void)
     const float BH = SHEET_BH, BGAP = SHEET_GAP, rad = BH / 2 + PAD; /* corners concentric with the buttons */
     float big = S.sheet_big ? S.sheet_big_h + 24 : 0;
     int nfoot = sheet_footer(), nlist = S.sheet.n - nfoot, rows = sheet_rows(nfoot);
-    float pw = 720;
+    float pw = S.sheet.wide ? 900 : 720; /* Settings: room for a label and its value */
     if (S.sheet.tw + 2 * PAD > pw) pw = S.sheet.tw + 2 * PAD;
     for (int i = 0; i < S.sheet.nbody; i++) if (S.sheet.bw[i] + 2 * PAD > pw) pw = S.sheet.bw[i] + 2 * PAD;
     float ph = sheet_head() + (rows + nfoot) * (BH + BGAP) - (S.sheet.n ? BGAP : 24) + PAD;
@@ -2577,7 +2775,8 @@ static void draw_sheet(void)
     float r0 = fminf(S.sheet.fw, S.sheet.fh) / 2, gr = r0 + (rad - r0) * t;
     if (gw < 1 || gh < 1) return;
     r_shadow(gx, gy, gw, gh, gr, 60, 24, 0.45f * tc);
-    Glass g = { gx, gy, gw, gh, gr, 1, tc, -0.6f, -0.8f, 0, 1, 0, 0, 0, 0 };
+    /* tinted dark like tvOS menus: bright tiles behind it stay quiet under the text */
+    Glass g = { gx, gy, gw, gh, gr, 1, tc, -0.6f, -0.8f, 0, 1, SHEET_TINT };
     glass(&g);
     float c = (t - 0.55f) / 0.45f; /* content fades in once the panel is nearly there */
     Uint8 ca = (Uint8)(255 * (c < 0 ? 0 : c > 1 ? 1 : c));
@@ -2698,7 +2897,7 @@ static void draw_ghost(void)
     float r0 = fminf(S.ghost.fw, S.ghost.fh) / 2, gr = r0 + (S.ghost.pr - r0) * t;
     if (gw < 1 || gh < 1) return;
     r_shadow(gx, gy, gw, gh, gr, 60, 24, 0.45f * t);
-    Glass g = { gx, gy, gw, gh, gr, 1, t, -0.6f, -0.8f, 0, fminf(1, t * 1.5f), 0, 0, 0, 0 };
+    Glass g = { gx, gy, gw, gh, gr, 1, t, -0.6f, -0.8f, 0, fminf(1, t * 1.5f), SHEET_TINT };
     glass(&g);
 }
 
@@ -2832,6 +3031,14 @@ static int wait_event(SDL_Event *e, int timeout_ms, int drew)
  * long press, the toast ending, the next OLED stage, closing the audio, the
  * next minute for the clock and pixel orbit while something is on screen), or
  * the hidden pump. -1 = until something happens. */
+/* when the next OLED idle stage is due (0: none will come) */
+static Uint32 idle_due(Uint32 dim_ms, Uint32 off_ms)
+{
+    Uint32 next = S.idle_stage == 0 && dim_ms != IDLE_NEVER ? dim_ms : off_ms;
+    if (S.idle_stage == 0 && off_ms != IDLE_NEVER && off_ms < next) next = off_ms;
+    return next == IDLE_NEVER ? 0 : S.last_input + next;
+}
+
 static int next_wake_ms(void)
 {
     Uint32 now = SDL_GetTicks();
@@ -2839,7 +3046,7 @@ static int next_wake_ms(void)
     int visible = !S.offscreen && S.idle_stage < 2;
     Uint32 due[8] = { S.setup_retry, S.next_retry, S.trakt_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0,
                       S.toast_tex && S.toast_until > now ? S.toast_until : 0,
-                      S.offscreen ? 0 : S.idle_stage == 0 ? S.last_input + dim_ms : S.idle_stage == 1 ? S.last_input + off_ms : 0,
+                      S.offscreen || S.idle_stage >= 2 ? 0 : idle_due(dim_ms, off_ms),
                       snd_active() ? now + 1000 : 0, visible ? now + (60000 - now % 60000) : 0 };
     int wait = -1;
     for (int i = 0; i < 8; i++) {
@@ -3103,7 +3310,7 @@ int main(int argc, char **argv)
         {
             Uint32 idle = now - S.last_input;
             Uint32 dim_ms = S.idle_dim_ms ? S.idle_dim_ms : IDLE_DIM_MS, off_ms = S.idle_off_ms ? S.idle_off_ms : IDLE_OFF_MS;
-            int stage = idle >= off_ms ? 2 : idle >= dim_ms ? 1 : 0;
+            int stage = off_ms != IDLE_NEVER && idle >= off_ms ? 2 : dim_ms != IDLE_NEVER && idle >= dim_ms ? 1 : 0;
             if (stage != S.idle_stage && !shot) {
                 S.idle_stage = stage;
                 dirty = 1;
@@ -3111,7 +3318,8 @@ int main(int argc, char **argv)
             int k = (int)(now / 60000);
             if (k != S.orbit_k) {
                 S.orbit_k = k;
-                r_set_offset(shot ? 0 : roundf(4 * sinf(k * 0.61f)), shot ? 0 : roundf(4 * sinf(k * 0.37f + 1.0f)));
+                int still = shot || S.orbit_off; /* Settings -> Display & OLED -> Pixel Shift */
+                r_set_offset(still ? 0 : roundf(4 * sinf(k * 0.61f)), still ? 0 : roundf(4 * sinf(k * 0.37f + 1.0f)));
                 dirty = 1;
             }
         }
