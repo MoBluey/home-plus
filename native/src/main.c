@@ -22,30 +22,35 @@
 
 /* ------------------------------------------------------------------ layout */
 
-/* Spacing system (Apple's tvOS layout guidance): an 80/60 px safe area, five
- * columns of 5:3 tiles 40 px apart, containers pad their content 40 px and keep
- * their corners concentric with it (outer radius = inner radius + padding). */
+/* Spacing system: five columns of 5:3 tiles 48 px apart, centred inside the
+ * 80/60 px TV safe area; containers pad their content 40 px and keep their
+ * corners concentric with it (outer radius = inner radius + padding). The Top
+ * Shelf text, the rail and the top bar line up with the dock's edges. */
 #define W 1920
 #define H 1080
 #define SAFE_X 80
 #define SAFE_Y 60
 #define COLS 5
-#define TILE_W 304
-#define TILE_H 182
-#define TILE_R 24
-#define GAP_X 40
+#define TILE_W 272
+#define TILE_H 163
+#define TILE_R 22
+#define GAP_X 48
 #define PAD 40
-#define LEFT (SAFE_X + PAD)            /* first column */
-#define DOCK_Y 712                     /* glass platform behind the top row */
+#define GRID_W (COLS * TILE_W + (COLS - 1) * GAP_X)
+#define DOCK_W (GRID_W + 2 * PAD)
+#define DOCK_X ((W - DOCK_W) / 2)      /* glass platform behind the top row, centred */
+#define LEFT (DOCK_X + PAD)            /* first column */
+#define RIGHT (W - DOCK_X)             /* the top bar ends where the dock does */
 #define DOCK_H (TILE_H + 2 * PAD)
+#define DOCK_Y (974 - DOCK_H)
 #define GRID_TOP (DOCK_Y + PAD)
 #define ROW_H (TILE_H + 100)           /* rows at least 100 px apart; labels sit in the gap */
 #define FOCUS_SCALE 1.10f
 #define LONG_PRESS_MS 650
 #define RAIL_CARD_W TILE_W             /* Continue Watching cards sit on the same columns */
-#define RAIL_CARD_H 171                /* 16:9 */
+#define RAIL_CARD_H 153                /* 16:9 */
 #define RAIL_GAP GAP_X
-#define RAIL_Y 486
+#define RAIL_Y (DOCK_Y - PAD - RAIL_CARD_H - 16)
 #define RAIL_VISIBLE 5
 #define BAR 56                         /* clock capsule and round top-bar buttons */
 #define BAR_GAP 16
@@ -832,7 +837,7 @@ static void sheet_close(void)
 static void focus_rect(float *x, float *y, float *w, float *h)
 {
     if (S.zone == ZONE_TOP) {
-        float right = W - SAFE_X - (S.clock_w + 48);
+        float right = RIGHT - (S.clock_w + 48);
         *x = right - (TOP_COUNT - S.top_index) * (BAR + BAR_GAP);
         *y = SAFE_Y;
         *w = *h = BAR;
@@ -1407,25 +1412,34 @@ static void ensure_app_texts(App *a)
     if (!a->big) a->big = text_render(S.f_bold, 84, a->title, 1000, &a->bw, &a->bh);
 }
 
-static void draw_app_shelf(App *a, Uint8 alpha)
+/* The Top Shelf is a picture (artwork, or the app's tile large on a glow, under
+ * scrims) and content (titles, the Continue Watching rail). The picture stays
+ * behind the grid when you scroll down, blurred; the content scrolls away. */
+static void draw_app_art(App *a, Uint8 alpha)
 {
     if (!a || !alpha) return;
     Uint8 r, g, b;
     app_color(a, &r, &g, &b);
     if (a->art_tex) {
         r_cover(a->art_tex, 0, 0, W, H, alpha, 0);
-        r_image(S.scrim_v, 0, H * 0.55f, W, H * 0.45f, 255, 255, 255, alpha, 0);
-        r_image(S.scrim_h, 0, 0, W * 0.5f, H, 255, 255, 255, alpha, 0);
     } else {
-        /* a tiny glow texture, stretched by the GPU */
+        /* a tiny glow texture, stretched by the GPU, and the app's tile, large */
         r_image(S.glow, W * 0.77f - 900, H * 0.33f - 700, 1800, 1400, r, g, b, (Uint8)(alpha * 0.8f), 0);
-        if (a->icon_tex) {
-            float ls = 400, lx = W - SAFE_X - PAD - ls, ly = SAFE_Y + 60;
-            r_image(a->icon_tex, lx + 30, ly + 30, ls - 60, ls - 60, 255, 255, 255, alpha, 0);
-            r_shape(lx, ly, ls, ls, 96, 255, 255, 255, (Uint8)(alpha * 0.07f), 0, 1, 1);
-            r_shape(lx, ly, ls, ls, 96, 255, 255, 255, (Uint8)(alpha * 0.55f), 2.0f, 1.0f, 0.3f);
+        if (a->logo_tex) {
+            float tw = 520, th = tw * TILE_H / TILE_W, tx = RIGHT - tw, ty = SAFE_Y + 120, k = tw / TILE_W;
+            r_shadow(tx, ty, tw, th, TILE_R * k, 40, 20, 0.45f * alpha / 255);
+            r_shape(tx, ty, tw, th, TILE_R * k, r, g, b, alpha, 0, 1, 1);
+            float lw = a->logo_w * k, lh = a->logo_h * k;
+            r_image(a->logo_tex, tx + (tw - lw) / 2, ty + (th - lh) / 2, lw, lh, 255, 255, 255, alpha, a->logo_r * k);
         }
     }
+    r_image(S.scrim_v, 0, H * 0.55f, W, H * 0.45f, 255, 255, 255, alpha, 0);
+    r_image(S.scrim_h, 0, 0, W * 0.5f, H, 255, 255, 255, alpha, 0);
+}
+
+static void draw_app_text(App *a, Uint8 alpha)
+{
+    if (!a || !alpha) return;
     ensure_app_texts(a);
     draw_text(a->big, a->bw, a->bh, LEFT - 4, 340, alpha);
     Tex *sub = is_stremio(a) && !S.rail_connected ? S.sub_connect_tex : S.sub_tex;
@@ -1433,10 +1447,10 @@ static void draw_app_shelf(App *a, Uint8 alpha)
     draw_text(sub, sw, sh, LEFT, 340 + a->bh + 10, (Uint8)(alpha * 0.72f));
 }
 
-static void draw_rail_shelf(Uint8 alpha, int backdrop)
+static void draw_rail_art(Uint8 alpha)
 {
     RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
-    if (!cur) return;
+    if (!cur || !alpha) return;
     RailItem *prev = S.rail_art_prev >= 0 && S.rail_art_prev < S.nrail ? &S.rail[S.rail_art_prev] : NULL;
     Tex *pt = prev ? (prev->bg_tex ? prev->bg_tex : prev->thumb_tex) : NULL;
     Tex *ct = cur->bg_tex ? cur->bg_tex : cur->thumb_tex;
@@ -1444,7 +1458,12 @@ static void draw_rail_shelf(Uint8 alpha, int backdrop)
     r_cover(ct, 0, 0, W, H, (Uint8)(alpha * S.rail_art_a), 0);
     r_image(S.scrim_v, 0, H * 0.55f, W, H * 0.45f, 255, 255, 255, alpha, 0);
     r_image(S.scrim_h, 0, 0, W * 0.5f, H, 255, 255, 255, alpha, 0);
+}
 
+static void draw_rail_content(Uint8 alpha, int backdrop)
+{
+    RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
+    if (!cur || !alpha) return;
     /* heading capsule, title, meta */
     float hy = SAFE_Y + 58, hh = 46;
     panel(backdrop, LEFT, hy, S.hw + 44, hh, hh / 2, 1, 0, alpha / 255.0f);
@@ -1456,7 +1475,7 @@ static void draw_rail_shelf(Uint8 alpha, int backdrop)
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
         float sc = 1 + 0.10f * it->s;
-        float cw = RAIL_CARD_W * sc, ch = RAIL_CARD_H * sc, rad = 20 * sc;
+        float cw = RAIL_CARD_W * sc, ch = RAIL_CARD_H * sc, rad = 18 * sc;
         float x = LEFT + i * (RAIL_CARD_W + RAIL_GAP) - S.rail_shift - (cw - RAIL_CARD_W) / 2;
         float y = RAIL_Y - (ch - RAIL_CARD_H) / 2 - 6 * it->s;
         if (x > W || x + cw < 0) continue;
@@ -1471,8 +1490,6 @@ static void draw_rail_shelf(Uint8 alpha, int backdrop)
         if (it->thumb_tex) r_cover(it->thumb_tex, x, y, cw, ch, ca, rad);
         else r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * 0.08f), 0, 1, 1);
         r_image(S.scrim_v, x, y + ch * 0.45f, cw, ch * 0.55f, 255, 255, 255, ca, rad);
-        r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * 0.3f * (1 - it->s)), 1.5f, 1.0f, 0.25f);
-        if (it->s > 0.01f) r_rim(x, y, cw, ch, rad, 1.5f + 1.5f * it->s, (Uint8)(ca * 0.92f * it->s), S.light_x, S.light_y);
         draw_text(it->name_tex, it->nw, it->nh, x + 16 * sc, y + ch - (22 + it->nh) * sc, ca);
         float bx = x + 16 * sc, bw = cw - 32 * sc, by = y + ch - 17 * sc, bh = 5 * sc; /* progress */
         r_shape(bx, by, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ca * 0.28f), 0, 1, 1);
@@ -1480,15 +1497,34 @@ static void draw_rail_shelf(Uint8 alpha, int backdrop)
     }
 }
 
-static void draw_shelf(int backdrop)
+/* the shelf shows the rail when Stremio (with something to resume) was the last
+ * top-row app focused, even after focus moves on below the dock */
+static int shelf_rail(void)
 {
-    Uint8 alpha = (Uint8)(255 * (1 - S.scrolled));
+    if (rail_active()) return 1;
+    App *a = S.focus >= COLS ? item_app(S.shelf_cur) : NULL;
+    return a && is_stremio(a) && S.nrail > 0;
+}
+
+static void draw_shelf_art(Uint8 alpha)
+{
+    if (!alpha) return;
+    if (shelf_rail()) {
+        draw_rail_art(alpha);
+    } else {
+        draw_app_art(item_app(S.shelf_prev), (Uint8)(alpha * (1 - S.shelf_a)));
+        draw_app_art(item_app(S.shelf_cur), (Uint8)(alpha * S.shelf_a));
+    }
+}
+
+static void draw_shelf_content(Uint8 alpha, int backdrop)
+{
     if (!alpha) return;
     if (rail_active()) {
-        draw_rail_shelf(alpha, backdrop);
+        draw_rail_content(alpha, backdrop);
     } else {
-        draw_app_shelf(item_app(S.shelf_prev), (Uint8)(alpha * (1 - S.shelf_a)));
-        draw_app_shelf(item_app(S.shelf_cur), (Uint8)(alpha * S.shelf_a));
+        draw_app_text(item_app(S.shelf_prev), (Uint8)(alpha * (1 - S.shelf_a)));
+        draw_app_text(item_app(S.shelf_cur), (Uint8)(alpha * S.shelf_a));
     }
 }
 
@@ -1516,7 +1552,7 @@ static void draw_top_bar(float right, Uint8 alpha, int backdrop)
 static void draw_clock(Uint8 alpha, int backdrop)
 {
     if (!alpha) return;
-    float pw = S.clock_w + 48, x = W - SAFE_X - pw;
+    float pw = S.clock_w + 48, x = RIGHT - pw;
     panel(backdrop, x, SAFE_Y, pw, BAR, BAR / 2, 1, 0, alpha / 255.0f);
     draw_text(S.clock_tex, S.clock_w, S.clock_h, x + 24, SAFE_Y + (BAR - S.clock_h) / 2.0f, (Uint8)(alpha * TEXT_STATIC / 255));
     draw_top_bar(x, alpha, backdrop);
@@ -1543,7 +1579,7 @@ static void draw_tile(int i, int backdrop)
     Uint8 r, g, b;
     app_color(a, &r, &g, &b);
     if (k > 0.01f && !backdrop) r_shadow(x, y, w, h, rad, 28, 16, 0.5f * k);
-    r_shape(x, y, w, h, rad, r, g, b, a ? 255 : 18, 0, 1, 1); /* uniform: opaque, the icon's own colour */
+    r_shape(x, y, w, h, rad, r, g, b, a ? 255 : 34, 0, 1, 1); /* uniform: opaque, the icon's own colour */
     if (a && a->logo_tex) {
         float lw = a->logo_w * sc, lh = a->logo_h * sc;
         r_image(a->logo_tex, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh, 255, 255, 255, 255, a->logo_r * sc);
@@ -1556,9 +1592,7 @@ static void draw_tile(int i, int backdrop)
         if (!ht) ht = text_render(S.f_semi, 28, "\xE2\x80\xA2 \xE2\x80\xA2 \xE2\x80\xA2   Hidden", 0, &hw, &hh);
         draw_text(ht, hw, hh, x + (w - hw) / 2, y + (h - hh) / 2, 205);
     }
-    /* rim: a focused tile turns to glass and catches a light that moves as it sways */
-    r_shape(x, y, w, h, rad, 255, 255, 255, (Uint8)(90 * (1 - k) + (S.moving && focused ? 35 : 0)), 1.5f, 1.0f, 0.2f);
-    if (k > 0.01f) r_rim(x, y, w, h, rad, 1.5f + 1.5f * k, (Uint8)(235 * k), S.light_x, S.light_y);
+    if (S.moving && focused) r_shape(x, y, w, h, rad, 255, 255, 255, 200, 2.0f, 1, 1); /* the tile you're moving */
     if (a && k > 0.01f && !backdrop) {
         ensure_app_texts(a);
         float ly = i < COLS ? DOCK_Y - 160 * S.scrolled + DOCK_H + 14 : by + TILE_H + 22; /* top row: under the dock */
@@ -1569,10 +1603,16 @@ static void draw_tile(int i, int backdrop)
 /* Everything below the overlays. backdrop: the copy the glass refracts. */
 static void draw_scene(int backdrop)
 {
-    draw_shelf(backdrop);
+    Uint8 shelf_a = (Uint8)(255 * (1 - S.scrolled));
+    draw_shelf_art(shelf_a);
+    if (S.scrolled > 0.004f) { /* below the dock the picture stays, blurred and dimmed, so the apps stand out */
+        r_backdrop_image(1, (Uint8)(255 * S.scrolled));
+        r_fill(0, 0, 0, (Uint8)(110 * S.scrolled));
+    }
+    draw_shelf_content(shelf_a, backdrop);
     float dock_y = DOCK_Y - 160 * S.scrolled, dock_a = 1 - S.scrolled;
-    if (!backdrop && dock_a > 0.004f) r_shadow(SAFE_X, dock_y, W - 2 * SAFE_X, DOCK_H, TILE_R + PAD, 40, 14, 0.3f * dock_a);
-    panel(backdrop, SAFE_X, dock_y, W - 2 * SAFE_X, DOCK_H, TILE_R + PAD, 0, 0, dock_a); /* icons on it are opaque: stays clear */
+    if (!backdrop && dock_a > 0.004f) r_shadow(DOCK_X, dock_y, DOCK_W, DOCK_H, TILE_R + PAD, 40, 14, 0.3f * dock_a);
+    panel(backdrop, DOCK_X, dock_y, DOCK_W, DOCK_H, TILE_R + PAD, 0, 0, dock_a); /* icons on it are opaque: stays clear */
     int dimmed = !backdrop && S.dim > 0.004f, top = S.zone == ZONE_TOP;
     if (!(dimmed && top)) draw_clock((Uint8)(255 * (1 - S.scrolled)), backdrop);
     for (int i = 0; i < S.nitems; i++)
@@ -1643,9 +1683,10 @@ extern int homeplus_screenshot(const char *path);
 static int render(float dt, const char *shot)
 {
     int anim = update(dt);
-    /* what the dock and top bar refract: the Top Shelf only (the icons sit on the glass) */
+    /* the Top Shelf picture alone: what the dock and top bar refract (the icons
+     * sit on the glass), and the blurred background below the dock */
     r_backdrop_begin();
-    draw_shelf(1);
+    draw_shelf_art(255);
     r_backdrop_end();
 
     r_frame_begin(8, 8, 11);

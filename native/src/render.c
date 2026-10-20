@@ -559,6 +559,19 @@ void r_backdrop_end(void)
     bind_target(NULL);
 }
 
+void r_backdrop_image(int blurred, Uint8 alpha)
+{
+    if (!alpha) return;
+    const Target *t = blurred ? &R.u1 : &R.backdrop;
+    use(&R.tex);
+    bind_tex(0, t->tex);
+    gl.Uniform4f(R.tex.uv, 0, 1, 1, 0); /* FBO textures are bottom-up */
+    gl.Uniform4f(R.tex.color, 1, 1, 1, alpha / 255.0f);
+    gl.Uniform1f(R.tex.radius, 0);
+    quad(&R.tex, 0, 0, (float)R.lw, (float)R.lh);
+    gl.Uniform4f(R.tex.uv, 0, 0, 1, 1);
+}
+
 void r_glass(const Glass *g)
 {
     if (g->alpha <= 0 || g->w <= 0 || g->h <= 0) return;
