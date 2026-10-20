@@ -143,6 +143,7 @@ module.exports = function createPlex({ readConfig, writeConfig, log, version }) 
     const photo = (p, w, h) => p ? `${a.url}/photo/:/transcode?width=${w}&height=${h}&minSize=1&upscale=1&url=${encodeURIComponent(p)}&X-Plex-Token=${a.serverToken}` : '';
     const art = m.art || m.grandparentArt || '';
     const duration = m.duration || 0, offset = m.viewOffset || 0;
+    const clear = (m.Image || []).find((im) => im.type === 'clearLogo'); /* newer servers: the title's logo */
     return {
       id: String(m.ratingKey),
       source: 'plex',
@@ -151,7 +152,7 @@ module.exports = function createPlex({ readConfig, writeConfig, log, version }) 
       background: photo(art, 1920, 1080),
       // the 16:9 card: an episode's own still; a movie's thumb is a poster, so its art
       thumbnail: photo(ep ? m.thumb || art : art || m.thumb, 480, 270),
-      logo: '',
+      logo: clear && clear.url ? `${a.url}${clear.url}${clear.url.includes('?') ? '&' : '?'}X-Plex-Token=${a.serverToken}` : '', /* PNG, to keep its transparency */
       poster: '',
       season: ep ? m.parentIndex || 0 : 0,
       episode: ep ? m.index || 0 : 0,
@@ -164,6 +165,17 @@ module.exports = function createPlex({ readConfig, writeConfig, log, version }) 
 
   async function items() {
     if (cache.items && Date.now() - cache.at < 60 * 1000) return cache.items;
+    try {
+      return await fetchItems();
+    } catch (e) { /* an outage doesn't empty the shelf: the last list stays */
+      if (!cache.items) throw e;
+      log('plex: refresh failed, keeping the last list:', e.message);
+      cache.at = Date.now();
+      return cache.items;
+    }
+  }
+
+  async function fetchItems() {
     const a = account();
     if (!a || !a.serverToken) return [];
     let r = await requestJSON('GET', `${a.url}/hubs/continueWatching?count=16`, { headers: headers(a.serverToken) });

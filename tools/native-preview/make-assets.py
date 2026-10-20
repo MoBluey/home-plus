@@ -8,7 +8,7 @@ font = ImageFont.truetype(sys.argv[2], 120)
 APPS = [("netflix", "Netflix", (229, 9, 20), "N"), ("youtube", "YouTube", (255, 0, 0), "▶"),
         ("stremio", "Stremio", (123, 91, 245), "S"), ("prime", "Prime Video", (0, 168, 225), "p"),
         ("disney", "Disney+", (17, 60, 207), "D+"), ("plex", "Plex", (229, 160, 13), "›"),
-        ("spotify", "Spotify", (30, 215, 96), "♪"), ("twitch", "Twitch", (145, 70, 255), "t"),
+        ("spotify", "Spotify - Music and Podcasts", (30, 215, 96), "♪"), ("twitch", "Twitch", (145, 70, 255), "t"),
         ("com.webos.app.hdmi1", "HDMI 1", (58, 58, 64), "1"), ("browser", "Web Browser", (0, 122, 255), "◎"),
         ("com.palm.app.settings", "Settings", (142, 142, 147), "⚙"), ("jellyfin", "Jellyfin", (170, 92, 195), "J"),
         ("kodi", "Kodi", (23, 178, 231), "K"), ("music", "Music", (252, 60, 68), "♫")]
@@ -45,3 +45,10 @@ for fx, fy in ((0, 0), (N - 7, 0), (0, N - 7)):  # finder patterns
     d.rectangle([(fx + 1) * C, (fy + 1) * C, (fx + 6) * C - 1, (fy + 6) * C - 1], fill=255)
     d.rectangle([(fx + 2) * C, (fy + 2) * C, (fx + 5) * C - 1, (fy + 5) * C - 1], fill=0)
 qr.save(f"{out}/qr.png")
+# Title logos, as TMDB serves them: white lettering on transparency
+logo_font = ImageFont.truetype(sys.argv[2], 92)
+for i, name in enumerate(["NORTHERN LIGHTS", "THE LONG ORBIT", "PAPER MOON"]):
+    w = int(logo_font.getlength(name)) + 24
+    im = Image.new("RGBA", (w, 120), (0, 0, 0, 0))
+    ImageDraw.Draw(im).text((12, 60), name, font=logo_font, fill=(255, 255, 255, 255), anchor="lm")
+    im.save(f"{out}/logo{i}.png")

@@ -71,6 +71,16 @@ static int in_ring_rrect(float x, float y, float cx, float cy, float hw, float h
     return d <= 0 && d > -t;
 }
 
+/* distance from (px, py) to the segment a-b */
+static float sd_segment(float px, float py, float ax, float ay, float bx, float by)
+{
+    float pax = px - ax, pay = py - ay, bax = bx - ax, bay = by - ay;
+    float h = (pax * bax + pay * bay) / (bax * bax + bay * bay);
+    h = h < 0 ? 0 : h > 1 ? 1 : h;
+    float dx = pax - bax * h, dy = pay - bay * h;
+    return sqrtf(dx * dx + dy * dy);
+}
+
 static int icon_inside(int kind, float x, float y)
 {
     const float T = 0.075f; /* stroke width */
@@ -86,6 +96,8 @@ static int icon_inside(int kind, float x, float y)
         float tooth = cosf(a * 8) > 0.25f ? 0.44f : 0.34f;
         return rr <= tooth && rr >= 0.14f;
     }
+    case ICON_CHEVRON: /* tvOS's: a wide, shallow caret with round ends */
+        return sd_segment(x, y, -0.42f, 0.08f, 0.0f, -0.08f) < 0.04f || sd_segment(x, y, 0.0f, -0.08f, 0.42f, 0.08f) < 0.04f;
     }
     return 0;
 }

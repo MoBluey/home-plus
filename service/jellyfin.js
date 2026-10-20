@@ -190,6 +190,10 @@ module.exports = function createJellyfin({ readConfig, writeConfig, log, version
     else if (tags.Thumb) thumbnail = img(it.Id, 'Thumb', 480, tags.Thumb);
     else if (it.ParentThumbItemId) thumbnail = img(it.ParentThumbItemId, 'Thumb', 480, it.ParentThumbImageTag);
     else if (background) thumbnail = background.replace('maxWidth=1920', 'maxWidth=480');
+    // the title's logo: the series' for an episode
+    let logo = '';
+    if (tags.Logo) logo = img(it.Id, 'Logo', 500, tags.Logo);
+    else if (it.ParentLogoItemId) logo = img(it.ParentLogoItemId, 'Logo', 500, it.ParentLogoImageTag);
     return {
       id: it.Id,
       source: 'jellyfin',
@@ -197,7 +201,7 @@ module.exports = function createJellyfin({ readConfig, writeConfig, log, version
       name: ep ? it.SeriesName || it.Name : it.Name,
       background,
       thumbnail,
-      logo: '',
+      logo,
       poster: '',
       season: ep ? it.ParentIndexNumber || 0 : 0,
       episode: ep ? it.IndexNumber || 0 : 0,
@@ -218,10 +222,21 @@ module.exports = function createJellyfin({ readConfig, writeConfig, log, version
     return r;
   }
 
-  const QUERY = 'limit=16&mediaTypes=Video&enableImageTypes=Primary,Backdrop,Thumb&imageTypeLimit=1&enableUserData=true';
+  const QUERY = 'limit=16&mediaTypes=Video&enableImageTypes=Primary,Backdrop,Thumb,Logo&imageTypeLimit=1&enableUserData=true';
 
   async function items() {
     if (cache.items && Date.now() - cache.at < 60 * 1000) return cache.items;
+    try {
+      return await fetchItems();
+    } catch (e) { /* an outage doesn't empty the shelf: the last list stays */
+      if (!cache.items) throw e;
+      log('jellyfin: refresh failed, keeping the last list:', e.message);
+      cache.at = Date.now();
+      return cache.items;
+    }
+  }
+
+  async function fetchItems() {
     const a = account();
     if (!a || !a.token) return [];
     // 10.9 and later; older servers and Emby have the per-user route
@@ -229,7 +244,7 @@ module.exports = function createJellyfin({ readConfig, writeConfig, log, version
     if (resume && resume.status === 404) resume = await get(a, `/Users/${a.userId}/Items/Resume?${QUERY}`);
     if (!resume) return [];
     if (resume.status !== 200 || !resume.json) throw new Error(`Jellyfin resume failed (${resume.status})`);
-    const next = await get(a, `/Shows/NextUp?userId=${a.userId}&limit=10&enableImageTypes=Primary,Backdrop,Thumb&imageTypeLimit=1&enableUserData=true`);
+    const next = await get(a, `/Shows/NextUp?userId=${a.userId}&limit=10&enableImageTypes=Primary,Backdrop,Thumb,Logo&imageTypeLimit=1&enableUserData=true`);
     const list = (resume.json.Items || []).map((it) => toItem(a, it));
     const seen = new Set(list.map((it) => it.id));
     for (const it of (next && next.status === 200 && next.json && next.json.Items) || []) {

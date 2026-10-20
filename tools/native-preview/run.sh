@@ -32,21 +32,24 @@ shot scrolled "DR" 3000
 shot sheet "H" 3500
 shot topbar "U" 3000
 shot settings "UO" 3500
-shot recents "ULLO" 3800
+shot recents "B" 3800
 shot settings-display "UODO" 3800
 shot settings-remove "UODDDDDDDDO" 4600
 shot last-row "DD" 3500
 shot move-hint "H.O" 3800
-shot pointer-settings "MCM" 4200 "1636,88 960,600"
+shot pointer-settings "MCM" 4200 "1790,80 960,600"
 shot crossfade "R" 1590
 shot pointer-then-keys "MUC" 4200 "1660,850"
-shot back-recents "B" 3500
 service HOMEPLUS_PREVIEW_PREFS='{"reduceTransparency":true}'
 shot reduce-transparency "UO" 3500
 # media servers: Jellyfin's and Plex's Continue Watching, and a sign-in with a QR code
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=1
 shot jellyfin "" 4500
 shot plex "R" 4500
+# streaming apps: what's popular on them (a mock TMDB), turning, and stepping through with Up
+service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_TMDB=1
+shot popular "" 5200
+shot popular-browse "URR" 5600
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=signin
 shot signin-plex "UODDDDDODDDO" 5600
 service HOMEPLUS_PREVIEW=1

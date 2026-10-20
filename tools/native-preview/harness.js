@@ -119,6 +119,44 @@ if (process.env.HOMEPLUS_PREVIEW_MEDIA) {
   fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify(cfg));
 }
 
+// HOMEPLUS_PREVIEW_TMDB: a mock TMDB with three streaming services (Netflix, Prime Video,
+// Disney+), their popular series and films, and logos for some titles.
+if (process.env.HOMEPLUS_PREVIEW_TMDB) {
+  const http = require('http');
+  const PORT = 47901, BASE = `http://127.0.0.1:${PORT}`;
+  const json = (res, o) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const image = (res, file, type) => { res.writeHead(200, { 'Content-Type': type }); fs.createReadStream(path.join(assets, file)).pipe(res); };
+  const PROVIDERS = [{ provider_id: 8, provider_name: 'Netflix' }, { provider_id: 9, provider_name: 'Amazon Prime Video' },
+    { provider_id: 337, provider_name: 'Disney Plus' }, { provider_id: 2, provider_name: 'Apple TV' }];
+  const NAMES = ['Northern Lights', 'The Long Orbit', 'Paper Moon', 'Severed Signals', 'Glass City', 'Midnight Kitchen', 'Harbor Lights'];
+  const titles = (provider, kind) => NAMES.map((name, i) => ({ i, name })).filter(({ i }) => (i + provider) % 2 === (kind === 'tv' ? 0 : 1))
+    .map(({ i, name }) => ({ id: provider * 100 + i, [kind === 'tv' ? 'name' : 'title']: name, popularity: 100 - i,
+      [kind === 'tv' ? 'first_air_date' : 'release_date']: `${2020 + i}-05-01`, backdrop_path: `/b${(i + provider) % 5}.jpg` }));
+  http.createServer((req, res) => {
+    const p = new URL(req.url, BASE).pathname;
+    if (/^\/tmdb\/watch\/providers\//.test(p)) return json(res, { results: PROVIDERS });
+    const d = /^\/tmdb\/discover\/(tv|movie)$/.exec(p);
+    if (d) return json(res, { results: titles(Number(new URL(req.url, BASE).searchParams.get('with_watch_providers')), d[1]) });
+    if (p === '/tmdb/trending/all/day') {
+      return json(res, { results: [...titles(7, 'tv'), ...titles(7, 'movie')].map((m) => Object.assign({ media_type: m.name ? 'tv' : 'movie' }, m)) });
+    }
+    const im = /^\/tmdb\/(tv|movie)\/(\d+)\/images$/.exec(p);
+    if (im) { const i = Number(im[2]) % 100; return json(res, { logos: i < 3 ? [{ file_path: `/l${i}.png`, iso_639_1: 'en', vote_average: 5 }] : [] }); }
+    if (p === '/tmdb/configuration') return json(res, { images: {} });
+    let m = /^\/img\/w\d+\/b(\d)\.jpg$/.exec(p);
+    if (m) return image(res, `show${m[1]}.jpg`, 'image/jpeg');
+    m = /^\/img\/w\d+\/l(\d)\.png$/.exec(p);
+    if (m) return image(res, `logo${m[1]}.png`, 'image/png');
+    res.writeHead(404); res.end();
+  }).listen(PORT, '127.0.0.1');
+  process.env.HOMEPLUS_TMDB = `${BASE}/tmdb`;
+  process.env.HOMEPLUS_TMDB_IMAGES = `${BASE}/img`;
+  const cfg = JSON.parse(fs.readFileSync('/var/lib/homeplus/config.json', 'utf8'));
+  cfg.tmdbKey = 'preview-key';
+  cfg.tmdbRegion = 'US';
+  fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify(cfg));
+}
+
 global.__stubApps = APPS.map(([id, title]) => ({
   id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || ''
 }));

@@ -2,21 +2,21 @@
 
 A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with Continue Watching from Stremio, Trakt, Jellyfin and Plex.
 
-![Home+ home screen](preview/native-home.png)
+![Home+ home screen](docs/screenshots/home.jpg)
 
-![Continue Watching in the Top Shelf](preview/native-stremio-shelf.png)
+![Continue Watching in the Top Shelf](docs/screenshots/continue-watching.jpg)
 
-*Screenshots use placeholder apps and shows.*
+*Screenshots show a real TV's apps and Continue Watching, rendered with the desktop preview. The Jellyfin and Plex ones use placeholder shows.*
 
-> **Not affiliated with LG, Apple, Stremio, Trakt, Jellyfin or Plex.** Home+ is an independent project. tvOS and Liquid Glass are Apple's names for Apple's designs; Home+ only borrows the look. It runs on **rooted** TVs and uses Stremio's, Trakt's and Plex's web APIs unofficially. Use it at your own risk.
+> **Not affiliated with LG, Apple, Stremio, Trakt, Jellyfin, Plex or TMDB.** Home+ uses the TMDB API but is not endorsed or certified by TMDB. Home+ is an independent project. tvOS and Liquid Glass are Apple's names for Apple's designs; Home+ only borrows the look. It runs on **rooted** TVs and uses Stremio's, Trakt's and Plex's web APIs unofficially. Use it at your own risk.
 
 ## What it does
 
-- **Top Shelf:** focus an app in the top row and the screen fills with its artwork, or with a glow taken from its icon.
+- **Top Shelf:** focus an app in the top row and the screen fills with its pictures, one title at a time, like tvOS. Stremio, Jellyfin and Plex show what you're partway through; streaming apps show what's popular on them (with a free TMDB key); other apps get a glow taken from their icon.
 - **Liquid Glass:** the dock, clock, buttons and menus bend the light at their edges and blur only what sits behind text. Focused tiles lift, sway and catch a moving light. The Magic Remote pointer steers that light.
 - **Motion and sound:** everything moves on springs, and menus grow out of the button that opened them. A soft tick plays when focus moves; **Settings → Sounds** turns it off.
-- **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. Focus the app in the top row, then press **Up** to browse it. You sign in with a code or a QR code, so no password is typed on the TV.
-- **Recents:** an App Switcher for open apps, most recent first. Open them, close them one by one, or close them all.
+- **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. It turns to the next title every 8 seconds; press **Up**, then **Left** and **Right**, to step through them. You sign in with a code or a QR code, so no password is typed on the TV.
+- **Recents:** an App Switcher for open apps, most recent first. Open them, close them one by one, or close them all. Press **Back** on the first app to open it.
 - **Your layout:** hold **OK** on an app to move it, move it to the front or hide it. Hidden apps collect in a "Hidden" tile at the end.
 - **Home button:** optionally, the Home button opens Home+ instead of LG's home screen.
 - **OLED care:** the picture drifts by a pixel every minute, and an idle Home+ dims, then goes black.
@@ -54,15 +54,19 @@ Updates install the same way. An update resets the service's root access, and Ho
 | Key | What it does |
 |---|---|
 | Arrows, **OK** | Move and open. Hold **OK** for an app's options. |
-| **Back** | Closes a menu, steps out of Continue Watching or the top buttons, then jumps to the first app. On the first app it opens Recents. It never leaves Home+. |
+| **Back** | Closes a menu, steps out of Continue Watching or the clock, then jumps to the first app. On the first app it opens Recents. It never leaves Home+. |
 | **Red** | Recents |
 | **Green** | Settings |
 | **Yellow** | The focused app's options |
 | **Blue** | Move the focused app (press again when it's in place) |
 
+![Recents, an App Switcher like tvOS's](docs/screenshots/recents.jpg)
+
 **Magic Remote pointer:** point at anything and click. Pressing an arrow hands control back to the keys: then OK presses what the keys focused, wherever the cursor happens to be. Moving the pointer clearly takes over again.
 
-From the top row, press **Up** to reach the round **Recents** and **Settings** buttons next to the clock. On Stremio, Jellyfin or Plex, Up goes into Continue Watching first. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
+From the top row, press **Up** to reach the clock at the top right, as on tvOS; **OK** on it opens Settings. On Stremio, Jellyfin or Plex, Up goes into Continue Watching first, as the chevron above the dock shows. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
+
+![Settings](docs/screenshots/settings.jpg)
 
 **Settings** works like tvOS's: each row shows its current value, rows with **›** open a page, and **Back** goes up one page.
 
@@ -73,7 +77,7 @@ From the top row, press **Up** to reach the round **Recents** and **Settings** b
 | **Sounds** | Focus sounds on or off |
 | **Clock** | 12-hour or 24-hour |
 | **Accessibility** | Reduce Motion, Reduce Transparency |
-| **Accounts** | Stremio, Trakt, Jellyfin and Plex: whether they're connected, signing in and signing out |
+| **Accounts** | Stremio, Trakt, Jellyfin, Plex and TMDB: whether they're connected, signing in and signing out |
 | **Hidden Apps** | Apps you've hidden, to show them again |
 | **TV Settings** | LG's own settings apps |
 | **About** | Version, whether Home+ is set up, the last remote key it ignored, licence |
@@ -81,7 +85,7 @@ From the top row, press **Up** to reach the round **Recents** and **Settings** b
 
 ## Continue Watching
 
-Focus Stremio, Jellyfin or Plex in the top row, and the Top Shelf shows what you're partway through there. Press **Up** to browse it.
+Focus Stremio, Jellyfin or Plex in the top row, and the Top Shelf shows what you're partway through there: one title at a time, with its picture, its logo and how far you are, turning to the next every 8 seconds. Press **Up** (the chevron above the dock says you can), then **Left** and **Right**, to step through them.
 
 Sign in under **Settings → Accounts**, or hold **OK** on the app and choose **Sign In**. The TV shows a code, and a QR code where the service has one; you approve it on your phone or computer, where you're already signed in. No password is typed on the TV.
 
@@ -122,7 +126,7 @@ Sign-in uses Jellyfin's Quick Connect, so the server needs it turned on (**Dashb
 1. Go to **Settings → Accounts → Jellyfin**. Home+ finds the server on your network and shows a six-digit code.
 2. In a Jellyfin app where you're signed in, open **Settings → Quick Connect** and enter the code.
 
-The row shows what you're partway through, then the next episode of each show you're watching. The Accounts row appears once the Jellyfin app is installed.
+The titles are what you're partway through, then the next episode of each show you're watching. The Accounts row appears once the Jellyfin app is installed.
 
 **A server Home+ can't find** (on another network, or behind a reverse proxy): give it the address over SSH, then sign in as above.
 
@@ -135,7 +139,22 @@ luna-send -n 1 luna://com.github.pmiraka.homeplus.service/jellyfinServer '{"url"
 1. Go to **Settings → Accounts → Plex**.
 2. Scan the QR code, or go to <https://plex.tv/link> and enter the code.
 
-Home+ then picks your server, one you own first, and reaches it on your network when it can. The row is the server's Continue Watching (On Deck on older servers). The Accounts row appears once the Plex app is installed.
+Home+ then picks your server, one you own first, and reaches it on your network when it can. The titles are the server's Continue Watching (On Deck on older servers). The Accounts row appears once the Plex app is installed.
+
+### Popular on streaming apps (TMDB)
+
+![Popular on Netflix](docs/screenshots/popular.jpg)
+
+Streaming apps (Netflix, Prime Video, Disney+, Apple TV, Max and others) show what's popular on them in their Top Shelf, like the Apple TV app's "What to Watch". The titles come from [TMDB](https://www.themoviedb.org), which needs a free key of your own:
+1. Make a TMDB account, then go to **Settings → API** and request an API key (or copy the API Read Access Token).
+2. Give it to Home+ over SSH:
+   ```sh
+   luna-send -n 1 luna://com.github.pmiraka.homeplus.service/tmdbSetup '{"key":"…"}'
+   ```
+
+Home+ checks the key with TMDB before keeping it, and `{"key":""}` removes it. The catalogs are your TV's LG store country's; if you watch from elsewhere, give the two-letter country code with `{"region":"AL"}` (`""` goes back to the TV's). Apps with no picture of their own (YouTube, Smart IPTV and the like) rotate through what's trending on TMDB instead, under "Trending Now".
+
+![Trending Now behind YouTube](docs/screenshots/trending.jpg) An app counts as a streaming service when its name is one TMDB lists for your TV's country (its LG store country). Its 10 most popular series and films are fetched every 12 hours. **OK** opens the app and names the title, ready to search for: LG's apps can't be sent to a title.
 
 ## Home button
 
@@ -163,7 +182,7 @@ Change the timings, or turn any of these off, in **Settings → Display & OLED**
 **Settings → Remove Home+** undoes everything Home+ set up, then uninstalls it:
 - it turns off the Home button takeover;
 - it deletes its boot script and settings;
-- it deletes its sign-ins (Stremio, Trakt, Jellyfin, Plex);
+- it deletes its sign-ins and keys (Stremio, Trakt, Jellyfin, Plex, TMDB);
 - it removes its lginputhook keybinds (your others stay);
 - it deletes the root access files the Homebrew Channel created.
 
@@ -185,12 +204,13 @@ If you added the lginputhook keybind, delete it in the LG Input Hook app. If the
   - `/tmp/homeplus-boot.log`: the boot script.
 - **The Home button still opens LG's home screen:** check **Settings → Home Button**. If you use lginputhook, restart the TV after changing its keybinds.
 - **No Continue Watching:** sign in under **Settings → Accounts**, and make sure the app's tile is in the top row.
+- **A streaming app shows a glow, not what's popular:** check **Settings → Accounts → TMDB**, and that the app's name is one TMDB lists for your TV's country.
 - **"No Jellyfin server found":** the TV and the server must be on the same network, with the server's auto-discovery on (it is by default). Or give Home+ its address (see [Jellyfin](#jellyfin)).
 - **Plex: "none of your servers answered":** the server must be running and reachable from the TV. If it's only reachable from outside, turn on Remote Access in Plex.
 
 ## Privacy and security
 
-- **What Home+ connects to:** only the services you sign in to: Stremio's and Trakt's APIs, `plex.tv` and your Plex server, and your Jellyfin server. Stremio artwork comes from `images.metahub.space`; Jellyfin and Plex artwork comes from your server. To find a Jellyfin server, Home+ sends one broadcast on your local network (UDP port 7359), only when you start a Jellyfin sign-in.
+- **What Home+ connects to:** only the services you sign in to: Stremio's and Trakt's APIs, `plex.tv` and your Plex server, your Jellyfin server, and TMDB (`api.themoviedb.org`, `image.tmdb.org`) if you add a key. Stremio artwork comes from `images.metahub.space`; Jellyfin and Plex artwork comes from your server. To find a Jellyfin server, Home+ sends one broadcast on your local network (UDP port 7359), only when you start a Jellyfin sign-in.
 - **Signing out:** Settings → Accounts signs out of Stremio and ends Home+'s session on your Jellyfin server. Plex lists Home+ under your account's **Authorized Devices**; remove it there to revoke its access.
 - **What's stored:** sign-ins, your layout and preferences, in `/var/lib/homeplus/config.json` (readable only by root).
 - **The local API:** the service runs as root and answers only on `127.0.0.1`. Every request needs a token the service writes into Home+'s app folder, and requests from web pages and other hosts are refused.
@@ -224,6 +244,7 @@ The launcher talks to the service over a local HTTP API on `127.0.0.1:47823`. It
 | `POST /api/launch` | Open an app |
 | `GET` / `POST /api/layout` | Tile order and hidden apps |
 | `GET /api/continue` | Continue Watching from Stremio and Trakt, or with `?source=jellyfin` or `plex` |
+| `GET /api/featured?app=<id>` | What's popular on a streaming app (TMDB), for its Top Shelf |
 | `GET /api/<account>/status`, `POST .../link`, `POST .../disconnect` | Accounts (`stremio`, `trakt`, `jellyfin`, `plex`): state, a sign-in code, signing out |
 | `POST /api/jellyfin/server` | A Jellyfin server's address, for one Home+ can't find |
 | `GET /api/system` | LG's settings apps |

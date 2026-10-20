@@ -180,15 +180,15 @@ static const char *FS_GLASS =
     "                  sd_round(p + vec2(0.0, 1.0), h, u_radius) - sd_round(p - vec2(0.0, 1.0), h, u_radius));\n"
     "    n /= max(length(n), 0.0001);\n" /* outward normal */
     "    float depth = -d;\n"
-    "    float band = clamp(min(h.x, h.y) * 0.9, 6.0, 64.0);\n" /* width of the rounded bevel */
+    "    float band = clamp(min(h.x, h.y) * 0.9, 6.0, 24.0);\n" /* width of the rounded bevel: narrow, like tvOS's */
     "    float t = clamp(1.0 - depth / band, 0.0, 1.0);\n" /* 1 at the rim, 0 past the bevel */
-    "    float bevel = 1.0 - sqrt(max(1.0 - t * t, 0.0));\n" /* circular profile: steepest at the rim */
-    "    vec2 sp = v_px - n * (bevel * band * 0.85 * u_lens);\n" /* sample further in: the edge magnifies */
+    "    float bevel = t * t;\n" /* a gentle profile: the picture bends without smearing into streaks */
+    "    vec2 sp = v_px - n * (bevel * band * 0.9 * u_lens);\n" /* sample further in: the edge magnifies */
     "    vec2 uv = to_uv(sp);\n"
     "    vec3 col = texture2D(u_soft, uv).rgb;\n"
-    "    float clear = 1.0 - max(u_legible, bevel * 0.5);\n"
-    "    if (clear > 0.0) {\n" /* clear glass: the sharp backdrop, split a little at the rim */
-    "        vec2 duv = vec2(n.x / u_view.x, -n.y / u_view.y) * (bevel * 1.5 * u_lens);\n"
+    "    float clear = 1.0 - max(u_legible, bevel * 0.35);\n"
+    "    if (clear > 0.0) {\n" /* clear glass: the sharp backdrop, its colours split in the bevel (faintly: Apple's are) */
+    "        vec2 duv = vec2(n.x / u_view.x, -n.y / u_view.y) * (bevel * 4.0 * u_lens);\n"
     "        vec3 sharp = vec3(texture2D(u_sharp, uv + duv).r, texture2D(u_sharp, uv).g, texture2D(u_sharp, uv - duv).b);\n"
     "        col = mix(col, sharp, clear);\n"
     "    }\n"
@@ -198,8 +198,12 @@ static const char *FS_GLASS =
     "    col = mix(col, u_tint.rgb, u_tint.a);\n"
     "    float facing = dot(n, u_light);\n"
     "    float rim = 1.0 - smoothstep(0.0, 2.5, depth);\n"
-    "    float spec = rim * (0.16 + 0.7 * max(facing, 0.0) + 0.28 * max(-facing, 0.0));\n"
-    "    spec += (1.0 - smoothstep(0.0, band * 0.7, depth)) * max(facing, 0.0) * 0.10 * (0.5 + 0.5 * u_lens);\n"
+    /* a faint rim, even all round; it only flares where it faces the light (a corner,
+     * with light from a corner), with a weaker glint on the far side. No band of
+     * light along the top: tvOS's dock has none. */
+    "    float lit = max(facing, 0.0), back = max(-facing, 0.0);\n"
+    "    lit *= lit * lit; lit *= lit; back *= back * back; back *= back;\n"
+    "    float spec = rim * (0.10 + 0.40 * lit + 0.15 * back);\n"
     "    col += spec * (0.85 + 0.45 * u_focus);\n"
     "    col += u_focus * 0.10 * (1.0 - t);\n" /* lit from within when focused */
     "    col *= 1.0 - 0.16 * bevel * max(-facing, 0.0);\n" /* the bevel away from the light falls into shade */

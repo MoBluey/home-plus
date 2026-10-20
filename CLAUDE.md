@@ -12,9 +12,13 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   Channel's `elevateService` (the launcher asks; see First run). Luna methods + a local HTTP API on `127.0.0.1:47823` (see README).
   Also: Home button takeover (`watch` mode, and `redirect` = no-flash bind mount over LG home's
   start page, approved by the owner), settings apps, recents, and Continue Watching from
-  Stremio + Trakt (`service.js`, `trakt.js`), Jellyfin (`jellyfin.js`) and Plex (`plex.js`). Sign-ins
+  Stremio + Trakt (`service.js`, `trakt.js`), Jellyfin (`jellyfin.js`) and Plex (`plex.js`), and what's popular
+  on streaming apps from TMDB (`tmdb.js`, key via `tmdbSetup`). The launcher shows each as a Top Shelf
+  carousel (one title at a time, turning every 8 s; Up then Left/Right steps through). Sign-ins
   are codes/QR codes approved on another device (Stremio's link.stremio.com, Jellyfin Quick Connect,
-  Plex's PIN at plex.tv/link). `tools/native-preview/harness.js` mocks all three (`HOMEPLUS_PREVIEW_MEDIA`).
+  Plex's PIN at plex.tv/link). `tools/native-preview/harness.js` mocks all three (`HOMEPLUS_PREVIEW_MEDIA`)
+  and TMDB (`HOMEPLUS_PREVIEW_TMDB`). LG's generic backgrounds (`*default_background*`, `*_preview.png`)
+  don't count as artwork: those apps get the icon glow.
   Logs to `/tmp/homeplus-service.log` (the native app logs there too, via `POST /api/log`).
 - `native/` — the launcher (`com.github.pmiraka.homeplus`): C, SDL2 + our own GLES2 renderer
   (`src/render.c`: Liquid Glass shader, SDF shapes, Kawase blur; GL loaded at run time),

@@ -13,8 +13,9 @@ Tex *gfx_glow(int w, int h);
  * otherwise left -> right. Stretch it over the area you want darkened. */
 Tex *gfx_gradient(int vertical, float a0, float a1);
 
-/* White line icons for the top bar, drawn once at start-up. */
-enum { ICON_RECENTS, ICON_SETTINGS };
+/* White line icons, drawn once at start-up: the clock's Settings gear, and the
+ * chevron above the dock (Up leads into the Top Shelf). */
+enum { ICON_RECENTS, ICON_SETTINGS, ICON_CHEVRON };
 Tex *gfx_icon(int kind, int size);
 
 /* ---- text ---- */

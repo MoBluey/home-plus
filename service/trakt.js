@@ -171,6 +171,17 @@ module.exports = function createTrakt({ readConfig, writeConfig, log }) {
 
   async function playback() {
     if (cache.items && Date.now() - cache.at < 60 * 1000) return cache.items;
+    try {
+      return await fetchPlayback();
+    } catch (e) { /* an outage doesn't empty the shelf: the last list stays */
+      if (!cache.items) throw e;
+      log('trakt: refresh failed, keeping the last list:', e.message);
+      cache.at = Date.now();
+      return cache.items;
+    }
+  }
+
+  async function fetchPlayback() {
     const { clientId } = creds();
     const t = await token();
     if (!clientId || !t) return [];

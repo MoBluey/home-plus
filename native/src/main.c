@@ -6,6 +6,7 @@
  *
  * Data comes from the Home+ service's local API (see service/service.js). */
 #include <ctype.h>
+#include <dlfcn.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -29,48 +30,48 @@
 
 /* ------------------------------------------------------------------ layout */
 
-/* Spacing system: the dock spans the 80/60 px TV safe area; inside its 40 px
- * padding five columns of 5:3 tiles spread evenly. Containers keep their
- * corners concentric with their content (outer radius = inner radius +
+/* Spacing system, measured from Apple's tvOS 26 Home screen: the dock spans
+ * x 48-1872 and y 785-1015, and inside it six columns of 5:3 tiles sit 50 px
+ * apart, 43 px from its ends and 40 px from its top and bottom. Containers keep
+ * their corners concentric with their content (outer radius = inner radius +
  * padding). The Top Shelf text, the rail and the top bar line up with the
  * dock's edges. */
 #define W 1920
 #define H 1080
 #define SAFE_X 80
 #define SAFE_Y 60
-#define COLS 5
-#define TILE_W 272
-#define TILE_H 163
+#define COLS 6
+#define TILE_W 248
+#define TILE_H 150
 #define TILE_R 22                      /* every card's corner: app tiles, Continue Watching, the big Top Shelf tile */
-#define PAD 40
-#define DOCK_X SAFE_X                  /* glass platform behind the top row, safe area wide */
+#define PAD 40                         /* the dock's padding above and below the tiles */
+#define PAD_X 43                       /* and at its ends */
+#define DOCK_X 48                      /* glass platform behind the top row, almost the screen's width */
 #define DOCK_W (W - 2 * DOCK_X)
-#define GAP_X ((DOCK_W - 2 * PAD - COLS * TILE_W) / (COLS - 1)) /* 80: columns spread across the dock */
-#define LEFT (DOCK_X + PAD)            /* first column */
+#define GAP_X ((DOCK_W - 2 * PAD_X - COLS * TILE_W) / (COLS - 1)) /* 50 */
+#define LEFT (DOCK_X + PAD_X)          /* first column */
 #define RIGHT (W - DOCK_X)             /* the top bar ends where the dock does */
 #define DOCK_H (TILE_H + 2 * PAD)
-#define DOCK_Y (974 - DOCK_H)
+#define DOCK_Y (1015 - DOCK_H)
 #define GRID_TOP (DOCK_Y + PAD)
-#define ROW_H (TILE_H + 100)           /* rows at least 100 px apart; labels sit in the gap */
-#define FOCUS_SCALE 1.10f
+#define ROW_H (TILE_H + 80)            /* the next row peeks out under the dock; labels sit in the gap */
+#define FOCUS_SCALE 1.20f
 #define LONG_PRESS_MS 650
-#define RAIL_CARD_W TILE_W             /* Continue Watching cards sit on the same columns */
-#define RAIL_CARD_H 153                /* 16:9 */
-#define RAIL_GAP GAP_X
-#define RAIL_Y (DOCK_Y - PAD - RAIL_CARD_H - 16)
-#define RAIL_VISIBLE 5
-#define BAR 56                         /* clock capsule and round top-bar buttons */
+#define ROTATE_MS 8000                 /* the Top Shelf carousel turns to its next title */
+#define MAX_DOTS 16                    /* its position, as dots */
+#define BAR 56                         /* the clock capsule */
+#define TOP_Y 52                       /* where tvOS 26 has it */
+#define TOP_DOT (BAR - 10)             /* its circle: Settings, where tvOS shows the profile picture */
 #define SW_W 680                       /* App Switcher cards: the app's tile, large */
 #define SW_H (SW_W * TILE_H / TILE_W)
 #define SW_PITCH (SW_W + 80)
 #define SW_CY 500                      /* their centre line */
 #define SHEET_BH 80                    /* sheet buttons, and the gap between them */
 #define SHEET_GAP 16
-#define SHEET_TINT 16, 16, 20, 115 /* sheets' glass: dark tint, 45% */
+#define SHEET_TINT 16, 16, 20, 135 /* sheets' glass: dark tint, 53% */
 #define ICON_FIT 256                   /* icons feed logos, covers and the big Top Shelf tile */
 #define THUMB_FIT_W 480                /* rail thumbnails: cards, and briefly the background */
 #define THUMB_FIT_H 270
-#define BAR_GAP 16
 #define TEXT_STATIC 218                /* OLED: static text stays at ~85% white */
 
 #define MAX_APPS 128
@@ -78,21 +79,23 @@
 #define MAX_SHEET 64
 #define ID_LEN 160
 
-enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, TAG_QR, TAG_ICON, TAG_ART, TAG_RAIL_THUMB, TAG_RAIL_BG, TAG_LAUNCH, TAG_WAKE,
+enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, TAG_QR, TAG_ICON, TAG_ART, TAG_RAIL_LOGO, TAG_RAIL_BG, TAG_FEATURED, TAG_LAUNCH, TAG_WAKE,
        TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET,
        TAG_STATUS, TAG_ELEVATE, TAG_RESTART, TAG_UNINSTALL,
        TAG_PREFS };
 
 /* Media sources: each one's Continue Watching is the Top Shelf of its own app */
 enum { SRC_NONE, SRC_STREMIO, SRC_JELLYFIN, SRC_PLEX, SRC_COUNT };
+#define SRC_FEATURED (SRC_COUNT + 1)   /* a streaming app's popular titles (TMDB); not an index */
 
 /* Settings pages (a sheet's page; 0 = not a Settings page) */
 enum { PAGE_MAIN = 1, PAGE_HOME, PAGE_DISPLAY, PAGE_ACCESS, PAGE_ACCOUNTS, PAGE_TV, PAGE_ABOUT, PAGE_CONFIRM, PAGE_SIGNIN };
 
 /* zones: what the remote is moving through */
 enum { ZONE_GRID, ZONE_RAIL, ZONE_TOP };
-/* top bar buttons, left of the clock (no Inputs: the remote's Input key has LG's own menu) */
-enum { TOP_RECENTS, TOP_SETTINGS, TOP_COUNT };
+/* the top bar: the clock capsule, with Settings in the circle at its end (Recents is
+ * Back on the first app, or Red; Inputs are the remote's Input key) */
+enum { TOP_SETTINGS, TOP_COUNT };
 #define MAX_RUNNING 32
 #define MAX_SYS 16
 
@@ -105,22 +108,23 @@ typedef struct {
     Tex *cover_tex;         /* made from the icon, for the Top Shelf when the app has no artwork */
     float logo_w, logo_h, logo_r; /* its size on a tile, and corner radius for picture icons */
     int icon_state, art_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
+    int feat; /* a streaming service with popular titles (TMDB): 0 not asked, 1 asking, 2 yes, 3 no */
     int lw, lh, bw, bh;
     float s, sv; /* focus animation 0..1, and its spring velocity */
 } App;
 
+/* A title in the Top Shelf carousel: Continue Watching, or popular on a streaming service */
 typedef struct {
-    char id[64], type[16], name[200], bg[40], thumb[40];
+    char id[64], type[16], name[200], bg[40], logo[40];
     float progress;
-    int season, episode, remaining;
-    Tex *thumb_tex, *bg_tex, *name_tex, *title_tex, *meta_tex;
-    int thumb_state, bg_state;
-    int nw, nh, tw, th, mw, mh;
-    float s, sv;
+    int season, episode, remaining, year;
+    Tex *bg_tex, *logo_tex, *title_tex, *meta_tex;
+    int bg_state, logo_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
+    int tw, th, mw, mh, lw, lh;
 } RailItem;
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
-               ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP,
+               ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_TMDB,
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY,
@@ -155,10 +159,10 @@ static struct {
     /* shared textures, tinted per draw (shapes and glass are shaders) */
     Tex *scrim_v, *scrim_h, *scrim_top;
     /* top bar: a label under the focused button, and the Top Shelf hint while it has focus */
-    Tex *top_label[TOP_COUNT], *top_hint[TOP_COUNT];
-    int top_lw[TOP_COUNT], top_lh[TOP_COUNT], top_hw[TOP_COUNT], top_hh[TOP_COUNT];
-    Tex *rail_hint, *launch_tex; /* "Opens in Stremio"; "Opening Netflix…" under a launching tile */
-    int rail_hint_w, rail_hint_h, launch_w, launch_h;
+    Tex *top_hint[TOP_COUNT];
+    int top_hw[TOP_COUNT], top_hh[TOP_COUNT];
+    Tex *rail_hint, *rail_browse, *launch_tex; /* "Press OK to open Stremio", and while browsing; "Opening Netflix…" */
+    int rail_hint_w, rail_hint_h, rail_browse_w, rail_browse_h, launch_w, launch_h;
     int launching, launch_item; /* OK on a tile: it breathes until the app is in front */
     Uint32 launch_at;
 
@@ -173,13 +177,16 @@ static struct {
     int nhidden;
     int layout_loaded;
 
-    RailItem rail[MAX_RAIL];
+    RailItem rail[MAX_RAIL];      /* the Top Shelf carousel */
     int nrail, rail_connected, rail_index, rail_generation;
-    int rail_first; /* first card on screen: the rail scrolls only to keep focus in view */
+    char rail_app[ID_LEN];        /* SRC_FEATURED: whose popular titles */
+    Uint32 rail_next;             /* when it turns to its next title (0: it isn't turning) */
+    int feat_req, tmdb_configured; /* the app whose titles are on the way (-1: none); TMDB set up */
+    int rail_trending;            /* SRC_FEATURED: what's trending, not what's on the app */
     char rail_sig[2048];
 
     int focus, zone; /* ZONE_* */
-    int top_index;
+    int top_index, top_col; /* the top bar's focus; the column it was entered from */
     float top_s[TOP_COUNT], top_v[TOP_COUNT];
     Tex *top_tex[TOP_COUNT];
     int top_w[TOP_COUNT], top_h[TOP_COUNT];
@@ -206,7 +213,7 @@ static struct {
     int shelf_cur, shelf_prev;   /* item indices shown in the Top Shelf */
     float shelf_a;               /* crossfade: 0 = prev, 1 = cur */
     int rail_art_cur, rail_art_prev;
-    float rail_art_a, rail_shift, rail_shift_v;
+    float rail_art_a;
 
     /* App Switcher (Recents, like tvOS): the running apps as big cards over the
      * blurred home screen, most recent first */
@@ -263,6 +270,7 @@ static struct {
      * pointer doesn't move focus, and its click (what OK sends while the cursor shows)
      * presses what the keys focused. Moving the pointer clearly hands it back. */
     int ptr_mode;
+    int cursor_up; /* the Magic Remote's pointer is on screen */
     int ptr_ax, ptr_ay; /* where the pointer was when the keys took over, -1: not seen yet */
     Uint32 setup_retry;
     Uint32 next_retry;
@@ -285,11 +293,13 @@ static struct {
         int on;
         float t, tv, fx, fy, fw, fh, px, py, pw, ph, pr;
     } ghost;
-    Tex *heading_tex, *sub_tex, *sheet_big;
+    Tex *heading_tex, *sub_tex, *sub_first_tex, *sheet_big;
     Tex *sheet_qr; /* sign-in: the service's QR code, scanned with a phone */
+    Tex *chevron;  /* above the dock: Up leads into Continue Watching */
+    float chevron_a;
     int sheet_qr_s, qr_gen;
     int sheet_big_w, sheet_big_h;
-    int hw, hh, sw, sh;
+    int hw, hh, sw, sh, sfw, sfh;
 } S;
 
 /* ------------------------------------------------------------------ helpers */
@@ -422,6 +432,18 @@ static int media_source(const App *a)
     if (contains_ci(a->id, "jellyfin") || contains_ci(a->title, "jellyfin")) return SRC_JELLYFIN;
     if (contains_ci(a->id, "plex") || contains_ci(a->title, "plex") || !strcmp(a->id, "cdp-30")) return SRC_PLEX;
     return SRC_NONE;
+}
+
+/* An app's short name: LG's titles can be long ("Spotify - Music and Podcasts"),
+ * so labels stop at the first " - " or ": " (tvOS shows short names too). */
+static void short_title(const App *a, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s", a->title);
+    static const char *const cuts[] = { " - ", " \xE2\x80\x93 ", " \xE2\x80\x94 ", ": " };
+    for (size_t i = 0; i < sizeof cuts / sizeof *cuts; i++) {
+        char *c = strstr(out, cuts[i]);
+        if (c && c - out >= 3) *c = 0;
+    }
 }
 
 static int is_hidden(const char *id)
@@ -568,6 +590,13 @@ static void ensure_rail_texts(RailItem *it)
         snprintf(meta, sizeof meta, "Episode %d", it->episode);
     else if (!strcmp(it->type, "movie"))
         snprintf(meta, sizeof meta, "Movie");
+    else if (!strcmp(it->type, "series"))
+        snprintf(meta, sizeof meta, "Series");
+    if (it->year) { /* popular titles: "Series · 2026" */
+        char yr[24];
+        snprintf(yr, sizeof yr, "%s%d", meta[0] ? "  \xC2\xB7  " : "", it->year);
+        append(meta, sizeof meta, yr);
+    }
     if (it->remaining) {
         char left[48];
         snprintf(left, sizeof left, "%s%d min left", meta[0] ? "  \xC2\xB7  " : "", it->remaining);
@@ -588,22 +617,42 @@ static int keep_in_view(int first, int i, int visible, int n, int margin)
     return first < 0 ? 0 : first;
 }
 
-/* Focuses Continue Watching card i. The cards stay over the same columns as focus moves. */
+/* Shows title i in the Top Shelf carousel. */
 static void rail_focus(int i)
 {
-    if (S.nrail <= 0) {
-        S.rail_index = S.rail_first = 0;
-        return;
-    }
-    S.rail_index = i < 0 ? 0 : i >= S.nrail ? S.nrail - 1 : i;
-    S.rail_first = keep_in_view(S.rail_first, S.rail_index, RAIL_VISIBLE, S.nrail, 0);
+    S.rail_index = S.nrail <= 0 || i < 0 ? 0 : i >= S.nrail ? S.nrail - 1 : i;
 }
 
-/* the source whose rail is wanted now: the focused top-row app's, or below the
- * dock the last one focused (its picture stays behind the grid) */
+/* The app whose Top Shelf is on show: the focused top-row app, or below the dock
+ * the last one focused (its picture stays behind the grid). */
+static App *shelf_app(void) { return item_app(S.focus < COLS ? S.focus : S.shelf_cur); }
+
+/* Whose carousel the Top Shelf wants: a media app's Continue Watching, or a
+ * streaming app's popular titles. */
 static int want_source(void)
 {
-    return media_source(item_app(S.focus < COLS ? S.focus : S.shelf_cur));
+    App *a = shelf_app();
+    int src = media_source(a);
+    return src ? src : a && a->feat == 2 ? SRC_FEATURED : SRC_NONE;
+}
+
+/* the carousel holds app a's titles */
+static int rail_for(const App *a)
+{
+    if (!a || S.nrail <= 0) return 0;
+    int src = media_source(a);
+    if (src) return src == S.rail_source;
+    return S.rail_source == SRC_FEATURED && !strcmp(S.rail_app, a->id);
+}
+
+/* asks the service whether app a is a streaming service, and what's popular on it */
+static void featured_request(App *a)
+{
+    char path[ID_LEN + 32];
+    snprintf(path, sizeof path, "/api/featured?app=%s", a->id);
+    if (!a->feat) a->feat = 1;
+    S.feat_req = (int)(a - S.apps);
+    net_get_json(path, TAG_FEATURED, S.feat_req, S.generation);
 }
 
 static void rail_request(int src)
@@ -612,6 +661,86 @@ static void rail_request(int src)
     snprintf(path, sizeof path, "/api/continue?source=%s", SRC_ID[src]);
     S.rail_req = src;
     net_get_json(path, TAG_STREMIO, src, 0);
+}
+
+/* Puts titles (a JSON array) in the Top Shelf carousel: source src's, and for
+ * popular titles app's, under a heading. */
+static void rail_fill(cJSON *arr, int src, const char *app, const char *heading, const char *opens)
+{
+    if (src != S.rail_source || strcmp(app, S.rail_app)) { /* another carousel: its heading, from its first title */
+        char hint[160];
+        tex_free(&S.heading_tex);
+        S.heading_tex = text_render(S.f_semi, 27, heading, 0, &S.hw, &S.hh); /* as big as the clock's */
+        snprintf(hint, sizeof hint, "Press OK to open %s", opens);
+        tex_free(&S.rail_hint);
+        S.rail_hint = text_render(S.f_medium, 26, hint, 0, &S.rail_hint_w, &S.rail_hint_h);
+        snprintf(hint, sizeof hint, "Left and right for more  \xC2\xB7  OK opens %s", opens); /* while you step through them */
+        tex_free(&S.rail_browse);
+        S.rail_browse = text_render(S.f_medium, 26, hint, 0, &S.rail_browse_w, &S.rail_browse_h);
+        S.rail_source = src;
+        snprintf(S.rail_app, sizeof S.rail_app, "%s", app);
+        S.rail_sig[0] = 0;
+        S.rail_index = 0;
+        S.rail_next = 0;
+    }
+    cJSON *v;
+    char sig[2048] = "";
+    cJSON_ArrayForEach(v, arr) {
+        char part[96];
+        snprintf(part, sizeof part, "%s:%.3f,", jstr(v, "id"), jnum(v, "progress"));
+        append(sig, sizeof sig, part);
+    }
+    if (!strcmp(sig, S.rail_sig) && S.nrail) return;
+    int same = S.rail_sig[0] != 0; /* a refresh of the same carousel: stay on the same title */
+    snprintf(S.rail_sig, sizeof S.rail_sig, "%s", sig);
+
+    static RailItem old[MAX_RAIL]; /* its pictures and texts move over to the titles that stay */
+    int nold = S.nrail;
+    char keep[64] = "";
+    if (same && S.rail_index < nold) snprintf(keep, sizeof keep, "%s", S.rail[S.rail_index].id);
+    memcpy(old, S.rail, sizeof old);
+    memset(S.rail, 0, sizeof S.rail);
+    S.nrail = 0;
+    S.rail_generation++; /* pictures on the way are for the old order */
+    cJSON_ArrayForEach(v, arr) {
+        if (S.nrail >= MAX_RAIL) break;
+        RailItem *it = &S.rail[S.nrail++];
+        snprintf(it->id, sizeof it->id, "%s", jstr(v, "id"));
+        snprintf(it->type, sizeof it->type, "%s", jstr(v, "type"));
+        snprintf(it->name, sizeof it->name, "%s", jstr(v, "name"));
+        const char *bg = jstr(v, "background");
+        snprintf(it->bg, sizeof it->bg, "%s", bg[0] ? bg : jstr(v, "thumbnail"));
+        snprintf(it->logo, sizeof it->logo, "%s", jstr(v, "logo"));
+        it->progress = (float)jnum(v, "progress");
+        it->season = (int)jnum(v, "season");
+        it->episode = (int)jnum(v, "episode");
+        it->remaining = (int)jnum(v, "remainingMin");
+        it->year = (int)jnum(v, "year");
+    }
+    int at = S.rail_index, kept = 0;
+    for (int i = 0; i < S.nrail; i++) {
+        RailItem *it = &S.rail[i];
+        for (int k = 0; k < nold; k++) {
+            RailItem *o = &old[k];
+            if (strcmp(o->id, it->id) || strcmp(o->bg, it->bg) || strcmp(o->logo, it->logo)) continue;
+            if (o->bg_state == 2) it->bg_tex = o->bg_tex, it->bg_state = 2, o->bg_tex = NULL;
+            if (o->logo_state == 2) it->logo_tex = o->logo_tex, it->logo_state = 2, it->lw = o->lw, it->lh = o->lh, o->logo_tex = NULL;
+            if (it->progress == o->progress && it->remaining == o->remaining) {
+                it->title_tex = o->title_tex, it->tw = o->tw, it->th = o->th, o->title_tex = NULL;
+                it->meta_tex = o->meta_tex, it->mw = o->mw, it->mh = o->mh, o->meta_tex = NULL;
+            }
+            break;
+        }
+        if (keep[0] && !strcmp(it->id, keep)) at = i, kept = 1;
+    }
+    for (int k = 0; k < nold; k++) {
+        RailItem *o = &old[k];
+        tex_free(&o->bg_tex); tex_free(&o->logo_tex); tex_free(&o->title_tex); tex_free(&o->meta_tex);
+    }
+    rail_focus(at < S.nrail ? at : S.nrail - 1);
+    S.rail_art_cur = S.rail_art_prev = -1;
+    if (kept && S.rail[S.rail_index].bg_tex) S.rail_art_cur = S.rail_index, S.rail_art_a = 1; /* no fade: it's still on show */
+    if (!S.nrail && S.zone == ZONE_RAIL) S.zone = ZONE_GRID;
 }
 
 static void parse_continue(const char *json, int src)
@@ -629,70 +758,42 @@ static void parse_continue(const char *json, int src)
         S.trakt_connected = cJSON_IsTrue(cJSON_GetObjectItem(tr, "connected"));
         S.src_connected[SRC_JELLYFIN] = cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(o, "jellyfin"), "connected"));
         S.src_connected[SRC_PLEX] = cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(o, "plex"), "connected"));
+        int tmdb = cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(o, "tmdb"), "configured"));
+        if (tmdb && !S.tmdb_configured) /* just set up: ask again about apps that had nothing */
+            for (int i = 0; i < S.napps; i++) if (S.apps[i].feat == 3) S.apps[i].feat = 0;
+        S.tmdb_configured = tmdb;
     }
-    if (src != want_source()) { /* another app's rail: not on show */
+    if (src != want_source()) { /* another app's carousel: not on show */
         cJSON_Delete(o);
         return;
     }
-    if (src != S.rail_source) { /* the heading and hint name the source */
-        char heading[96], hint[64];
-        if (src == SRC_STREMIO)
-            snprintf(heading, sizeof heading, "Continue Watching%s%s", S.rail_stremio ? " \xC2\xB7 Stremio" : "",
-                     S.trakt_connected ? " \xC2\xB7 Trakt" : "");
-        else
-            snprintf(heading, sizeof heading, "Continue Watching \xC2\xB7 %s", SRC_NAME[src]);
-        tex_free(&S.heading_tex);
-        S.heading_tex = text_render(S.f_semi, 24, heading, 0, &S.hw, &S.hh);
-        snprintf(hint, sizeof hint, "Opens in %s", SRC_NAME[src]);
-        tex_free(&S.rail_hint);
-        S.rail_hint = text_render(S.f_medium, 26, hint, 0, &S.rail_hint_w, &S.rail_hint_h);
-        S.rail_source = src;
-        S.rail_sig[0] = 0;
-        S.rail_index = S.rail_first = 0;
-    }
-    cJSON *arr = cJSON_GetObjectItem(o, "items"), *v;
-    char sig[2048] = "";
-    cJSON_ArrayForEach(v, arr) {
-        char part[96];
-        snprintf(part, sizeof part, "%s:%.3f,", jstr(v, "id"), jnum(v, "progress"));
-        append(sig, sizeof sig, part);
-    }
-    if (!strcmp(sig, S.rail_sig) && S.nrail) {
-        cJSON_Delete(o);
-        return;
-    }
-    snprintf(S.rail_sig, sizeof S.rail_sig, "%s", sig);
+    char heading[96];
+    if (src == SRC_STREMIO)
+        snprintf(heading, sizeof heading, "Continue Watching%s%s", S.rail_stremio ? " \xC2\xB7 Stremio" : "",
+                 S.trakt_connected ? " \xC2\xB7 Trakt" : "");
+    else
+        snprintf(heading, sizeof heading, "Continue Watching \xC2\xB7 %s", SRC_NAME[src]);
+    rail_fill(cJSON_GetObjectItem(o, "items"), src, "", heading, SRC_NAME[src]);
+    cJSON_Delete(o);
+}
 
-    for (int i = 0; i < S.nrail; i++) {
-        RailItem *it = &S.rail[i];
-        tex_free(&it->thumb_tex); tex_free(&it->bg_tex); tex_free(&it->name_tex); tex_free(&it->title_tex); tex_free(&it->meta_tex);
-    }
-    memset(S.rail, 0, sizeof S.rail);
-    S.nrail = 0;
-    S.rail_generation++;
-    cJSON_ArrayForEach(v, arr) {
-        if (S.nrail >= MAX_RAIL) break;
-        RailItem *it = &S.rail[S.nrail];
-        snprintf(it->id, sizeof it->id, "%s", jstr(v, "id"));
-        snprintf(it->type, sizeof it->type, "%s", jstr(v, "type"));
-        snprintf(it->name, sizeof it->name, "%s", jstr(v, "name"));
-        snprintf(it->bg, sizeof it->bg, "%s", jstr(v, "background"));
-        snprintf(it->thumb, sizeof it->thumb, "%s", jstr(v, "thumbnail"));
-        it->progress = (float)jnum(v, "progress");
-        it->season = (int)jnum(v, "season");
-        it->episode = (int)jnum(v, "episode");
-        it->remaining = (int)jnum(v, "remainingMin");
-        it->name_tex = text_render(S.f_semi, 24, it->name, RAIL_CARD_W - 32, &it->nw, &it->nh);
-        if (it->thumb[0]) {
-            it->thumb_state = 1;
-            net_get_image(it->thumb, TAG_RAIL_THUMB, S.nrail, S.rail_generation, 0, THUMB_FIT_W, THUMB_FIT_H);
-        }
-        S.nrail++;
+/* An app's titles from TMDB, for its Top Shelf: what's popular on the streaming
+ * service it is, or what's trending (an app with no picture); none: neither. */
+static void parse_featured(const char *json, App *a)
+{
+    cJSON *o = cJSON_Parse(json);
+    cJSON *arr = o ? cJSON_GetObjectItem(o, "items") : NULL;
+    int n = cJSON_GetArraySize(arr), trending = o && !strcmp(jstr(o, "kind"), "trending");
+    a->feat = n > 0 ? 2 : 3;
+    if (n > 0 && a == shelf_app()) {
+        char heading[ID_LEN + 16], name[ID_LEN];
+        short_title(a, name, sizeof name);
+        if (trending) snprintf(heading, sizeof heading, "Trending Now");
+        else snprintf(heading, sizeof heading, "Popular on %s", name);
+        rail_fill(arr, SRC_FEATURED, a->id, heading, name);
+        S.rail_trending = trending;
     }
     cJSON_Delete(o);
-    rail_focus(S.rail_index < S.nrail ? S.rail_index : 0);
-    S.rail_art_cur = S.rail_art_prev = -1;
-    if (!S.nrail && S.zone == 1) S.zone = 0;
 }
 
 static void parse_system(const char *json)
@@ -725,7 +826,6 @@ static void on_status(Result *r);
 static void sheet_body(const char *text);
 static void settings_page(int page, int index);
 static void on_elevate(Result *r);
-static void open_top(int which);
 static void sw_fill(const char *json);
 static void sw_reset(void);
 static void sheet_close(void);
@@ -907,16 +1007,18 @@ static void make_logo(App *a, const unsigned char *px, int w, int h)
     a->logo_tex = r_tex(crop, cw, ch);
     free(crop);
 
-    /* one visual size: about the same area for every logo, within a box */
+    /* one visual size: about the same area for every logo, within a box; as
+     * big as tvOS's glyphs, which fill about 60% of a tile's height */
     if (mode == PICTURE) {
-        float side = TILE_H * 0.62f;
+        float side = TILE_H * 0.66f;
         a->logo_w = a->logo_h = side;
         a->logo_r = TILE_R * side / TILE_H; /* same corner-to-size ratio as the tile */
     } else {
-        /* the same amount of logo on every tile (a square of about a third of the
+        /* the same amount of logo on every tile (a square of about 40% of the
          * tile's height, filled), but never wider or taller than the tile allows */
-        float sc = TILE_H * 0.33f / sqrtf((float)(ink > 1 ? ink : 1));
-        sc = fminf(sc, fminf(TILE_W * 0.62f / cw, TILE_H * 0.56f / ch));
+        float sc = TILE_H * 0.42f / sqrtf((float)(ink > 1 ? ink : 1));
+        sc = fminf(sc, fminf(TILE_W * 0.72f / cw, TILE_H * 0.62f / ch));
+        sc = fminf(sc, 1.5f); /* LG ships 130 px icons: more than this goes soft */
         a->logo_w = cw * sc;
         a->logo_h = ch * sc;
         a->logo_r = 0;
@@ -983,6 +1085,13 @@ static void handle_result(Result *r)
     case TAG_STREMIO:
         if (r->status == 200) parse_continue(r->body, r->index > SRC_NONE && r->index < SRC_COUNT ? r->index : SRC_STREMIO);
         else if (r->index == S.rail_req) S.rail_req = SRC_NONE;
+        break;
+    case TAG_FEATURED:
+        S.feat_req = -1;
+        if (r->generation == S.generation && r->index >= 0 && r->index < S.napps) {
+            if (r->status == 200) parse_featured(r->body, &S.apps[r->index]);
+            else S.apps[r->index].feat = 3; /* not this time */
+        }
         break;
     case TAG_SYSTEM:
         if (r->status == 200) parse_system(r->body);
@@ -1141,13 +1250,19 @@ static void handle_result(Result *r)
             S.sheet_qr = r_tex(r->rgba, r->w, r->h);
         }
         break;
-    case TAG_RAIL_THUMB:
+    case TAG_RAIL_LOGO:
     case TAG_RAIL_BG:
         if (r->generation == S.rail_generation && r->index < S.nrail) {
             RailItem *it = &S.rail[r->index];
             Tex *t = r->rgba ? r_tex(r->rgba, r->w, r->h) : NULL;
-            if (r->tag == TAG_RAIL_THUMB) { it->thumb_tex = t; it->thumb_state = t ? 2 : 3; }
-            else { it->bg_tex = t; it->bg_state = t ? 2 : 3; }
+            if (r->tag == TAG_RAIL_LOGO) {
+                tex_free(&it->logo_tex);
+                it->logo_tex = t, it->logo_state = t ? 2 : 3, it->lw = r->w, it->lh = r->h;
+            } else {
+                tex_free(&it->bg_tex);
+                it->bg_tex = t, it->bg_state = t ? 2 : 3;
+                if (t && r->index == S.rail_index && S.rail_art_a > 0.5f) S.rail_art_a = 0; /* it came late: fade it in now */
+            }
         }
         break;
     case TAG_LAUNCH:
@@ -1163,10 +1278,10 @@ static void handle_result(Result *r)
 
 /* ------------------------------------------------------------------ actions */
 
+/* the focused top-row app's carousel is in the Top Shelf */
 static int rail_active(void)
 {
-    int src = S.focus < COLS ? media_source(item_app(S.focus)) : SRC_NONE;
-    return src && src == S.rail_source && S.nrail > 0;
+    return S.focus < COLS && rail_for(item_app(S.focus));
 }
 
 /* hint: optional message the system shows over the app once it has opened */
@@ -1203,29 +1318,16 @@ static void sheet_close(void)
     S.sheet.page = S.sheet.parent = S.sheet.parent_index = S.sheet.wide = 0;
 }
 
-/* Tiles, Continue Watching cards and the top-bar buttons all line up with the
- * dock's columns, so Up and Down keep the column. */
-static int column_at(float x)
-{
-    int c = (int)floorf((x - LEFT + GAP_X / 2.0f) / (TILE_W + GAP_X));
-    return c < 0 ? 0 : c >= COLS ? COLS - 1 : c;
-}
+/* the clock capsule: the time, then the circle; its right edge lines up with the dock's */
+static float top_w(void) { return S.clock_w + 24 + 14 + TOP_DOT + 5; }
+static float top_x(void) { return RIGHT - top_w(); }
 
-/* left edge of top-bar button i; the buttons sit left of the clock */
-static float top_button_x(int i)
+/* Up into the top bar remembers the column it came from, for Down */
+static void enter_top(int col)
 {
-    return RIGHT - (S.clock_w + 48) - (TOP_COUNT - i) * (BAR + BAR_GAP);
-}
-
-static int top_column(int i) { return column_at(top_button_x(i) + BAR / 2.0f); }
-
-/* the top-bar button over a column; Settings when both are as near */
-static int top_nearest(int col)
-{
-    int best = TOP_COUNT - 1;
-    for (int i = TOP_COUNT - 2; i >= 0; i--)
-        if (abs(top_column(i) - col) < abs(top_column(best) - col)) best = i;
-    return best;
+    S.zone = ZONE_TOP;
+    S.top_index = TOP_SETTINGS;
+    S.top_col = col < 0 ? 0 : col >= COLS ? COLS - 1 : col;
 }
 
 /* the dock tile in a column, or the last tile when the row is shorter */
@@ -1234,26 +1336,17 @@ static int dock_tile(int col)
     return col < S.nitems ? col : S.nitems > 0 ? S.nitems - 1 : 0;
 }
 
-/* Where Down from the top bar lands: the Continue Watching card under the
- * button, else the dock tile under it (-1 for the other). */
-static int top_down_card(void)
-{
-    int col = top_column(S.top_index);
-    return rail_active() && S.rail_first + col < S.nrail ? S.rail_first + col : -1;
-}
-
-static int top_down_tile(void)
-{
-    return top_down_card() < 0 ? dock_tile(top_column(S.top_index)) : -1;
-}
+/* Where Down from the top bar lands: the dock tile in the column it was entered from */
+static int top_down_tile(void) { return dock_tile(S.top_col); }
 
 /* rect of the focused element: where a sheet grows from */
 static void focus_rect(float *x, float *y, float *w, float *h)
 {
     if (S.zone == ZONE_TOP) {
-        *x = top_button_x(S.top_index);
-        *y = SAFE_Y;
-        *w = *h = BAR;
+        *x = top_x();
+        *y = TOP_Y;
+        *w = top_w();
+        *h = BAR;
     } else if (S.zone == ZONE_GRID && S.focus < S.nitems) {
         *x = LEFT + (S.focus % COLS) * (TILE_W + GAP_X);
         *y = GRID_TOP + (S.focus / COLS) * ROW_H + S.scroll;
@@ -1655,7 +1748,8 @@ static void settings_page(int page, int index)
             if (S.src_connected[src] || source_installed(src))
                 settings_row(SRC_NAME[src], S.src_connected[src] ? "Connected" : "Not Connected",
                              S.src_connected[src] ? ACT_ACCOUNT_ASK : ACT_MEDIA_LINK, src, 0, 0);
-        sheet_body("Each app\xE2\x80\x99s Continue Watching shows when you focus it in the top row.");
+        settings_row("TMDB", S.tmdb_configured ? "Set Up" : "Not Set Up", ACT_TMDB, 0, 0, 0);
+        sheet_body("Each app\xE2\x80\x99s Continue Watching, or what\xE2\x80\x99s popular on it, shows when you focus it in the top row.");
         break;
     case PAGE_TV:
         sheet_open("TV Settings");
@@ -1670,7 +1764,8 @@ static void settings_page(int page, int index)
         if (S.last_unknown_key) snprintf(keys, sizeof keys, "Last remote key Home+ ignored: %d", S.last_unknown_key);
         char about[700];
         snprintf(about, sizeof about, "Home+ %s, %s\n%s\nMIT licence \xC2\xB7 github.com/pmiraka/home-\n"
-                 "Not affiliated with LG, Apple, Stremio or Trakt.",
+                 "Not affiliated with LG, Apple, Stremio, Trakt, Jellyfin or Plex.\n"
+                 "Uses the TMDB API but is not endorsed or certified by TMDB.",
                  S.svc_version[0] ? S.svc_version : "\xE2\x80\x93",
                  S.svc_elevated ? "set up with Homebrew Channel" : "not set up yet", keys);
         sheet_body(about);
@@ -1728,13 +1823,6 @@ static void open_settings_sheet(void)
     settings_page(PAGE_MAIN, 0);
 }
 
-
-/* Control Center: what a top-bar button (or its colour key) opens */
-static void open_top(int which)
-{
-    if (which == TOP_RECENTS) sw_open();
-    else open_settings_sheet();
-}
 
 static void open_app_sheet(void)
 {
@@ -1900,6 +1988,11 @@ static void run_action(Action act, int arg)
         if (S.sheet.parent) settings_page(S.sheet.parent, S.sheet.parent_index);
         else sheet_dismiss();
         break;
+    case ACT_TMDB: /* the key is set over SSH */
+        toast(S.tmdb_configured ? "Streaming apps show what\xE2\x80\x99s popular on TMDB. tmdbSetup with an empty key removes it."
+                                : "Add a free TMDB key over SSH to see what\xE2\x80\x99s popular on streaming apps. See the README.", 8000);
+        settings_again();
+        break;
     case ACT_ACCESSIBILITY:
         settings_page(PAGE_ACCESS, 0);
         break;
@@ -1976,18 +2069,28 @@ static void run_action(Action act, int arg)
 static void activate(void)
 {
     if (S.zone == ZONE_TOP) {
-        open_top(S.top_index);
+        open_settings_sheet();
         return;
     }
     if (S.zone == 1) {
         App *a = item_app(S.focus);
         if (a && S.rail_index < S.nrail) {
-            /* Stremio's LG app can't open a title directly: open it and say where the title is */
+            /* LG's apps can't be sent to a title: open the app and say where the title is */
             char hint[300];
-            const char *app = SRC_NAME[S.rail_source];
-            snprintf(hint, sizeof hint, "\xE2\x80\x9C%s\xE2\x80\x9D is in %s\xE2\x80\x99s Continue Watching", S.rail[S.rail_index].name, app);
-            launch(a->id, hint);
-            snprintf(hint, sizeof hint, "Opening %s. Look for \xE2\x80\x9C%s\xE2\x80\x9D in Continue Watching", app, S.rail[S.rail_index].name);
+            const char *name = S.rail[S.rail_index].name;
+            if (S.rail_source == SRC_FEATURED && S.rail_trending) { /* not the app's: just open it */
+                launch(a->id, NULL);
+                return;
+            }
+            if (S.rail_source == SRC_FEATURED) {
+                snprintf(hint, sizeof hint, "Search for \xE2\x80\x9C%s\xE2\x80\x9D in %s", name, a->title);
+                launch(a->id, hint);
+                snprintf(hint, sizeof hint, "Opening %s. Search for \xE2\x80\x9C%s\xE2\x80\x9D", a->title, name);
+            } else {
+                snprintf(hint, sizeof hint, "\xE2\x80\x9C%s\xE2\x80\x9D is in %s\xE2\x80\x99s Continue Watching", name, a->title);
+                launch(a->id, hint);
+                snprintf(hint, sizeof hint, "Opening %s. Look for \xE2\x80\x9C%s\xE2\x80\x9D in Continue Watching", a->title, name);
+            }
             toast(hint, 6000);
         }
         return;
@@ -2017,22 +2120,15 @@ static void activate(void)
 static void move_focus(int dx, int dy)
 {
     if (S.zone == ZONE_TOP) {
-        if (dy > 0) { /* down: the Continue Watching card under the button, else the tile under it */
-            int card = top_down_card();
-            if (card >= 0) {
-                S.zone = ZONE_RAIL;
-                rail_focus(card);
-            } else {
-                S.zone = ZONE_GRID;
-                S.focus = top_down_tile();
-            }
-        } else if (dx && S.top_index + dx >= 0 && S.top_index + dx < TOP_COUNT) S.top_index += dx;
+        if (dy > 0) { /* down: back to the app it came from */
+            S.zone = ZONE_GRID;
+            S.focus = top_down_tile();
+        }
         return;
     }
-    if (S.zone == ZONE_RAIL) {
-        int col = S.rail_index - S.rail_first;
-        if (dy > 0) { S.zone = ZONE_GRID; S.focus = dock_tile(col); }
-        else if (dy < 0) { S.zone = ZONE_TOP; S.top_index = top_nearest(col); }
+    if (S.zone == ZONE_RAIL) { /* stepping through the carousel's titles */
+        if (dy > 0) S.zone = ZONE_GRID; /* back to its app */
+        else if (dy < 0) enter_top(S.focus % COLS);
         else if (dx && S.rail_index + dx >= 0 && S.rail_index + dx < S.nrail) rail_focus(S.rail_index + dx);
         return;
     }
@@ -2050,15 +2146,10 @@ static void move_focus(int dx, int dy)
     }
     if (dy < 0) {
         if (i < COLS) {
-            /* up from the top row: the Stremio card above, else the top bar (Recents / Settings) */
+            /* up from the top row: into its Top Shelf carousel (the chevron), else the clock */
             if (!S.moving) {
-                if (rail_active()) {
-                    S.zone = ZONE_RAIL;
-                    rail_focus(S.rail_first + i);
-                } else {
-                    S.zone = ZONE_TOP;
-                    S.top_index = top_nearest(i);
-                }
+                if (rail_active()) S.zone = ZONE_RAIL;
+                else enter_top(i);
             }
             return;
         }
@@ -2165,11 +2256,28 @@ static void keys_take_over(void)
     S.ptr_ay = ptr_ly;
 }
 
+/* An arrow key hides the Magic Remote's pointer; moving the remote brings it back. LG's
+ * SDL has SDL_webOSCursorVisibility (its SDL_webOS.h): looked up at run time, since the
+ * vendored 2.0.14 headers and desktop SDL don't have it. */
+static void hide_pointer(void)
+{
+    static SDL_bool (*visibility)(SDL_bool);
+    static int looked;
+    if (!looked) {
+        void *self = dlopen(NULL, RTLD_LAZY);
+        looked = 1;
+        if (self) *(void **)&visibility = dlsym(self, "SDL_webOSCursorVisibility");
+    }
+    if (visibility && S.cursor_up) visibility(SDL_FALSE);
+    S.cursor_up = 0;
+}
+
 /* the pointer moved to mx,my: 1 when it's (now) the one in charge */
 static int pointer_moved(int mx, int my)
 {
     ptr_lx = mx;
     ptr_ly = my;
+    S.cursor_up = 1;
     if (S.ptr_mode) return 1;
     if (S.ptr_ax < 0) { /* first sighting since the keys took over: just remember it */
         S.ptr_ax = mx;
@@ -2185,9 +2293,15 @@ static int pointer_moved(int mx, int my)
 static void on_key_down(SDL_KeyboardEvent *e)
 {
     SDL_Keycode k = remote_key(&e->keysym);
-    if (k == WEBOS_KEY_CURSOR_SHOW || k == WEBOS_KEY_CURSOR_HIDE) return;
+    if (k == WEBOS_KEY_CURSOR_SHOW || k == WEBOS_KEY_CURSOR_HIDE) {
+        S.cursor_up = k == WEBOS_KEY_CURSOR_SHOW;
+        return;
+    }
     if (k != SDLK_RETURN && k != SDLK_KP_ENTER) keys_take_over();
-    if (k == SDLK_LEFT || k == SDLK_RIGHT || k == SDLK_UP || k == SDLK_DOWN) S.tick_armed = 1;
+    if (k == SDLK_LEFT || k == SDLK_RIGHT || k == SDLK_UP || k == SDLK_DOWN) {
+        S.tick_armed = 1;
+        hide_pointer();
+    }
     if (S.logged_keys < 40 && !is_mapped(k)) {
         S.logged_keys++;
         S.last_unknown_key = (int)k;
@@ -2219,8 +2333,8 @@ static void on_key_down(SDL_KeyboardEvent *e)
     case SDLK_UP: move_focus(0, -1); break;
     case SDLK_DOWN: move_focus(0, 1); break;
     /* colour keys: Recents, Settings, the focused app's options, move it (again: done) */
-    case WEBOS_KEY_RED: if (!S.moving) open_top(TOP_RECENTS); break;
-    case WEBOS_KEY_GREEN: if (!S.moving) open_top(TOP_SETTINGS); break;
+    case WEBOS_KEY_RED: if (!S.moving) sw_open(); break;
+    case WEBOS_KEY_GREEN: if (!S.moving) open_settings_sheet(); break;
     case WEBOS_KEY_YELLOW: if (!S.moving) open_app_sheet(); break;
     case WEBOS_KEY_BLUE:
         if (S.moving) { S.moving = 0; save_layout(); }
@@ -2231,7 +2345,7 @@ static void on_key_down(SDL_KeyboardEvent *e)
             if (S.zone != ZONE_GRID) S.zone = ZONE_GRID;
             else if (S.moving) { S.moving = 0; save_layout(); }
             else if (S.focus) S.focus = 0;
-            else open_top(TOP_RECENTS); /* already home: Back shows what's open */
+            else sw_open(); /* already home: Back shows what's open */
         }
     }
 }
@@ -2326,21 +2440,9 @@ static int pointer_at(int mx, int my, int apply)
     }
     if (S.moving) return 1; /* OK anywhere puts the moved app down */
     if (S.scrolled < 0.5f) { /* the top bar and Continue Watching are only there at the top */
-        for (int i = 0; i < TOP_COUNT; i++) {
-            float x = top_button_x(i);
-            if (mx >= x && mx < x + BAR && my >= SAFE_Y && my < SAFE_Y + BAR) {
-                if (apply) S.zone = ZONE_TOP, S.top_index = i;
-                return 1;
-            }
-        }
-        if (rail_active()) {
-            for (int i = 0; i < S.nrail; i++) {
-                float x = LEFT + i * (RAIL_CARD_W + RAIL_GAP) - S.rail_shift;
-                if (mx >= x && mx < x + RAIL_CARD_W && my >= RAIL_Y && my < RAIL_Y + RAIL_CARD_H) {
-                    if (apply) S.zone = ZONE_RAIL, rail_focus(i);
-                    return 1;
-                }
-            }
+        if (mx >= top_x() && mx < top_x() + top_w() && my >= TOP_Y && my < TOP_Y + BAR) {
+            if (apply && S.zone != ZONE_TOP) enter_top(S.focus % COLS);
+            return 1;
         }
     }
     int h = hit_item(mx, my);
@@ -2410,34 +2512,54 @@ static int update(float dt)
         S.shelf_a = 0;
     }
     approach(&S.shelf_a, 1, 9, dt, &anim);
+    /* the chevron shows while Up from the focused app goes into its Continue Watching */
+    int chev = S.zone == ZONE_GRID && S.focus < COLS && rail_active() && !S.sheet.open && !S.recents.open && !S.moving;
+    approach(&S.chevron_a, chev ? 1.0f : 0.0f, 8, dt, &anim);
     int want = want_source();
-    if (want && want != S.rail_source && want != S.rail_req && S.service_ok) rail_request(want);
+    if (want && want != SRC_FEATURED && want != S.rail_source && want != S.rail_req && S.service_ok) rail_request(want);
+    App *sa = shelf_app();
+    if (sa && !media_source(sa) && S.tmdb_configured && S.service_ok && S.feat_req < 0 &&
+        (sa->feat == 0 || (sa->feat == 2 && !rail_for(sa))))
+        featured_request(sa); /* a streaming service? (the service keeps its list) */
     if (rail_active()) {
-        RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
-        /* background art: lazy-load the focused one, crossfade between items */
-        if (cur && cur->bg[0] && cur->bg_state == 0) {
-            cur->bg_state = 1;
-            net_get_image(cur->bg, TAG_RAIL_BG, S.rail_index, S.rail_generation, 0, W, H);
+        Uint32 now = SDL_GetTicks();
+        int nx = (S.rail_index + 1) % S.nrail;
+        /* it turns every 8 s while its app has focus, nothing covers it and the screen is awake */
+        int turning = S.zone == ZONE_GRID && S.nrail > 1 && !S.sheet.open && !S.recents.open && !S.moving && S.idle_stage == 0;
+        if (!turning) S.rail_next = 0;
+        else if (!S.rail_next) S.rail_next = now + ROTATE_MS;
+        else if (now >= S.rail_next && S.rail[nx].bg_state != 1) { /* the next picture is ready (or has none) */
+            rail_focus(nx);
+            nx = (S.rail_index + 1) % S.nrail;
+            S.rail_next = now + ROTATE_MS;
+        }
+        /* pictures: the title on show and both of its neighbours, loaded ahead so turning
+         * or stepping through never waits, and the one fading out (~8 MB each on this GPU) */
+        int pv = (S.rail_index + S.nrail - 1) % S.nrail;
+        for (int i = 0; i < S.nrail; i++) {
+            RailItem *it = &S.rail[i];
+            if (i == S.rail_index || i == nx || i == pv) {
+                if (it->bg[0] && it->bg_state == 0) {
+                    it->bg_state = 1;
+                    net_get_image(it->bg, TAG_RAIL_BG, i, S.rail_generation, 0, W, H);
+                }
+                if (it->logo[0] && it->logo_state == 0) {
+                    it->logo_state = 1;
+                    net_get_image(it->logo, TAG_RAIL_LOGO, i, S.rail_generation, 0, 640, 240);
+                }
+            } else if (i != S.rail_art_prev) {
+                if (it->bg_tex) tex_free(&it->bg_tex), it->bg_state = 0;
+                if (it->logo_tex) tex_free(&it->logo_tex), it->logo_state = 0;
+                tex_free(&it->title_tex);
+                tex_free(&it->meta_tex);
+            }
         }
         if (S.rail_art_cur != S.rail_index) {
             S.rail_art_prev = S.rail_art_cur;
             S.rail_art_cur = S.rail_index;
             S.rail_art_a = 0;
         }
-        approach(&S.rail_art_a, 1, 9, dt, &anim);
-        /* keep only nearby full-screen backgrounds in GPU memory (~8 MB each) */
-        for (int i = 0; i < S.nrail; i++) {
-            RailItem *it = &S.rail[i];
-            if (it->bg_tex && abs(i - S.rail_index) > 2 && i != S.rail_art_prev) {
-                tex_free(&it->bg_tex);
-                it->bg_state = 0;
-            }
-        }
-        float shift = (float)S.rail_first * (RAIL_CARD_W + RAIL_GAP);
-        spring(&S.rail_shift, &S.rail_shift_v, shift, 0.45f, 1.0f, dt, &anim);
-        for (int i = 0; i < S.nrail; i++)
-            spring(&S.rail[i].s, &S.rail[i].sv, S.zone == ZONE_RAIL && i == S.rail_index ? (S.ok_down && !S.ok_long ? 0.6f : 1.0f) : 0.0f,
-                   0.35f, 0.7f, dt, &anim);
+        approach(&S.rail_art_a, 1, 5, dt, &anim);
     } else {
         App *ca = item_app(S.shelf_cur);
         if (ca && ca->art[0] && ca->art_state == 0) {
@@ -2567,12 +2689,18 @@ static void panel(int backdrop, float x, float y, float w, float h, float radius
 /* text is made when first shown: a big title is ~0.4 MB of GPU memory */
 static void ensure_label(App *a)
 {
-    if (!a->label) a->label = text_render(S.f_medium, 26, a->title, TILE_W + 60, &a->lw, &a->lh);
+    if (a->label) return;
+    char name[ID_LEN];
+    short_title(a, name, sizeof name);
+    a->label = text_render(S.f_medium, 26, name, TILE_W + 60, &a->lw, &a->lh);
 }
 
 static void ensure_big(App *a)
 {
-    if (!a->big) a->big = text_render(S.f_bold, 84, a->title, 1000, &a->bw, &a->bh);
+    if (a->big) return;
+    char name[ID_LEN];
+    short_title(a, name, sizeof name);
+    a->big = text_render(S.f_bold, 84, name, 1000, &a->bw, &a->bh);
 }
 
 /* darkens where text sits: the bottom (dock), the left (titles), the top (top bar) */
@@ -2635,8 +2763,9 @@ static void draw_app_text(App *a, Uint8 alpha, float dy)
     if (!a || !alpha) return;
     ensure_big(a);
     draw_text(a->big, a->bw, a->bh, LEFT - 4, 340 + dy, alpha);
-    Tex *sub = S.sub_tex;
-    int sw = S.sw, sh = S.sh, src = media_source(a);
+    int first = a == item_app(0);
+    Tex *sub = first ? S.sub_first_tex : S.sub_tex;
+    int sw = first ? S.sfw : S.sw, sh = first ? S.sfh : S.sh, src = media_source(a);
     if (src && !S.src_connected[src]) { /* a media app: sign in from Settings */
         if (!S.connect_tex[src]) {
             char t[120];
@@ -2658,66 +2787,64 @@ static void draw_rail_art(Uint8 alpha)
     RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
     if (!cur || !alpha) return;
     RailItem *prev = S.rail_art_prev >= 0 && S.rail_art_prev < S.nrail ? &S.rail[S.rail_art_prev] : NULL;
-    Tex *pt = prev ? (prev->bg_tex ? prev->bg_tex : prev->thumb_tex) : NULL;
-    Tex *ct = cur->bg_tex ? cur->bg_tex : cur->thumb_tex;
-    r_cover(pt, 0, 0, W, H, alpha, 0);
-    r_cover(ct, 0, 0, W, H, (Uint8)(alpha * S.rail_art_a), 0);
+    Tex *pt = prev ? prev->bg_tex : NULL;
+    if (pt) r_cover(pt, 0, 0, W, H, alpha, 0);
+    else draw_app_cover(shelf_app(), alpha); /* until the first picture is in: the app's own */
+    r_cover(cur->bg_tex, 0, 0, W, H, (Uint8)(alpha * S.rail_art_a), 0);
     draw_scrims(alpha);
 }
 
+/* The carousel's title, like tvOS's Top Shelf: a heading, the title's logo (or its
+ * name), what it is, how far you are, where the app opens, and dots for where it
+ * is among the others (brighter while you step through them). */
 static void draw_rail_content(Uint8 alpha, int backdrop)
 {
     RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
     if (!cur || !alpha) return;
-    /* heading capsule, title, meta */
-    float hy = SAFE_Y + 58, hh = 46;
-    panel(backdrop, LEFT, hy, S.hw + 44, hh, hh / 2, 1, 0, alpha / 255.0f);
-    draw_text(S.heading_tex, S.hw, S.hh, LEFT + 22, hy + (hh - S.hh) / 2.0f, alpha);
     ensure_rail_texts(cur);
-    draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, hy + hh + 26, alpha);
-    float my = hy + hh + 26 + cur->th + 8;
-    draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, my, (Uint8)(alpha * 0.92f));
-    draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, my + cur->mh + 6, (Uint8)(alpha * 0.7f)); /* it can't resume from here */
-
-    /* cards, on the grid's columns */
-    for (int i = 0; i < S.nrail; i++) {
-        RailItem *it = &S.rail[i];
-        float sc = 1 + 0.10f * it->s;
-        float cw = RAIL_CARD_W * sc, ch = RAIL_CARD_H * sc, rad = TILE_R * sc;
-        float x = LEFT + i * (RAIL_CARD_W + RAIL_GAP) - S.rail_shift - (cw - RAIL_CARD_W) / 2;
-        float y = RAIL_Y - (ch - RAIL_CARD_H) / 2 - 6 * it->s;
-        if (x > W || x + cw < 0) continue;
-        if (it->s > 0.01f) {
-            float dx, dy;
-            sway(&dx, &dy);
-            x += dx * it->s;
-            y += dy * it->s;
-        }
-        /* opaque cards, the unfocused ones darker; those past the dock's edges fade
-         * ("more this way") */
-        float over = fmaxf(LEFT - x, x + cw - (W - LEFT));
-        Uint8 ca = (Uint8)(alpha * (1 - 0.6f * fminf(fmaxf(over / 200, 0), 1)));
-        if (it->s > 0.01f && !backdrop) r_shadow(x, y, cw, ch, rad, 26, 14, 0.5f * it->s * alpha / 255.0f);
-        if (it->thumb_tex) r_cover(it->thumb_tex, x, y, cw, ch, ca, rad);
-        else r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * 0.08f), 0, 1, 1);
-        if (it->s < 0.99f) r_shape(x, y, cw, ch, rad, 0, 0, 0, (Uint8)(ca * 0.28f * (1 - fmaxf(it->s, 0))), 0, 1, 1);
-        if (S.zone == ZONE_TOP && i == top_down_card() && !backdrop) /* where Down lands */
-            r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca / 2), 2.0f, 1, 1);
-        r_image(S.scrim_v, x, y + ch * 0.45f, cw, ch * 0.55f, 255, 255, 255, ca, rad);
-        draw_text(it->name_tex, it->nw, it->nh, x + 16 * sc, y + ch - (22 + it->nh) * sc, ca);
-        float bx = x + 16 * sc, bw = cw - 32 * sc, by = y + ch - 17 * sc, bh = 5 * sc; /* progress */
-        r_shape(bx, by, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ca * 0.28f), 0, 1, 1);
-        if (it->progress > 0) r_shape(bx, by, bw * it->progress, bh, bh / 2, 255, 255, 255, ca, 0, 1, 1);
+    /* the heading mirrors the clock: same height and top, on the dock's left edge as the
+     * clock is on its right; the title sits low on the left, just above the chevron, like
+     * the Apple TV app, so the picture's top stays clear */
+    panel(backdrop, DOCK_X, TOP_Y, S.hw + 48, BAR, BAR / 2, 1, 0, alpha / 255.0f);
+    draw_text(S.heading_tex, S.hw, S.hh, DOCK_X + 24, TOP_Y + (BAR - S.hh) / 2.0f, alpha);
+    int logo = cur->logo_tex && cur->lw > 0 && cur->lh > 0, n = S.nrail < MAX_DOTS ? S.nrail : MAX_DOTS;
+    float k = logo ? fminf(fminf(560.0f / cur->lw, 190.0f / cur->lh), 1.6f) : 0;
+    float title_h = logo ? cur->lh * k + 18 : cur->th + 8;
+    float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + S.rail_hint_h + (n > 1 ? 32 : 0);
+    Uint8 ta = (Uint8)(alpha * fminf(1, 0.25f + S.rail_art_a)); /* the title comes in with its picture */
+    float y = DOCK_Y - 64 - total;
+    if (logo) {
+        float lw = cur->lw * k, lh = cur->lh * k;
+        r_image(cur->logo_tex, LEFT, y, lw, lh, 255, 255, 255, ta, 0);
+        y += lh + 18;
+    } else {
+        draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, y, ta);
+        y += cur->th + 8;
+    }
+    draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, y, (Uint8)(ta * 0.92f));
+    y += cur->mh + 14;
+    if (cur->progress > 0) {
+        const float bw = 240, bh = 5;
+        r_shape(LEFT, y, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ta * 0.28f), 0, 1, 1);
+        r_shape(LEFT, y, bw * cur->progress, bh, bh / 2, 255, 255, 255, ta, 0, 1, 1);
+        y += bh + 16;
+    }
+    if (S.zone == ZONE_RAIL && S.rail_browse) draw_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(alpha * 0.85f));
+    else draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(alpha * 0.7f)); /* it can't resume from here */
+    y += S.rail_hint_h + 22;
+    int browsing = S.zone == ZONE_RAIL;
+    for (int i = 0; n > 1 && i < n; i++) {
+        int on = i == (S.rail_index < n ? S.rail_index : n - 1);
+        float d = on ? 10 : 8, dx = LEFT + i * 20 + (10 - d) / 2;
+        r_shape(dx, y + (10 - d) / 2, d, d, d / 2, 255, 255, 255, (Uint8)(alpha * (on ? 0.95f : browsing ? 0.5f : 0.3f)), 0, 1, 1);
     }
 }
 
-/* the shelf shows the rail when a media app (with something to resume) was the
- * last top-row app focused, even after focus moves on below the dock */
+/* the shelf shows the carousel when its app was the last top-row app focused,
+ * even after focus moves on below the dock */
 static int shelf_rail(void)
 {
-    if (rail_active()) return 1;
-    App *a = S.focus >= COLS ? item_app(S.shelf_cur) : NULL;
-    return a && media_source(a) && media_source(a) == S.rail_source && S.nrail > 0;
+    return rail_active() || (S.focus >= COLS && rail_for(item_app(S.shelf_cur)));
 }
 
 static void draw_shelf_art(Uint8 alpha)
@@ -2752,42 +2879,34 @@ static void draw_shelf_content(Uint8 alpha, int backdrop)
     }
 }
 
-/* Recents / Settings: round glass buttons left of the clock, BAR_GAP apart */
-static void draw_top_bar(float right, Uint8 alpha, int backdrop)
-{
-    float x = right;
-    for (int i = TOP_COUNT - 1; i >= 0; i--) {
-        float k = S.top_s[i], d = BAR * (1 + 0.15f * k), g = fminf(fmaxf(k, 0), 1);
-        x -= BAR + BAR_GAP;
-        float cx = x + BAR / 2.0f, cy = SAFE_Y + BAR / 2.0f;
-        if (k > 0.01f) {
-            float dx, dy;
-            sway(&dx, &dy);
-            cx += dx * k;
-            cy += dy * k;
-        }
-        if (k > 0.01f && !backdrop) r_shadow(cx - d / 2, cy - d / 2, d, d, d / 2, 16, 6, 0.35f * k * alpha / 255.0f);
-        panel(backdrop, cx - d / 2, cy - d / 2, d, d, d / 2, 1, k, alpha / 255.0f);
-        if (g > 0.01f) /* focused: an opaque white platter with a dark glyph, like the sheet buttons */
-            r_shape(cx - d / 2, cy - d / 2, d, d, d / 2, 245, 245, 247, (Uint8)(alpha * g), 0, 1, 1);
-        float is = S.top_w[i] * (1 + 0.15f * k);
-        Uint8 gc = (Uint8)(255 - 227 * g);
-        r_image(S.top_tex[i], cx - is / 2, cy - is / 2, is, is, gc, gc, (Uint8)(255 - 225 * g), (Uint8)(alpha * (0.85f + 0.15f * g)), 0);
-        if (g > 0.01f) { /* and its name in a pill under it */
-            float lw = S.top_lw[i] + 28.0f, lh = S.top_lh[i] + 12.0f, lx = cx - lw / 2, ly = SAFE_Y + BAR + 14;
-            panel(backdrop, lx, ly, lw, lh, lh / 2, 1, 0, alpha * g / 255.0f);
-            draw_text(S.top_label[i], S.top_lw[i], S.top_lh[i], lx + 14, ly + 6, (Uint8)(alpha * g));
-        }
-    }
-}
-
+/* The clock capsule, like tvOS 26's: the time, and at its end a circle (Settings,
+ * where tvOS shows the profile picture). The whole capsule is the button: focused,
+ * it lifts and turns into a white platter. */
 static void draw_clock(Uint8 alpha, int backdrop)
 {
     if (!alpha) return;
-    float pw = S.clock_w + 48, x = RIGHT - pw;
-    panel(backdrop, x, SAFE_Y, pw, BAR, BAR / 2, 1, 0, alpha / 255.0f);
-    draw_text(S.clock_tex, S.clock_w, S.clock_h, x + 24, SAFE_Y + (BAR - S.clock_h) / 2.0f, (Uint8)(alpha * TEXT_STATIC / 255));
-    draw_top_bar(x, alpha, backdrop);
+    float k = S.top_s[TOP_SETTINGS], g = fminf(fmaxf(k, 0), 1), sc = 1 + 0.08f * k;
+    float w0 = top_w(), pw = w0 * sc, ph = BAR * sc, cx = top_x() + w0 / 2, cy = TOP_Y + BAR / 2.0f;
+    if (k > 0.01f) {
+        float dx, dy;
+        sway(&dx, &dy);
+        cx += dx * k;
+        cy += dy * k;
+    }
+    float x = cx - pw / 2, y = cy - ph / 2;
+    if (k > 0.01f && !backdrop) r_shadow(x, y, pw, ph, ph / 2, 16, 6, 0.35f * k * alpha / 255.0f);
+    panel(backdrop, x, y, pw, ph, ph / 2, 1, k, alpha / 255.0f);
+    if (g > 0.01f) /* focused: an opaque white platter with dark contents, like the sheet buttons */
+        r_shape(x, y, pw, ph, ph / 2, 245, 245, 247, (Uint8)(alpha * g), 0, 1, 1);
+    Uint8 tc = (Uint8)(255 - 227 * g); /* the time stays its own size, so it stays sharp */
+    r_image(S.clock_tex, x + 24 * sc, cy - S.clock_h / 2.0f, S.clock_w, S.clock_h, tc, tc, (Uint8)(255 - 225 * g),
+            (Uint8)(alpha * (TEXT_STATIC + (255 - TEXT_STATIC) * g) / 255), 0);
+    float d = TOP_DOT * sc, ox = x + pw - 5 * sc - d, oy = cy - d / 2;
+    r_shape(ox, oy, d, d, d / 2, 255, 255, 255, (Uint8)(alpha * 0.16f * (1 - g)), 0, 1, 1); /* the circle */
+    if (g > 0.01f) r_shape(ox, oy, d, d, d / 2, 0, 0, 0, (Uint8)(alpha * 0.07f * g), 0, 1, 1);
+    float is = S.top_w[TOP_SETTINGS] * sc;
+    r_image(S.top_tex[TOP_SETTINGS], ox + (d - is) / 2, oy + (d - is) / 2, is, is, tc, tc, (Uint8)(255 - 225 * g),
+            (Uint8)(alpha * (0.85f + 0.15f * g)), 0);
 }
 
 static void draw_tile(int i, int backdrop)
@@ -2800,10 +2919,10 @@ static void draw_tile(int i, int backdrop)
     float k = a ? a->s : special_s;
     float sc = 1 + (FOCUS_SCALE - 1) * k;
     int launching = S.launching && i == S.launch_item;
-    if (launching) { /* opening: breathes between 1.10 and 1.07 for 2 s, then holds */
+    if (launching) { /* opening: breathes a little below its focus size for 2 s, then holds */
         float lt = (SDL_GetTicks() - S.launch_at) / 1000.0f;
         k = 1;
-        sc = lt < 2 ? 1.085f + 0.015f * cosf(lt * 2 * (float)M_PI * 1.25f) : FOCUS_SCALE;
+        sc = lt < 2 ? FOCUS_SCALE - 0.015f + 0.015f * cosf(lt * 2 * (float)M_PI * 1.25f) : FOCUS_SCALE;
     }
     float w = TILE_W * sc, h = TILE_H * sc, rad = TILE_R * sc;
     float x = bx - (w - TILE_W) / 2, y = by - (h - TILE_H) / 2 - 6 * k;
@@ -2822,9 +2941,12 @@ static void draw_tile(int i, int backdrop)
     if (a && a->logo_tex) {
         float lw = a->logo_w * sc, lh = a->logo_h * sc;
         r_image(a->logo_tex, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh, 255, 255, 255, 255, a->logo_r * sc);
-    } else if (a) {
+    } else if (a) { /* its icon isn't in yet: its name, kept inside the tile */
         ensure_label(a);
-        if (a->label) draw_text(a->label, a->lw, a->lh, x + (w - a->lw) / 2, y + (h - a->lh) / 2, 230);
+        if (a->label) {
+            float k = fminf(1, (w - 32) / a->lw), lw = a->lw * k, lh = a->lh * k;
+            r_image(a->label, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh, 255, 255, 255, 230, 0);
+        }
     } else {
         static Tex *ht;
         static int hw, hh;
@@ -2842,9 +2964,9 @@ static void draw_tile(int i, int backdrop)
             r_shape(hx, hy, hw * fminf(p, 1), 4, 2, 255, 255, 255, 230, 0, 1, 1);
         }
     }
-    if (a && k > 0.01f && !backdrop) {
+    if (a && k > 0.01f && !backdrop && (i >= COLS || launching)) { /* like tvOS, the top row has no names */
         ensure_label(a);
-        float ly = i < COLS ? DOCK_Y + S.scroll + DOCK_H + 14 : by + TILE_H + 22; /* top row: under the dock */
+        float ly = i < COLS ? DOCK_Y + S.scroll + DOCK_H + 6 : by + TILE_H + 26; /* "Opening…" under the dock */
         Tex *lt = launching && S.launch_tex ? S.launch_tex : a->label;
         int lw = lt == a->label ? a->lw : S.launch_w, lh = lt == a->label ? a->lh : S.launch_h;
         draw_text(lt, lw, lh, bx + (TILE_W - lw) / 2, ly, (Uint8)(TEXT_STATIC * fminf(k, 1)));
@@ -2855,8 +2977,11 @@ static void draw_tile(int i, int backdrop)
 static void draw_scene(int backdrop)
 {
     Uint8 shelf_a = (Uint8)(255 * (1 - S.scrolled));
-    draw_shelf_art(shelf_a);
-    if (S.scrolled > 0.004f) { /* below the dock the picture stays, blurred and dimmed, so the apps stand out */
+    /* The backdrop (what glass refracts, and what's blurred below the dock) keeps the
+     * picture at full strength and never holds its own blur: blurring last frame's blur
+     * smeared it wider every frame. */
+    draw_shelf_art(backdrop ? 255 : shelf_a);
+    if (S.scrolled > 0.004f && !backdrop) { /* below the dock the picture stays, blurred and dimmed, so the apps stand out */
         r_backdrop_image(1, (Uint8)(255 * S.scrolled));
         r_fill(0, 0, 0, (Uint8)(110 * S.scrolled));
     }
@@ -2864,9 +2989,23 @@ static void draw_scene(int backdrop)
     r_translate(0, 0.35f * S.scroll);
     draw_shelf_content((Uint8)(255 * fmaxf(0, 1 - 2.5f * S.scrolled)), backdrop);
     r_translate(0, 0);
-    float dock_y = DOCK_Y + S.scroll, dock_a = 1 - S.scrolled; /* the dock leaves with its row */
-    if (!backdrop && dock_a > 0.004f) r_shadow(DOCK_X, dock_y, DOCK_W, DOCK_H, TILE_R + PAD, 40, 14, 0.3f * dock_a);
-    panel(backdrop, DOCK_X, dock_y, DOCK_W, DOCK_H, TILE_R + PAD, 0, 0, dock_a); /* icons on it are opaque: stays clear */
+    /* Scrolling down, the dock's glass grows to the screen's edges and frosts over: it
+     * becomes the blurred background the grid sits on, crossfading into it at the end.
+     * (Its stand-in in the backdrop stays out meanwhile: blurred, it made a white band.) */
+    float dock_y = DOCK_Y + S.scroll, dock_a = 1 - S.scrolled, t = smooth01(0, 1, S.scrolled);
+    if (t < 0.999f) {
+        float gx = DOCK_X * (1 - t), gy = dock_y * (1 - t), gw = W - 2 * gx, gh = dock_y + DOCK_H + (H - dock_y - DOCK_H) * t - gy;
+        float rad = (TILE_R + PAD) * (1 - t), ga = t < 0.75f ? 1 : 1 - (t - 0.75f) / 0.25f;
+        if (!backdrop && t < 0.5f) r_shadow(gx, gy, gw, gh, rad, 40, 14, 0.3f * (1 - 2 * t));
+        if (!backdrop || t <= 0.004f)
+            panel(backdrop, gx, gy, gw, gh, rad, t, 0, ga); /* clear while it's the dock (its icons are opaque), then frosted */
+    }
+    if (!backdrop && S.chevron_a > 0.004f && dock_a > 0.004f) { /* tvOS's chevron, 30 px above the dock */
+        float cs = 56, cx = (W - cs) / 2, cy = dock_y - 30 - cs / 2;
+        Uint8 ca = (Uint8)(S.chevron_a * dock_a * 255);
+        r_image(S.chevron, cx, cy + 2, cs, cs, 0, 0, 0, (Uint8)(ca * 0.35f), 0); /* a soft shadow, for bright pictures */
+        r_image(S.chevron, cx, cy, cs, cs, 255, 255, 255, (Uint8)(ca * 0.7f), 0);
+    }
     int dimmed = !backdrop && S.dim > 0.004f, top = S.zone == ZONE_TOP;
     if (!(dimmed && top)) draw_clock((Uint8)(255 * (1 - S.scrolled)), backdrop);
     for (int i = 0; i < S.nitems; i++)
@@ -2935,8 +3074,9 @@ static void draw_sheet_button(const SheetItem *it, int focused, float bx, float 
         if (it->destructive) lr = 215, lg = 40, lb = 40;
         else lr = 28, lg = 28, lb = 30;
         la = a;
-    } else {
-        r_shape(bx, y, bw, BH, BH / 2, 255, 255, 255, (Uint8)(26 * a / 255), 0, 1, 1);
+    } else { /* dark under the light glass: the label reads over white tiles too */
+        r_shape(bx, y, bw, BH, BH / 2, 12, 12, 16, (Uint8)(95 * a / 255), 0, 1, 1);
+        r_shape(bx, y, bw, BH, BH / 2, 255, 255, 255, (Uint8)(18 * a / 255), 0, 1, 1);
         if (it->destructive) lr = 255, lg = 138, lb = 128;
         else lr = lg = lb = 255;
         la = (Uint8)(235 * a / 255);
@@ -3159,20 +3299,19 @@ static int load_assets(void)
     S.scrim_h = gfx_gradient(0, 0.72f, 0.0f); /* text over daylight artwork stays readable */
     S.scrim_top = gfx_gradient(1, 0.45f, 0.0f);
     S.heading_tex = text_render(S.f_semi, 24, "Continue Watching \xC2\xB7 Stremio", 0, &S.hw, &S.hh);
-    S.rail_hint = text_render(S.f_medium, 26, "Opens in Stremio", 0, &S.rail_hint_w, &S.rail_hint_h);
-    static const char *const top_names[TOP_COUNT] = { "Recent Apps", "Settings" };
+    S.rail_hint = text_render(S.f_medium, 26, "Press OK to open Stremio", 0, &S.rail_hint_w, &S.rail_hint_h);
+    static const char *const top_names[TOP_COUNT] = { "Settings" };
     for (int i = 0; i < TOP_COUNT; i++) {
         char hint[96];
         snprintf(hint, sizeof hint, "OK opens %s  \xC2\xB7  Down returns to your apps", top_names[i]);
-        S.top_label[i] = text_render(S.f_medium, 24, top_names[i], 0, &S.top_lw[i], &S.top_lh[i]);
         S.top_hint[i] = text_render(S.f_medium, 28, hint, 0, &S.top_hw[i], &S.top_hh[i]);
     }
     S.sub_tex = text_render(S.f_medium, 28, "Press OK to open \xC2\xB7 Hold for options", 0, &S.sw, &S.sh);
-    static const int kinds[TOP_COUNT] = { ICON_RECENTS, ICON_SETTINGS };
-    for (int i = 0; i < TOP_COUNT; i++) {
-        S.top_tex[i] = gfx_icon(kinds[i], 64); /* drawn at 34 px; 64 keeps it sharp when focused */
-        S.top_w[i] = S.top_h[i] = 34;
-    }
+    S.sub_first_tex = text_render(S.f_medium, 28, "Press OK to open \xC2\xB7 Hold for options \xC2\xB7 Back for Recents", 0,
+                                  &S.sfw, &S.sfh); /* Back on the first app opens Recents */
+    S.top_tex[TOP_SETTINGS] = gfx_icon(ICON_SETTINGS, 64); /* drawn at 30 px; 64 keeps it sharp when focused */
+    S.chevron = gfx_icon(ICON_CHEVRON, 64);
+    S.top_w[TOP_SETTINGS] = S.top_h[TOP_SETTINGS] = 30;
     return 1;
 }
 
@@ -3254,12 +3393,13 @@ static int next_wake_ms(void)
     Uint32 now = SDL_GetTicks();
     Uint32 dim_ms = S.idle_dim_ms ? S.idle_dim_ms : IDLE_DIM_MS, off_ms = S.idle_off_ms ? S.idle_off_ms : IDLE_OFF_MS;
     int visible = !S.offscreen && S.idle_stage < 2;
-    Uint32 due[9] = { S.setup_retry, S.next_retry, S.trakt_poll, S.media_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0,
+    Uint32 turn = visible && S.rail_next ? (S.rail_next - 2500 > now ? S.rail_next - 2500 : S.rail_next) : 0;
+    Uint32 due[10] = { S.setup_retry, S.next_retry, S.trakt_poll, S.media_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0, turn,
                       S.toast_tex && S.toast_until > now ? S.toast_until : 0,
                       S.offscreen || S.idle_stage >= 2 ? 0 : idle_due(dim_ms, off_ms),
                       snd_active() ? now + 1000 : 0, visible ? now + (60000 - now % 60000) : 0 };
     int wait = -1;
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; i < 10; i++) {
         if (!due[i]) continue;
         int d = (Sint32)(due[i] - now) > 0 ? (int)(due[i] - now) : 0;
         if (wait < 0 || d < wait) wait = d;
@@ -3286,9 +3426,9 @@ static void release_images(void)
     }
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
-        if (i == S.rail_index || !it->bg_tex) continue;
-        tex_free(&it->bg_tex);
-        it->bg_state = 0;
+        if (i == S.rail_index) continue;
+        if (it->bg_tex) tex_free(&it->bg_tex), it->bg_state = 0;
+        if (it->logo_tex) tex_free(&it->logo_tex), it->logo_state = 0;
     }
 }
 
@@ -3376,6 +3516,7 @@ int main(int argc, char **argv)
         log_remote("native up: renderer=gles2 drawable=%dx%d window=%dx%d idle=%s", dw, dh, ww, wh, S.wl_fd >= 0 ? "poll" : "sdl");
     }
     S.shelf_cur = S.shelf_prev = S.rail_art_cur = S.rail_art_prev = -1;
+    S.feat_req = -1;
     S.last_input = SDL_GetTicks();
     S.orbit_k = -1;
     setup_check(); /* loads the data once the service is up and elevated */
@@ -3401,6 +3542,7 @@ int main(int argc, char **argv)
             case SDL_KEYDOWN:
                 if (e.key.keysym.sym == WEBOS_KEY_CURSOR_HIDE) { /* the pointer fell asleep: not input */
                     keys_take_over();
+                    S.cursor_up = 0;
                     break;
                 }
                 S.keys_until = SDL_GetTicks() + 600;

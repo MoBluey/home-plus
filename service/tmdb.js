@@ -1,0 +1,206 @@
+/* TMDB: what's popular on a streaming service, for the Top Shelf of streaming
+ * apps (Netflix, Prime Video, Disney+...), like the Apple TV app's "What to Watch",
+ * and what's trending overall, for apps that have no picture of their own.
+ *
+ * It needs a free TMDB key, set over SSH with tmdbSetup: a v3 API key, or an API
+ * Read Access Token (sent as a Bearer token). Without one nothing is fetched.
+ * An app is a streaming service when its name is one TMDB lists for the TV's
+ * store country. Lists are kept for 12 hours; when TMDB doesn't answer, the old
+ * list is served.
+ */
+'use strict';
+
+const { requestJSON } = require('./net');
+
+// The preview harness points these at a mock; on the TV they're TMDB's.
+const API = process.env.HOMEPLUS_TMDB || 'https://api.themoviedb.org/3';
+const IMG = process.env.HOMEPLUS_TMDB_IMAGES || 'https://image.tmdb.org/t/p';
+const LIST_MS = 12 * 3600 * 1000;
+const PROVIDERS_MS = 24 * 3600 * 1000;
+const MIN_ITEMS = 3; // fewer than this, and the app keeps its glow
+
+// "Disney+" is "Disney Plus", "RaiPlay" is "Rai Play": compared without spaces
+function norm(s) {
+  return String(s || '').toLowerCase().replace(/\+/g, 'plus').replace(/[^a-z0-9]+/g, '');
+}
+
+module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvRegion }) {
+  let providers = { at: 0, region: '', list: [] }; // [{ id, name, key, priority }]
+  const lists = new Map(); // provider id (or 'trending') -> { at, items }
+  const building = new Map(); // provider id -> Promise, so one list is fetched once at a time
+
+  function key() {
+    return readConfig().tmdbKey || '';
+  }
+
+  // a Read Access Token is a JWT (three dot-separated parts); a v3 key goes in the query
+  function get(path, params = {}, k = key()) {
+    const bearer = k.split('.').length === 3;
+    const q = new URLSearchParams(Object.assign({}, params, bearer ? {} : { api_key: k })).toString();
+    return requestJSON('GET', `${API}${path}${q ? `?${q}` : ''}`, { headers: bearer ? { Authorization: `Bearer ${k}` } : {} });
+  }
+
+  async function region() {
+    return String(readConfig().tmdbRegion || (await tvRegion()) || 'US').toUpperCase();
+  }
+
+  async function loadProviders() {
+    const reg = await region();
+    if (providers.list.length && providers.region === reg && Date.now() - providers.at < PROVIDERS_MS) return;
+    const seen = new Map();
+    for (const kind of ['tv', 'movie']) {
+      const r = await get(`/watch/providers/${kind}`, { watch_region: reg });
+      if (r.status !== 200 || !r.json) throw new Error(`TMDB didn't list the streaming services (${r.status})`);
+      for (const p of r.json.results || []) {
+        if (seen.has(p.provider_id)) continue;
+        const prio = (p.display_priorities || {})[reg];
+        seen.set(p.provider_id, { id: p.provider_id, name: p.provider_name, key: norm(p.provider_name), priority: prio != null ? prio : 999 });
+      }
+    }
+    providers = { at: Date.now(), region: reg, list: [...seen.values()] };
+    log('tmdb:', providers.list.length, 'streaming services in', reg);
+  }
+
+  // The services an app could be, best first: the same name, then names ending in
+  // the app's ("Prime Video" -> "Amazon Prime Video", but not "YouTube" -> "YouTube
+  // Premium"), most prominent first.
+  function candidates(title) {
+    const t = norm(title);
+    if (t.length < 3) return [];
+    const exact = providers.list.filter((p) => p.key === t || p.key === `${t}plus`);
+    const within = providers.list.filter((p) => !exact.includes(p) && t.length >= 4 && p.key.endsWith(t));
+    const byPriority = (a, b) => a.priority - b.priority;
+    return [...exact.sort(byPriority), ...within.sort(byPriority)].slice(0, 3);
+  }
+
+  // the title's logo: English or language-free, the best voted
+  async function logoFor(kind, id) {
+    try {
+      const r = await get(`/${kind}/${id}/images`, { include_image_language: 'en,null' });
+      const logos = ((r.json && r.json.logos) || []).slice().sort((a, b) =>
+        (b.iso_639_1 === 'en') - (a.iso_639_1 === 'en') || (b.vote_average || 0) - (a.vote_average || 0));
+      return logos.length ? `${IMG}/w500${logos[0].file_path}` : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  // the 10 most popular titles on a service (series and films by popularity), or
+  // trending overall (p null), with backdrops
+  async function build(p) {
+    const found = [];
+    if (p) {
+      // what's current, like "What to Watch": series from the last four years and films from
+      // the last two, no news, reality, soap or talk shows (popularity alone favours
+      // long-running daily shows); a service with few of those gets a looser list
+      const since = (years) => new Date(Date.now() - years * 365 * 864e5).toISOString().slice(0, 10);
+      const NOT_SHOWS = '10763,10764,10766,10767';
+      const tries = [
+        { tv: { 'first_air_date.gte': since(4), without_genres: NOT_SHOWS }, movie: { 'primary_release_date.gte': since(2) } },
+        { tv: { without_genres: NOT_SHOWS }, movie: {} }
+      ];
+      for (const t of tries) {
+        found.length = 0;
+        for (const kind of ['tv', 'movie']) {
+          const r = await get(`/discover/${kind}`, Object.assign({
+            watch_region: providers.region, with_watch_providers: String(p.id), with_watch_monetization_types: 'flatrate',
+            sort_by: 'popularity.desc', include_adult: 'false', language: 'en-US', page: '1', 'vote_count.gte': '20'
+          }, t[kind]));
+          if (r.status !== 200 || !r.json) throw new Error(`TMDB discover failed (${r.status})`);
+          for (const m of r.json.results || []) if (m.backdrop_path) found.push({ kind, m });
+        }
+        if (found.length >= 6) break;
+      }
+      found.sort((a, b) => (b.m.popularity || 0) - (a.m.popularity || 0));
+    } else {
+      const r = await get('/trending/all/day', { language: 'en-US' });
+      if (r.status !== 200 || !r.json) throw new Error(`TMDB trending failed (${r.status})`);
+      for (const m of r.json.results || []) if (m.backdrop_path && (m.media_type === 'tv' || m.media_type === 'movie')) found.push({ kind: m.media_type, m });
+    }
+    const top = found.slice(0, 10);
+    const logos = await Promise.all(top.map(({ kind, m }) => logoFor(kind, m.id)));
+    return top.map(({ kind, m }, i) => ({
+      id: `${kind}:${m.id}`,
+      type: kind === 'tv' ? 'series' : 'movie',
+      name: m.name || m.title || '',
+      year: parseInt(String(m.first_air_date || m.release_date || '').slice(0, 4), 10) || 0,
+      background: `${IMG}/w1280${m.backdrop_path}`,
+      logo: logos[i]
+    }));
+  }
+
+  async function list(p) {
+    const id = p ? p.id : 'trending';
+    const c = lists.get(id);
+    if (c && Date.now() - c.at < LIST_MS) return c.items;
+    if (!building.has(id)) {
+      building.set(id, build(p).then((items) => {
+        lists.set(id, { at: Date.now(), items });
+        return items;
+      }).finally(() => building.delete(id)));
+    }
+    try {
+      return await building.get(id);
+    } catch (e) {
+      log('tmdb:', p ? p.name : 'trending', e.message);
+      return c ? c.items : []; /* the old list, if there is one */
+    }
+  }
+
+  /* For an app's Top Shelf: what's popular on the streaming service it is
+   * ({ kind: 'popular', provider, items }), or for an app with no picture of its
+   * own, what's trending ({ kind: 'trending' }); else no items. */
+  async function featured(app, hasArt) {
+    const none = { kind: '', provider: '', items: [] };
+    if (!key() || !app) return none;
+    try {
+      await loadProviders();
+    } catch (e) {
+      log('tmdb:', e.message);
+    }
+    for (const p of candidates(app.title)) {
+      const items = await list(p);
+      if (items.length >= MIN_ITEMS) return { kind: 'popular', provider: p.name, items };
+    }
+    if (hasArt) return none;
+    const items = await list(null);
+    return items.length >= MIN_ITEMS ? { kind: 'trending', provider: '', items } : none;
+  }
+
+  function status() {
+    return { configured: !!key(), region: readConfig().tmdbRegion || providers.region };
+  }
+
+  // the country whose catalogs to show, when it isn't the TV's store country; "" goes back to that
+  function setRegion(r) {
+    r = String(r || '').trim().toUpperCase();
+    if (r && !/^[A-Z]{2}$/.test(r)) throw new Error('the region is a two-letter country code, such as AL or US');
+    const cfg = readConfig();
+    if (r) cfg.tmdbRegion = r;
+    else delete cfg.tmdbRegion;
+    writeConfig(cfg);
+    lists.clear();
+    providers = { at: 0, region: '', list: [] };
+    return status();
+  }
+
+  // checks the key with TMDB before keeping it; an empty key removes it
+  async function setKey(k) {
+    k = String(k || '').trim();
+    const cfg = readConfig();
+    if (k) {
+      const r = await get('/configuration', {}, k);
+      if (r.status === 401) throw new Error("TMDB didn't accept that key");
+      if (r.status !== 200) throw new Error(`TMDB didn't answer (${r.status})`);
+      cfg.tmdbKey = k;
+    } else {
+      delete cfg.tmdbKey;
+    }
+    writeConfig(cfg);
+    lists.clear();
+    providers = { at: 0, region: '', list: [] };
+    return status();
+  }
+
+  return { featured, status, setKey, setRegion };
+};

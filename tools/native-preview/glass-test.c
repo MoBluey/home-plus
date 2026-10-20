@@ -77,41 +77,35 @@ int main(int argc, char **argv)
     g.light_y = ly;
     g.alpha = 1;
 
-    /* spacing system: 80/60 px TV safe area, 5 columns of 5:3 tiles 40 px apart,
-     * containers pad 40 px and keep their corners concentric with what's inside */
-    const float SAFE_X = 80, SAFE_Y = 60, TILE_W = 304, TILE_H = 182, TILE_R = 24, GAP = 40, PAD = 40;
-    const float LEFT = SAFE_X + PAD, DOCK_Y = 712;
+    /* spacing system (native/src/main.c): tvOS 26's dock at x 48-1872, y 785-1015, six
+     * columns of 5:3 tiles 50 px apart; containers keep their corners concentric */
+    const float DOCK_X = 48, TOP_Y = 52, TILE_W = 248, TILE_H = 150, TILE_R = 22, GAP = 50, PAD = 40, PAD_X = 43;
+    const float LEFT = DOCK_X + PAD_X, DOCK_Y = 785;
 
     /* dock behind the top row: clear glass, the icons on it are opaque */
-    g.x = SAFE_X; g.y = DOCK_Y; g.w = W - 2 * SAFE_X; g.h = TILE_H + 2 * PAD; g.radius = TILE_R + PAD;
+    g.x = DOCK_X; g.y = DOCK_Y; g.w = W - 2 * DOCK_X; g.h = TILE_H + 2 * PAD; g.radius = TILE_R + PAD;
     g.legible = 0; g.focus = 0;
     r_shadow(g.x, g.y, g.w, g.h, g.radius, 40, 14, 0.30f);
     r_glass(&g);
 
-    static const Uint8 cols[5][3] = { { 30, 30, 46 }, { 235, 235, 235 }, { 24, 24, 24 }, { 31, 110, 220 }, { 240, 240, 240 } };
-    for (int i = 0; i < 5; i++) {
+    static const Uint8 cols[6][3] = { { 30, 30, 46 }, { 235, 235, 235 }, { 24, 24, 24 }, { 31, 110, 220 }, { 240, 240, 240 }, { 225, 30, 40 } };
+    for (int i = 0; i < 6; i++) {
         float x = LEFT + i * (TILE_W + GAP), y = DOCK_Y + PAD;
         int f = i == 1;
-        float s = f ? 1.0f + 0.1f * focus : 1.0f;
+        float s = f ? 1.0f + 0.2f * focus : 1.0f;
         float sw = TILE_W * s, sh = TILE_H * s, sx = x - (sw - TILE_W) / 2, sy = y - (sh - TILE_H) / 2;
         if (f) r_shadow(sx, sy, sw, sh, TILE_R * s, 30, 18, 0.55f * focus);
         r_shape(sx, sy, sw, sh, TILE_R * s, cols[i][0], cols[i][1], cols[i][2], 255, 0, 1, 1);
         r_shape(sx, sy, sw, sh, TILE_R * s, 255, 255, 255, f ? 255 : 110, f ? 2.5f : 1.5f, f ? 0.9f : 0.5f, 0.15f);
     }
 
-    /* top right, inside the safe area: clock capsule, then two round buttons, 16 px apart */
-    const float BAR = 56, BGAP = 16, CLOCK_W = 200;
+    /* top right: the clock capsule, its circle (Settings) inset at the right end */
+    const float BAR = 56, CLOCK_W = 180, DOT = BAR - 10;
     g.legible = 1;
-    g.x = W - SAFE_X - CLOCK_W; g.y = SAFE_Y; g.w = CLOCK_W; g.h = BAR; g.radius = BAR / 2; g.focus = 0;
+    g.x = W - DOCK_X - CLOCK_W; g.y = TOP_Y; g.w = CLOCK_W; g.h = BAR; g.radius = BAR / 2; g.focus = 0;
     r_glass(&g);
-    for (int i = 0; i < 2; i++) {
-        int f = i == 0;
-        float d = BAR * (f ? 1.0f + 0.14f * focus : 1.0f);
-        float cx = W - SAFE_X - CLOCK_W - BGAP - BAR / 2 - i * (BAR + BGAP), cy = SAFE_Y + BAR / 2;
-        g.x = cx - d / 2; g.y = cy - d / 2; g.w = g.h = d; g.radius = d / 2; g.focus = f ? focus : 0;
-        if (f) r_shadow(g.x, g.y, g.w, g.h, g.radius, 16, 6, 0.35f * focus);
-        r_glass(&g);
-    }
+    r_shape(W - DOCK_X - 5 - DOT, TOP_Y + 5, DOT, DOT, DOT / 2, 255, 255, 255, 41, 0, 1, 1);
+    r_shape(g.x + 24, TOP_Y + 19, 90, 18, 9, 255, 255, 255, 200, 0, 1, 1); /* stand-in for the time */
 
     /* an open menu: 40 px padding, 80 px capsule buttons 16 px apart, corner 40 + 40 */
     const float MW = 720, BH = 80, MGAP = 16, TITLE = 36;

@@ -117,6 +117,12 @@ try {
 // id -> { icon: [candidate paths], art: [candidate paths] }. Only paths the
 // application manager reported are ever served.
 let images = {};
+let titles = {}; // app id -> title, for /api/featured
+
+// Only an app's background image is artwork, and not LG's generic ones (square patterns in a
+// colour): such apps get the glow made from their icon. Splash screens and Recents images are
+// the app's logo, large.
+const GENERIC_ART = /default_background|_preview\.(png|jpe?g)$/i;
 
 function resolvePath(p, folder) {
   if (!p) return null;
@@ -138,10 +144,11 @@ function indexApps(apps) {
     next[a.id] = {
       icon: [a.extraLargeIcon, a.mediumLargeIcon, a.largeIcon, a.icon, a.mediumIcon].map((p) => resolvePath(p, f)).filter(Boolean),
       folder: f,
-      art: [a.bgImage, a.splashBackground, a.imageForRecents].map((p) => resolvePath(p, f)).filter(Boolean)
+      art: [a.bgImage].map((p) => resolvePath(p, f)).filter((p) => p && !GENERIC_ART.test(path.basename(p)))
     };
   }
   images = next;
+  titles = Object.fromEntries((apps || []).map((a) => [a.id, a.title || a.id]));
 }
 
 async function listApps() {
@@ -527,6 +534,26 @@ async function apiApps() {
 }
 
 const trakt = require('./trakt')({ readConfig, writeConfig, log });
+
+// The TV's store country (LG's, which matches the apps it offers): TMDB's region.
+let tvCountry = null;
+async function tvRegion() {
+  if (tvCountry === null) {
+    const r = await luna('luna://com.webos.settingsservice/getSystemSettings', { category: 'option', keys: ['smartServiceCountryCode2'] });
+    tvCountry = (r && r.settings && r.settings.smartServiceCountryCode2) || '';
+  }
+  return tvCountry;
+}
+const tmdb = require('./tmdb')({ readConfig, writeConfig, log, region: tvRegion });
+
+// What's popular on the service a streaming app is, or trending for an app with no picture,
+// for its Top Shelf (pictures through us).
+async function apiFeatured(id) {
+  if (!titles[id]) await listApps();
+  const hasArt = !!(images[id] && images[id].art && images[id].art.length); /* else: what's trending */
+  const f = await tmdb.featured(titles[id] ? { id, title: titles[id] } : null, hasArt);
+  return { kind: f.kind, provider: f.provider, items: f.items.map((it) => Object.assign({}, it, { background: proxied(it.background), logo: proxied(it.logo) })) };
+}
 // Media servers: each one's Continue Watching shows in its own app's Top Shelf.
 const media = {
   jellyfin: require('./jellyfin')({ readConfig, writeConfig, log, version: pkg.version }),
@@ -541,7 +568,7 @@ async function apiMediaContinue(source) {
   const m = media[source];
   let items = [];
   try { items = await m.items(); } catch (e) { log(source, 'continue failed', e.message); }
-  items = items.map((it) => Object.assign({}, it, { background: proxied(it.background), thumbnail: proxied(it.thumbnail) }));
+  items = items.map((it) => Object.assign({}, it, { background: proxied(it.background), thumbnail: proxied(it.thumbnail), logo: proxied(it.logo) }));
   return { source, connected: m.status().connected, items };
 }
 
@@ -551,7 +578,13 @@ async function apiContinue() {
   if (cfg.stremioAuthKey) {
     sources.push((async () => {
       if (!cache.items || Date.now() - cache.at > CACHE_MS) {
-        cache = { at: Date.now(), items: await continueWatching(cfg.stremioAuthKey) };
+        try {
+          cache = { at: Date.now(), items: await continueWatching(cfg.stremioAuthKey) };
+        } catch (e) { /* an outage doesn't empty the shelf: the last list stays, and we try again in a minute */
+          if (!cache.items) throw e;
+          log('stremio: refresh failed, keeping the last list:', e.message);
+          cache.at = Date.now() - CACHE_MS + 60 * 1000;
+        }
       }
       return cache.items.map((it) => Object.assign({ source: 'stremio' }, it));
     })());
@@ -572,7 +605,7 @@ async function apiContinue() {
   const t = trakt.status();
   return {
     source: 'stremio', connected: !!cfg.stremioAuthKey || t.connected, stremio: !!cfg.stremioAuthKey, trakt: t, items,
-    jellyfin: media.jellyfin.status(), plex: media.plex.status() // for Settings -> Accounts
+    jellyfin: media.jellyfin.status(), plex: media.plex.status(), tmdb: tmdb.status() // for Settings -> Accounts
   };
 }
 
@@ -611,6 +644,7 @@ async function handleApi(req, res) {
       const source = url.searchParams.get('source');
       return sendJSON(res, 200, media[source] ? await apiMediaContinue(source) : await apiContinue());
     }
+    if (url.pathname === '/api/featured') return sendJSON(res, 200, await apiFeatured(String(url.searchParams.get('app') || '')));
     const mm = /^\/api\/(stremio|jellyfin|plex)\/(status|link|disconnect|server)$/.exec(url.pathname);
     if (mm) { /* sign-in: a code (and a QR code, through us, for Stremio and Plex) approved elsewhere */
       const m = mm[1] === 'stremio' ? { status: stremioStatus, startLink: stremioStartLink, disconnect: stremioSignOut } : media[mm[1]];
@@ -733,6 +767,20 @@ imageServer.on('error', (e) => log('image server error', e.message));
 imageServer.listen(IMAGE_PORT, '127.0.0.1', () => log('image server listening on', IMAGE_PORT));
 
 // ---- Trakt over Luna (for setup from a terminal)
+// TMDB, for what's popular on streaming apps: {"key"} is a v3 API key or a Read Access Token
+// ("" removes it); {"region"} the country whose catalogs to show ("" is the TV's store country).
+service.register('tmdbSetup', async (msg) => {
+  const p = msg.payload || {};
+  try {
+    let st = tmdb.status();
+    if ('region' in p) st = tmdb.setRegion(p.region);
+    if ('key' in p) st = await tmdb.setKey(p.key);
+    msg.respond(Object.assign({ returnValue: true }, st));
+  } catch (e) {
+    fail(msg, e.message);
+  }
+});
+
 service.register('traktSetup', (msg) => {
   const p = msg.payload || {};
   if (!p.clientId || !p.clientSecret) return fail(msg, 'clientId and clientSecret are required');
