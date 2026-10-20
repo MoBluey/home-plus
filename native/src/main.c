@@ -33,7 +33,7 @@
 #define COLS 5
 #define TILE_W 272
 #define TILE_H 163
-#define TILE_R 22
+#define TILE_R 22                      /* every card's corner: app tiles, Continue Watching, the big Top Shelf tile */
 #define GAP_X 48
 #define PAD 40
 #define GRID_W (COLS * TILE_W + (COLS - 1) * GAP_X)
@@ -157,6 +157,7 @@ static struct {
         int open, index, n, tw, th;
         float t, tv;          /* morph: 0 = still the button it grew from, 1 = open */
         float fx, fy, fw, fh; /* that button's rect */
+        float px, py, pw, ph, pr; /* where the panel was last drawn */
         Action back; /* what Back does besides closing: ACT_RECENTS goes up to the Recents list */
         Tex *title;
         SheetItem it[MAX_SHEET];
@@ -183,6 +184,10 @@ static struct {
     Uint32 ptr_at;          /* when the pointer last moved */
     float light_x, light_y; /* light for focused glass and rims this frame */
     float toast_t, toast_v; /* toast rising in */
+    struct {                /* a closed sheet's glass shrinking back into its button */
+        int on;
+        float t, tv, fx, fy, fw, fh, px, py, pw, ph, pr;
+    } ghost;
     Tex *heading_tex, *sub_tex, *sub_connect_tex, *sheet_big;
     int sheet_big_w, sheet_big_h;
     int hw, hh, sw, sh, scw, sch;
@@ -645,7 +650,7 @@ static void make_logo(App *a, const unsigned char *px, int w, int h)
     if (mode == PICTURE) {
         float side = TILE_H * 0.62f;
         a->logo_w = a->logo_h = side;
-        a->logo_r = side * 0.2f;
+        a->logo_r = TILE_R * side / TILE_H; /* same corner-to-size ratio as the tile */
     } else {
         float sc = fminf(fminf(TILE_W * 0.56f / cw, TILE_H * 0.48f / ch), sqrtf(TILE_W * TILE_H * 0.16f / ((float)cw * ch)));
         a->logo_w = cw * sc;
@@ -742,7 +747,7 @@ static void handle_result(Result *r)
         if (connected) {
             S.trakt_poll = 0;
             S.trakt_connected = 1;
-            if (S.sheet.open && S.sheet_big) sheet_close();
+            if (S.sheet.open && S.sheet_big) sheet_dismiss();
             toast("Trakt connected", 3000);
             net_get_json("/api/continue", TAG_STREMIO, 0, 0);
         } else if (cJSON_IsObject(pend)) {
@@ -854,9 +859,24 @@ static void focus_rect(float *x, float *y, float *w, float *h)
     }
 }
 
+/* Closes the sheet the way it opened: its glass shrinks back into the button. */
+static void sheet_dismiss(void)
+{
+    if (S.sheet.open && S.sheet.pw > 0) {
+        S.ghost.on = 1;
+        S.ghost.t = S.sheet.t > 1 ? 1 : S.sheet.t;
+        S.ghost.tv = 0;
+        S.ghost.fx = S.sheet.fx; S.ghost.fy = S.sheet.fy; S.ghost.fw = S.sheet.fw; S.ghost.fh = S.sheet.fh;
+        S.ghost.px = S.sheet.px; S.ghost.py = S.sheet.py; S.ghost.pw = S.sheet.pw; S.ghost.ph = S.sheet.ph;
+        S.ghost.pr = S.sheet.pr;
+    }
+    sheet_close();
+}
+
 static void sheet_open(const char *title)
 {
-    int was_open = S.sheet.open;
+    int was_open = S.sheet.open || S.ghost.on; /* replacing a sheet (even one just closing): no morph */
+    S.ghost.on = 0;
     sheet_close();
     if (was_open) {
         S.sheet.t = 1; /* swapping one sheet for another: no morph */
@@ -1204,7 +1224,7 @@ static void on_key_down(SDL_KeyboardEvent *e)
         else if (k == SDLK_DOWN && S.sheet.index < S.sheet.n - 1) S.sheet.index++;
         else if (is_back(k)) {
             Action back = S.sheet.back;
-            sheet_close();
+            sheet_dismiss();
             run_action(back, 0); /* one level up (an app's Recents sheet -> the list), else just closed */
         }
         return;
@@ -1241,7 +1261,7 @@ static void on_key_up(SDL_KeyboardEvent *e)
     snd_play(SND_SELECT);
     if (S.sheet.open) {
         SheetItem it = S.sheet.it[S.sheet.index];
-        sheet_close();
+        sheet_dismiss();
         if (it.act == ACT_LAUNCH_ID) launch(it.id, NULL);
         else if (it.act == ACT_RECENT_APP) open_recent_app_sheet(it.id);
         else if (it.act == ACT_CLOSE_ID) close_apps(it.id);
@@ -1344,6 +1364,10 @@ static int update(float dt)
         spring(&S.top_s[i], &S.top_v[i], S.zone == ZONE_TOP && S.top_index == i ? 1.0f : 0.0f, 0.35f, 0.7f, dt, &anim);
     if (S.moving) anim = 1; /* wobble */
     if (S.sheet.open) spring(&S.sheet.t, &S.sheet.tv, 1, 0.42f, 0.82f, dt, &anim);
+    if (S.ghost.on) {
+        spring(&S.ghost.t, &S.ghost.tv, 0, 0.32f, 1.0f, dt, &anim);
+        if (S.ghost.t <= 0.002f) S.ghost.on = 0;
+    }
     spring(&S.toast_t, &S.toast_v, toast_on() ? 1.0f : 0.0f, 0.4f, 0.85f, dt, &anim);
 
     /* when focus lands the element sways for a moment and its highlight follows
@@ -1475,7 +1499,7 @@ static void draw_rail_content(Uint8 alpha, int backdrop)
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
         float sc = 1 + 0.10f * it->s;
-        float cw = RAIL_CARD_W * sc, ch = RAIL_CARD_H * sc, rad = 18 * sc;
+        float cw = RAIL_CARD_W * sc, ch = RAIL_CARD_H * sc, rad = TILE_R * sc;
         float x = LEFT + i * (RAIL_CARD_W + RAIL_GAP) - S.rail_shift - (cw - RAIL_CARD_W) / 2;
         float y = RAIL_Y - (ch - RAIL_CARD_H) / 2 - 6 * it->s;
         if (x > W || x + cw < 0) continue;
@@ -1633,6 +1657,7 @@ static void draw_sheet(void)
     if (S.sheet.tw + 2 * PAD > pw) pw = S.sheet.tw + 2 * PAD;
     float ph = PAD + S.sheet.th + 24 + big + S.sheet.n * (BH + BGAP) - BGAP + PAD;
     float px = (W - pw) / 2, py = (H - ph) / 2;
+    S.sheet.px = px; S.sheet.py = py; S.sheet.pw = pw; S.sheet.ph = ph; S.sheet.pr = rad;
     /* grows out of the button it came from on a spring, and its lensing
      * materialises as it does (Apple: glass appears by bending light) */
     float gx = S.sheet.fx + (px - S.sheet.fx) * t, gy = S.sheet.fy + (py - S.sheet.fy) * t;
@@ -1680,6 +1705,20 @@ static void draw_toast(void)
 
 extern int homeplus_screenshot(const char *path);
 
+static void draw_ghost(void)
+{
+    if (!S.ghost.on) return;
+    float t = S.ghost.t < 0 ? 0 : S.ghost.t;
+    r_fill(0, 0, 0, (Uint8)(80 * t));
+    float gx = S.ghost.fx + (S.ghost.px - S.ghost.fx) * t, gy = S.ghost.fy + (S.ghost.py - S.ghost.fy) * t;
+    float gw = S.ghost.fw + (S.ghost.pw - S.ghost.fw) * t, gh = S.ghost.fh + (S.ghost.ph - S.ghost.fh) * t;
+    float r0 = fminf(S.ghost.fw, S.ghost.fh) / 2, gr = r0 + (S.ghost.pr - r0) * t;
+    if (gw < 1 || gh < 1) return;
+    r_shadow(gx, gy, gw, gh, gr, 60, 24, 0.45f * t);
+    Glass g = { gx, gy, gw, gh, gr, 1, t, -0.6f, -0.8f, 0, fminf(1, t * 1.5f), 0, 0, 0, 0 };
+    r_glass(&g);
+}
+
 static int render(float dt, const char *shot)
 {
     int anim = update(dt);
@@ -1691,11 +1730,12 @@ static int render(float dt, const char *shot)
 
     r_frame_begin(8, 8, 11);
     draw_scene(0);
-    if (S.sheet.open || S.toast_t > 0.01f) { /* overlays refract the whole scene */
+    if (S.sheet.open || S.ghost.on || S.toast_t > 0.01f) { /* overlays refract the whole scene */
         r_backdrop_begin();
         draw_scene(1);
         r_backdrop_end();
     }
+    draw_ghost();
     draw_sheet();
     draw_toast();
     if (S.black > 0.004f) r_fill(0, 0, 0, (Uint8)(S.black * 255)); /* OLED: idle fades to black */
