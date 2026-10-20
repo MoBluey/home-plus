@@ -18,6 +18,7 @@
 #include "cJSON.h"
 #include "gfx.h"
 #include "net.h"
+#include "sound.h"
 
 /* ------------------------------------------------------------------ layout */
 
@@ -56,7 +57,8 @@
 #define ID_LEN 160
 
 enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_ICON, TAG_ART, TAG_RAIL_THUMB, TAG_RAIL_BG, TAG_LAUNCH, TAG_WAKE,
-       TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET };
+       TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET,
+       TAG_PREFS };
 
 /* zones: what the remote is moving through */
 enum { ZONE_GRID, ZONE_RAIL, ZONE_TOP };
@@ -87,7 +89,7 @@ typedef struct {
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_STREMIO_HELP, ACT_CANCEL,
                ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK,
-               ACT_RECENT_APP, ACT_RECENTS, ACT_CLOSE_ID, ACT_CLOSE_ALL, ACT_HOME_MODE } Action;
+               ACT_RECENT_APP, ACT_RECENTS, ACT_CLOSE_ID, ACT_CLOSE_ALL, ACT_HOME_MODE, ACT_SOUNDS } Action;
 
 typedef struct {
     Action act;
@@ -132,6 +134,7 @@ static struct {
 
     int rail_stremio, trakt_configured, trakt_connected;
     char home_mode[16]; /* "redirect" (no-flash), "watch" or "off" */
+    int sounds_off; /* focus sounds switched off in Settings (saved by the service) */
     int noflash_active, noflash_available; /* available: LG's home is a web app we can replace */
     Uint32 trakt_poll; /* while showing a Trakt code: next status check */
     int moving;
@@ -522,6 +525,7 @@ static void request_data(void)
     net_get_json("/api/continue", TAG_STREMIO, 0, 0);
     net_get_json("/api/system", TAG_SYSTEM, 0, 0);
     net_get_json("/api/home", TAG_HOME, 0, 0);
+    net_get_json("/api/prefs", TAG_PREFS, 0, 0);
 }
 
 static void sheet_open(const char *title);
@@ -579,6 +583,14 @@ static void handle_result(Result *r)
                     toast("No-flash mode isn\xE2\x80\x99t available on this TV; using standard mode.", 5000);
                 cJSON_Delete(o);
             }
+        }
+        break;
+    case TAG_PREFS:
+        if (r->status == 200) {
+            cJSON *o = cJSON_Parse(r->body);
+            S.sounds_off = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "sounds"));
+            snd_enable(!S.sounds_off);
+            cJSON_Delete(o);
         }
         break;
     case TAG_TRAKT_LINK:
@@ -801,6 +813,7 @@ static void open_settings_sheet(void)
     if (S.noflash_available)
         sheet_add(!strcmp(S.home_mode, "watch") ? "Home Button: Standard  (switch to No-flash)"
                                                  : "Home Button: No-flash  (switch to Standard)", ACT_HOME_MODE, 0, 0);
+    sheet_add(S.sounds_off ? "Sounds: Off" : "Sounds: On", ACT_SOUNDS, 0, 0);
     if (S.trakt_connected) sheet_add("Disconnect Trakt", ACT_TRAKT_UNLINK, 0, 1);
     else sheet_add("Connect Trakt", ACT_TRAKT_LINK, 0, 0);
     if (!S.rail_stremio) sheet_add("Connect Stremio", ACT_STREMIO_HELP, 0, 0);
@@ -903,6 +916,12 @@ static void run_action(Action act, int arg)
         toast("Connect Stremio from your Mac: luna://com.atvlauncher.app.service/stremioLogin (see README)", 8000);
         break;
     case ACT_RECENTS: open_top(TOP_RECENTS); break;
+    case ACT_SOUNDS:
+        S.sounds_off = !S.sounds_off;
+        snd_enable(!S.sounds_off);
+        net_post("/api/prefs", S.sounds_off ? "{\"sounds\":false}" : "{\"sounds\":true}", 0);
+        toast(S.sounds_off ? "Sounds off" : "Sounds on", 2000);
+        break;
     default: break;
     }
 }
@@ -1089,6 +1108,7 @@ static void on_key_up(SDL_KeyboardEvent *e)
     int was_long = S.ok_long;
     S.ok_down = 0;
     if (was_long) return;
+    snd_play(SND_SELECT);
     if (S.sheet.open) {
         SheetItem it = S.sheet.it[S.sheet.index];
         sheet_close();
@@ -1198,8 +1218,9 @@ static int update(float dt)
 
     /* when focus lands the element sways for a moment and its highlight follows
      * a moving light (from the pointer if it moved lately), then it settles */
-    int key = S.zone * 100000 + S.focus * 1000 + S.top_index * 100 + S.rail_index;
+    int key = S.sheet.open ? 1000000 + S.sheet.index : S.zone * 100000 + S.focus * 1000 + S.top_index * 100 + S.rail_index;
     if (key != S.focus_key) {
+        if (S.sheet.open == (S.focus_key >= 1000000)) snd_play(SND_TICK); /* not when a sheet opens or closes */
         S.focus_key = key;
         S.sway_t = 0;
     }
@@ -1593,6 +1614,7 @@ int main(int argc, char **argv)
         return 1;
     }
     if (!load_assets()) return 1;
+    snd_init();
 
     net_start();
     {
@@ -1684,6 +1706,7 @@ int main(int argc, char **argv)
                     request_data();
                 } else if (e.window.event == SDL_WINDOWEVENT_HIDDEN) {
                     S.offscreen = 1;
+                    snd_suspend();
                 }
                 break;
             default:
@@ -1699,9 +1722,13 @@ int main(int argc, char **argv)
         }
 
         Uint32 now = SDL_GetTicks();
+        snd_idle();
         if (S.ok_down && !S.ok_long && now - S.ok_down >= LONG_PRESS_MS) {
             S.ok_long = 1;
-            if (!S.sheet.open && !S.moving && S.zone == 0) open_app_sheet();
+            if (!S.sheet.open && !S.moving && S.zone == 0) {
+                snd_play(SND_SELECT);
+                open_app_sheet();
+            }
             dirty = 1;
         }
         if (S.trakt_poll && now >= S.trakt_poll) {

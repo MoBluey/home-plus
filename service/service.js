@@ -495,6 +495,14 @@ async function handleApi(req, res) {
       }
       return sendJSON(res, 200, cfg.layout || { order: [], hidden: [] });
     }
+    if (url.pathname === '/api/prefs') { // launcher preferences, e.g. {"sounds": false}
+      const cfg = readConfig();
+      if (req.method === 'POST') {
+        cfg.prefs = Object.assign({}, cfg.prefs, await readBody(req));
+        writeConfig(cfg);
+      }
+      return sendJSON(res, 200, cfg.prefs || {});
+    }
     if (url.pathname === '/api/log' && req.method === 'POST') {
       const b = await readBody(req);
       log('native:', String(b.message || '').slice(0, 500));
