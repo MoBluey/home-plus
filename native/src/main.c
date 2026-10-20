@@ -78,6 +78,7 @@ typedef struct {
     int has_col, fullbleed;
     Tex *icon_tex, *art_tex, *label, *big;
     Tex *logo_tex;          /* the icon's logo, background keyed out and trimmed (tiles) */
+    Tex *cover_tex;         /* made from the icon, for the Top Shelf when the app has no artwork */
     float logo_w, logo_h, logo_r; /* its size on a tile, and corner radius for picture icons */
     int icon_state, art_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
     int lw, lh, bw, bh;
@@ -112,7 +113,7 @@ static struct {
     Font *f_medium, *f_semi, *f_bold;
 
     /* shared textures, tinted per draw (shapes and glass are shaders) */
-    Tex *glow, *scrim_v, *scrim_h;
+    Tex *scrim_v, *scrim_h;
 
     App apps[MAX_APPS];
     int napps, generation; /* generation: bumps when the app list is rebuilt */
@@ -378,6 +379,7 @@ static void parse_layout(const char *json)
 static void free_app(App *a)
 {
     tex_free(&a->logo_tex);
+    tex_free(&a->cover_tex);
     tex_free(&a->icon_tex);
     tex_free(&a->art_tex);
     tex_free(&a->label);
@@ -545,6 +547,7 @@ static void request_data(void)
 static void sheet_open(const char *title);
 static void open_recents_sheet(const char *json);
 static void sheet_close(void);
+static void sheet_dismiss(void);
 static void sheet_add(const char *label, Action act, int arg, int destructive);
 
 /* ------------------------------------------------------------------ uniform tiles */
@@ -560,6 +563,73 @@ static float smooth01(float a, float b, float x)
     float t = (x - a) / (b - a);
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     return t * t * (3 - 2 * t);
+}
+
+/* A cover for apps without artwork: the icon stretched over a small 16:9
+ * frame (over the app's colour where it's transparent), blurred into soft
+ * colour fields, darkened towards the edges. Drawn full screen, the GPU's
+ * filtering smooths it further. */
+static void make_cover(App *a, const unsigned char *px, int w, int h)
+{
+    enum { CW = 160, CH = 90, PASSES = 3, R = 7 };
+    float *f = malloc(sizeof(float) * CW * CH * 3), *t = malloc(sizeof(float) * CW * CH * 3);
+    unsigned char *out = malloc((size_t)CW * CH * 4);
+    if (!f || !t || !out) {
+        free(f);
+        free(t);
+        free(out);
+        return;
+    }
+    float sc = fmaxf((float)CW / w, (float)CH / h);
+    for (int y = 0; y < CH; y++) {
+        for (int x = 0; x < CW; x++) {
+            int sx = (int)((x + 0.5f - CW / 2.0f) / sc + w / 2.0f), sy = (int)((y + 0.5f - CH / 2.0f) / sc + h / 2.0f);
+            sx = sx < 0 ? 0 : sx >= w ? w - 1 : sx;
+            sy = sy < 0 ? 0 : sy >= h ? h - 1 : sy;
+            const unsigned char *p = px + ((size_t)sy * w + sx) * 4;
+            float al = p[3] / 255.0f;
+            for (int c = 0; c < 3; c++) f[(y * CW + x) * 3 + c] = p[c] * al + a->col[c] * (1 - al);
+        }
+    }
+    for (int pass = 0; pass < PASSES; pass++) { /* box blur, horizontal then vertical */
+        for (int y = 0; y < CH; y++)
+            for (int x = 0; x < CW; x++)
+                for (int c = 0; c < 3; c++) {
+                    float sum = 0;
+                    for (int k = -R; k <= R; k++) {
+                        int xx = x + k < 0 ? 0 : x + k >= CW ? CW - 1 : x + k;
+                        sum += f[(y * CW + xx) * 3 + c];
+                    }
+                    t[(y * CW + x) * 3 + c] = sum / (2 * R + 1);
+                }
+        for (int y = 0; y < CH; y++)
+            for (int x = 0; x < CW; x++)
+                for (int c = 0; c < 3; c++) {
+                    float sum = 0;
+                    for (int k = -R; k <= R; k++) {
+                        int yy = y + k < 0 ? 0 : y + k >= CH ? CH - 1 : y + k;
+                        sum += t[(yy * CW + x) * 3 + c];
+                    }
+                    f[(y * CW + x) * 3 + c] = sum / (2 * R + 1);
+                }
+    }
+    for (int y = 0; y < CH; y++) {
+        for (int x = 0; x < CW; x++) {
+            float dx = (x - CW / 2.0f) / (CW / 2.0f), dy = (y - CH / 2.0f) / (CH / 2.0f);
+            float shade = 0.82f * (1 - 0.35f * fminf(1, (dx * dx + dy * dy) * 0.6f)); /* darker towards the edges */
+            unsigned char *o = out + ((size_t)y * CW + x) * 4;
+            for (int c = 0; c < 3; c++) {
+                float v = f[(y * CW + x) * 3 + c] * shade;
+                o[c] = (unsigned char)(v > 255 ? 255 : v);
+            }
+            o[3] = 255;
+        }
+    }
+    tex_free(&a->cover_tex);
+    a->cover_tex = r_tex(out, CW, CH);
+    free(f);
+    free(t);
+    free(out);
 }
 
 static void make_logo(App *a, const unsigned char *px, int w, int h)
@@ -630,6 +700,7 @@ static void make_logo(App *a, const unsigned char *px, int w, int h)
         mode = PICTURE;
     }
     if (mode == PICTURE) memcpy(k, px, (size_t)w * h * 4);
+    double ink = 0; /* how much logo there is: sizes logos by what you see, not their box */
     x0 = x0 > 2 ? x0 - 2 : 0;
     y0 = y0 > 2 ? y0 - 2 : 0;
     x1 = x1 < w - 3 ? x1 + 2 : w - 1;
@@ -641,6 +712,7 @@ static void make_logo(App *a, const unsigned char *px, int w, int h)
         return;
     }
     for (int y = 0; y < ch; y++) memcpy(crop + (size_t)y * cw * 4, k + ((size_t)(y0 + y) * w + x0) * 4, (size_t)cw * 4);
+    for (int i = 0; i < cw * ch; i++) ink += crop[(size_t)i * 4 + 3] / 255.0;
     free(k);
     tex_free(&a->logo_tex);
     a->logo_tex = r_tex(crop, cw, ch);
@@ -652,7 +724,10 @@ static void make_logo(App *a, const unsigned char *px, int w, int h)
         a->logo_w = a->logo_h = side;
         a->logo_r = TILE_R * side / TILE_H; /* same corner-to-size ratio as the tile */
     } else {
-        float sc = fminf(fminf(TILE_W * 0.56f / cw, TILE_H * 0.48f / ch), sqrtf(TILE_W * TILE_H * 0.16f / ((float)cw * ch)));
+        /* the same amount of logo on every tile (a square of about a third of the
+         * tile's height, filled), but never wider or taller than the tile allows */
+        float sc = TILE_H * 0.33f / sqrtf((float)(ink > 1 ? ink : 1));
+        sc = fminf(sc, fminf(TILE_W * 0.62f / cw, TILE_H * 0.56f / ch));
         a->logo_w = cw * sc;
         a->logo_h = ch * sc;
         a->logo_r = 0;
@@ -669,6 +744,7 @@ static void make_logo(App *a, const unsigned char *px, int w, int h)
     }
     a->has_col = 1;
     a->fullbleed = mode == SOLID;
+    make_cover(a, px, w, h);
 }
 
 /* ------------------------------------------------------------------ results */
@@ -772,9 +848,28 @@ static void handle_result(Result *r)
         if (r->generation == S.generation && r->index < S.napps) {
             App *a = &S.apps[r->index];
             if (r->rgba) {
-                a->icon_tex = r_tex(r->rgba, r->w, r->h);
+                /* some icons are huge (a 2048 px one costs 16 MB on the GPU): shrink to <= 256 px */
+                int f = (r->w > r->h ? r->w : r->h) / 256 + ((r->w > 256 || r->h > 256) ? 1 : 0);
+                if (f > 1) {
+                    int sw = r->w / f, sh = r->h / f;
+                    unsigned char *small = malloc((size_t)sw * sh * 4);
+                    if (small) {
+                        for (int y = 0; y < sh; y++)
+                            for (int x = 0; x < sw; x++)
+                                for (int c = 0; c < 4; c++) {
+                                    unsigned sum = 0;
+                                    for (int yy = 0; yy < f; yy++)
+                                        for (int xx = 0; xx < f; xx++)
+                                            sum += r->rgba[((size_t)(y * f + yy) * r->w + (x * f + xx)) * 4 + c];
+                                    small[((size_t)y * sw + x) * 4 + c] = (unsigned char)(sum / (f * f));
+                                }
+                        make_logo(a, small, sw, sh);
+                        free(small);
+                    }
+                } else {
+                    make_logo(a, r->rgba, r->w, r->h);
+                }
                 a->icon_state = 2;
-                make_logo(a, r->rgba, r->w, r->h);
             } else {
                 a->icon_state = 3;
             }
@@ -1447,8 +1542,9 @@ static void draw_app_art(App *a, Uint8 alpha)
     if (a->art_tex) {
         r_cover(a->art_tex, 0, 0, W, H, alpha, 0);
     } else {
-        /* a tiny glow texture, stretched by the GPU, and the app's tile, large */
-        r_image(S.glow, W * 0.77f - 900, H * 0.33f - 700, 1800, 1400, r, g, b, (Uint8)(alpha * 0.8f), 0);
+        /* no artwork: a cover made from the icon, and the app's tile, large */
+        if (a->cover_tex) r_cover(a->cover_tex, 0, 0, W, H, alpha, 0);
+        else r_shape(0, 0, W, H, 0, r, g, b, (Uint8)(alpha * 0.6f), 0, 1, 1);
         if (a->logo_tex) {
             float tw = 520, th = tw * TILE_H / TILE_W, tx = RIGHT - tw, ty = SAFE_Y + 120, k = tw / TILE_W;
             r_shadow(tx, ty, tw, th, TILE_R * k, 40, 20, 0.45f * alpha / 255);
@@ -1604,6 +1700,7 @@ static void draw_tile(int i, int backdrop)
     app_color(a, &r, &g, &b);
     if (k > 0.01f && !backdrop) r_shadow(x, y, w, h, rad, 28, 16, 0.5f * k);
     r_shape(x, y, w, h, rad, r, g, b, a ? 255 : 34, 0, 1, 1); /* uniform: opaque, the icon's own colour */
+    if (a && 0.299f * r + 0.587f * g + 0.114f * b < 32) r_shape(x, y, w, h, rad, 255, 255, 255, 26, 1.5f, 1, 1); /* dark tiles keep their shape */
     if (a && a->logo_tex) {
         float lw = a->logo_w * sc, lh = a->logo_h * sc;
         r_image(a->logo_tex, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh, 255, 255, 255, 255, a->logo_r * sc);
@@ -1761,7 +1858,6 @@ static int load_assets(void)
         fprintf(stderr, "homeplus: fonts missing\n");
         return 0;
     }
-    S.glow = gfx_glow(192, 192);
     S.scrim_v = gfx_gradient(1, 0.0f, 0.6f);
     S.scrim_h = gfx_gradient(0, 0.5f, 0.0f);
     S.heading_tex = text_render(S.f_semi, 22, "Continue Watching \xC2\xB7 Stremio", 0, &S.hw, &S.hh);

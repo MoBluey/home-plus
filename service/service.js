@@ -130,9 +130,9 @@ function indexApps(apps) {
   for (const a of apps || []) {
     const f = a.folderPath;
     next[a.id] = {
-      icon: [a.largeIcon, a.icon, a.mediumIcon].map((p) => resolvePath(p, f)).filter(Boolean),
+      icon: [a.extraLargeIcon, a.mediumLargeIcon, a.largeIcon, a.icon, a.mediumIcon].map((p) => resolvePath(p, f)).filter(Boolean),
       folder: f,
-      art: [a.bgImage, a.splashBackground].map((p) => resolvePath(p, f)).filter(Boolean)
+      art: [a.bgImage, a.splashBackground, a.imageForRecents].map((p) => resolvePath(p, f)).filter(Boolean)
     };
   }
   images = next;
@@ -380,7 +380,7 @@ function readBody(req) {
 async function apiApps() {
   const r = await listApps();
   return ((r && r.apps) || [])
-    .filter((a) => a.visible !== false && !HIDDEN_APPS.includes(a.id))
+    .filter((a) => a.visible !== false && !HIDDEN_APPS.includes(a.id) && !a.id.startsWith('com.atvlauncher.'))
     .map((a) => {
       const e = images[a.id] || {};
       return {
