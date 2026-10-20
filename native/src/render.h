@@ -42,6 +42,9 @@ void r_shape(float x, float y, float w, float h, float radius, Uint8 r, Uint8 g,
              float stroke, float top_a, float bottom_a);
 /* Soft shadow of a rounded rect: blur in px, offset dy, alpha 0..1. */
 void r_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float alpha);
+/* White rim of a rounded rect that catches the light: brightest where it faces
+ * the direction the light comes from (light_x, light_y). */
+void r_rim(float x, float y, float w, float h, float radius, float width, Uint8 a, float light_x, float light_y);
 /* Plain fill over the whole target (scrims, dimming). */
 void r_fill(Uint8 r, Uint8 g, Uint8 b, Uint8 a);
 

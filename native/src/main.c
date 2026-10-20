@@ -72,7 +72,7 @@ typedef struct {
     Tex *icon_tex, *art_tex, *label, *big;
     int icon_state, art_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
     int lw, lh, bw, bh;
-    float s; /* focus animation 0..1 */
+    float s, sv; /* focus animation 0..1, and its spring velocity */
 } App;
 
 typedef struct {
@@ -82,7 +82,7 @@ typedef struct {
     Tex *thumb_tex, *bg_tex, *name_tex, *title_tex, *meta_tex;
     int thumb_state, bg_state;
     int nw, nh, tw, th, mw, mh;
-    float s;
+    float s, sv;
 } RailItem;
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_STREMIO_HELP, ACT_CANCEL,
@@ -122,7 +122,7 @@ static struct {
 
     int focus, zone; /* ZONE_* */
     int top_index;
-    float top_s[TOP_COUNT];
+    float top_s[TOP_COUNT], top_v[TOP_COUNT];
     Tex *top_tex[TOP_COUNT];
     int top_w[TOP_COUNT], top_h[TOP_COUNT];
 
@@ -135,15 +135,17 @@ static struct {
     int noflash_active, noflash_available; /* available: LG's home is a web app we can replace */
     Uint32 trakt_poll; /* while showing a Trakt code: next status check */
     int moving;
-    float scroll, scroll_target; /* grid y offset */
+    float scroll, scroll_v, scroll_target; /* grid y offset */
     float scrolled;              /* 0 at the top row, 1 below it */
     int shelf_cur, shelf_prev;   /* item indices shown in the Top Shelf */
     float shelf_a;               /* crossfade: 0 = prev, 1 = cur */
     int rail_art_cur, rail_art_prev;
-    float rail_art_a, rail_shift;
+    float rail_art_a, rail_shift, rail_shift_v;
 
     struct {
         int open, index, n, tw, th;
+        float t, tv;          /* morph: 0 = still the button it grew from, 1 = open */
+        float fx, fy, fw, fh; /* that button's rect */
         Action back; /* what Back does besides closing: ACT_RECENTS goes up to the Recents list */
         Tex *title;
         SheetItem it[MAX_SHEET];
@@ -163,6 +165,13 @@ static struct {
     Uint32 last_input;
     int idle_stage, swallow_up, offscreen, orbit_k; /* offscreen: another app is in front */
     float dim, black;
+    /* motion: the focused element sways briefly and its highlight follows a moving light */
+    float sway_t;           /* seconds since focus last moved */
+    int focus_key;          /* changes whenever focus moves */
+    float ptr_x, ptr_y;     /* light direction from the Magic Remote pointer */
+    Uint32 ptr_at;          /* when the pointer last moved */
+    float light_x, light_y; /* light for focused glass and rims this frame */
+    float toast_t, toast_v; /* toast rising in */
     Tex *heading_tex, *sub_tex, *sub_connect_tex, *sheet_big;
     int sheet_big_w, sheet_big_h;
     int hw, hh, sw, sh, scw, sch;
@@ -180,6 +189,27 @@ static float approach(float *v, float target, float speed, float dt, int *moving
     *v += d * (1.0f - expf(-speed * dt));
     *moving = 1;
     return *v;
+}
+
+/* Spring toward target, parametrised like SwiftUI's: response is the period in
+ * seconds, damping 1 settles without overshoot, below 1 bounces a little. */
+static void spring(float *x, float *v, float target, float response, float damping, float dt, int *moving)
+{
+    float k = 2 * (float)M_PI / response, c = 4 * (float)M_PI * damping / response;
+    k *= k;
+    int n = (int)ceilf(dt * 240);
+    if (n < 1) n = 1;
+    float h = dt / n;
+    for (int i = 0; i < n; i++) {
+        *v += (-k * (*x - target) - c * *v) * h;
+        *x += *v * h;
+    }
+    if (fabsf(*x - target) < 0.0005f && fabsf(*v) < 0.005f) {
+        *x = target;
+        *v = 0;
+        return;
+    }
+    *moving = 1;
 }
 
 static void tex_free(Tex **t) { r_tex_free(t); }
@@ -205,7 +235,10 @@ static void toast(const char *text, int ms)
     tex_free(&S.toast_tex);
     S.toast_tex = text_render(S.f_medium, 26, text, 1300, &S.toast_w, &S.toast_h);
     S.toast_until = SDL_GetTicks() + ms;
+    S.toast_t = S.toast_v = 0;
 }
+
+static int toast_on(void) { return S.toast_tex && SDL_GetTicks() < S.toast_until; }
 
 static void copy_id(char *dst, const char *src)
 {
@@ -658,9 +691,38 @@ static void sheet_close(void)
     S.sheet.back = ACT_NONE;
 }
 
+/* rect of the focused element: where a sheet grows from */
+static void focus_rect(float *x, float *y, float *w, float *h)
+{
+    if (S.zone == ZONE_TOP) {
+        float right = W - SAFE_X - (S.clock_w + 48);
+        *x = right - (TOP_COUNT - S.top_index) * (BAR + BAR_GAP);
+        *y = SAFE_Y;
+        *w = *h = BAR;
+    } else if (S.zone == ZONE_GRID && S.focus < S.nitems) {
+        *x = LEFT + (S.focus % COLS) * (TILE_W + GAP_X);
+        *y = GRID_TOP + (S.focus / COLS) * ROW_H + S.scroll;
+        *w = TILE_W;
+        *h = TILE_H;
+    } else {
+        *w = 240;
+        *h = 80;
+        *x = (W - *w) / 2;
+        *y = (H - *h) / 2;
+    }
+}
+
 static void sheet_open(const char *title)
 {
+    int was_open = S.sheet.open;
     sheet_close();
+    if (was_open) {
+        S.sheet.t = 1; /* swapping one sheet for another: no morph */
+        S.sheet.tv = 0;
+    } else {
+        S.sheet.t = S.sheet.tv = 0;
+        focus_rect(&S.sheet.fx, &S.sheet.fy, &S.sheet.fw, &S.sheet.fh);
+    }
     S.sheet.open = 1;
     S.sheet.index = 0;
     S.sheet.title = text_render(S.f_semi, 30, title, 900, &S.sheet.tw, &S.sheet.th);
@@ -1058,7 +1120,7 @@ static int hit_item(int mx, int my)
 #define IDLE_DIM_MS (2 * 60 * 1000)
 #define IDLE_OFF_MS (10 * 60 * 1000)
 
-static float special_s; /* focus animation of the "Hidden" tile */
+static float special_s, special_v; /* focus animation of the "Hidden" tile */
 
 static void update_clock(void)
 {
@@ -1083,7 +1145,7 @@ static int update(float dt)
     int row = S.focus / COLS;
     approach(&S.scrolled, row > 0 ? 1.0f : 0.0f, 10, dt, &anim);
     S.scroll_target = row == 0 ? 0 : 380 - (GRID_TOP + row * ROW_H);
-    approach(&S.scroll, S.scroll_target, 11, dt, &anim);
+    spring(&S.scroll, &S.scroll_v, S.scroll_target, 0.5f, 1.0f, dt, &anim);
 
     if (rail_active()) {
         RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
@@ -1107,9 +1169,9 @@ static int update(float dt)
             }
         }
         float shift = (float)(S.rail_index > RAIL_VISIBLE - 1 ? S.rail_index - (RAIL_VISIBLE - 1) : 0) * (RAIL_CARD_W + RAIL_GAP);
-        approach(&S.rail_shift, shift, 12, dt, &anim);
+        spring(&S.rail_shift, &S.rail_shift_v, shift, 0.45f, 1.0f, dt, &anim);
         for (int i = 0; i < S.nrail; i++)
-            approach(&S.rail[i].s, S.zone == ZONE_RAIL && i == S.rail_index ? 1.0f : 0.0f, 16, dt, &anim);
+            spring(&S.rail[i].s, &S.rail[i].sv, S.zone == ZONE_RAIL && i == S.rail_index ? 1.0f : 0.0f, 0.35f, 0.7f, dt, &anim);
     } else {
         int cur = S.focus < COLS ? S.focus : S.shelf_cur;
         if (cur != S.shelf_cur) {
@@ -1126,11 +1188,36 @@ static int update(float dt)
     }
     for (int i = 0; i < S.nitems; i++) {
         App *a = item_app(i);
-        approach(a ? &a->s : &special_s, i == S.focus && S.zone == ZONE_GRID ? 1.0f : 0.0f, 18, dt, &anim);
+        spring(a ? &a->s : &special_s, a ? &a->sv : &special_v, i == S.focus && S.zone == ZONE_GRID ? 1.0f : 0.0f, 0.35f, 0.7f, dt, &anim);
     }
     for (int i = 0; i < TOP_COUNT; i++)
-        approach(&S.top_s[i], S.zone == ZONE_TOP && S.top_index == i ? 1.0f : 0.0f, 18, dt, &anim);
+        spring(&S.top_s[i], &S.top_v[i], S.zone == ZONE_TOP && S.top_index == i ? 1.0f : 0.0f, 0.35f, 0.7f, dt, &anim);
     if (S.moving) anim = 1; /* wobble */
+    if (S.sheet.open) spring(&S.sheet.t, &S.sheet.tv, 1, 0.42f, 0.82f, dt, &anim);
+    spring(&S.toast_t, &S.toast_v, toast_on() ? 1.0f : 0.0f, 0.4f, 0.85f, dt, &anim);
+
+    /* when focus lands the element sways for a moment and its highlight follows
+     * a moving light (from the pointer if it moved lately), then it settles */
+    int key = S.zone * 100000 + S.focus * 1000 + S.top_index * 100 + S.rail_index;
+    if (key != S.focus_key) {
+        S.focus_key = key;
+        S.sway_t = 0;
+    }
+    float bx = -0.6f, by = -0.8f;
+    if (S.ptr_at && SDL_GetTicks() - S.ptr_at < 3000) {
+        bx = S.ptr_x;
+        by = S.ptr_y;
+    }
+    float amp = 0;
+    if (S.sway_t < 1.6f) {
+        S.sway_t += dt;
+        amp = 1 - S.sway_t / 1.6f;
+        amp *= amp;
+        anim = 1;
+    }
+    float ang = 0.6f * amp * sinf(S.sway_t * 2 * (float)M_PI / 1.1f);
+    S.light_x = bx * cosf(ang) - by * sinf(ang);
+    S.light_y = bx * sinf(ang) + by * cosf(ang);
 
     float dim = S.idle_stage >= 1 ? 1.0f : 0.0f, black = S.idle_stage >= 2 ? 1.0f : 0.0f;
     approach(&S.dim, dim, dim > S.dim ? 2.5f : 10.0f, dt, &anim);
@@ -1145,6 +1232,15 @@ static void draw_text(Tex *t, int w, int h, float x, float y, Uint8 a)
     r_image(t, x, y, (float)w, (float)h, 255, 255, 255, a, 0);
 }
 
+/* offset of the focused element while it sways after focus lands */
+static void sway(float *dx, float *dy)
+{
+    float amp = S.sway_t < 1.6f ? 1 - S.sway_t / 1.6f : 0;
+    amp *= amp;
+    *dx = 3.0f * amp * sinf(S.sway_t * 2 * (float)M_PI / 1.1f);
+    *dy = 1.5f * amp * sinf(S.sway_t * 2 * (float)M_PI / 0.9f + 1);
+}
+
 /* Liquid Glass (render.h): clear unless what's on it must stay legible. In the
  * backdrop pass glass can't sample itself, so a faint flat panel stands in. */
 static void panel(int backdrop, float x, float y, float w, float h, float radius, float legible, float focus, float alpha)
@@ -1154,7 +1250,8 @@ static void panel(int backdrop, float x, float y, float w, float h, float radius
         r_shape(x, y, w, h, radius, 255, 255, 255, (Uint8)(14 * alpha), 0, 1, 1);
         return;
     }
-    Glass g = { x, y, w, h, radius, legible, 1.0f, -0.6f, -0.8f, focus, alpha, 0, 0, 0, 0 };
+    int lit = focus > 0.01f; /* focused glass catches the moving light */
+    Glass g = { x, y, w, h, radius, legible, 1.0f, lit ? S.light_x : -0.6f, lit ? S.light_y : -0.8f, focus, alpha, 0, 0, 0, 0 };
     r_glass(&g);
 }
 
@@ -1217,12 +1314,19 @@ static void draw_rail_shelf(Uint8 alpha, int backdrop)
         float x = LEFT + i * (RAIL_CARD_W + RAIL_GAP) - S.rail_shift - (cw - RAIL_CARD_W) / 2;
         float y = RAIL_Y - (ch - RAIL_CARD_H) / 2 - 6 * it->s;
         if (x > W || x + cw < 0) continue;
+        if (it->s > 0.01f) {
+            float dx, dy;
+            sway(&dx, &dy);
+            x += dx * it->s;
+            y += dy * it->s;
+        }
         Uint8 ca = (Uint8)(alpha * (0.75f + 0.25f * it->s));
         if (it->s > 0.01f && !backdrop) r_shadow(x, y, cw, ch, rad, 26, 14, 0.5f * it->s * alpha / 255.0f);
         if (it->thumb_tex) r_cover(it->thumb_tex, x, y, cw, ch, ca, rad);
         else r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * 0.08f), 0, 1, 1);
         r_image(S.scrim_v, x, y + ch * 0.45f, cw, ch * 0.55f, 255, 255, 255, ca, rad);
-        r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * (0.3f + 0.5f * it->s)), 1.5f + it->s, 1.0f, 0.25f);
+        r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * 0.3f * (1 - it->s)), 1.5f, 1.0f, 0.25f);
+        if (it->s > 0.01f) r_rim(x, y, cw, ch, rad, 1.5f + 1.5f * it->s, (Uint8)(ca * 0.92f * it->s), S.light_x, S.light_y);
         draw_text(it->name_tex, it->nw, it->nh, x + 16 * sc, y + ch - (22 + it->nh) * sc, ca);
         float bx = x + 16 * sc, bw = cw - 32 * sc, by = y + ch - 17 * sc, bh = 5 * sc; /* progress */
         r_shape(bx, by, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ca * 0.28f), 0, 1, 1);
@@ -1250,6 +1354,12 @@ static void draw_top_bar(float right, Uint8 alpha, int backdrop)
         float k = S.top_s[i], d = BAR * (1 + 0.14f * k);
         x -= BAR + BAR_GAP;
         float cx = x + BAR / 2.0f, cy = SAFE_Y + BAR / 2.0f;
+        if (k > 0.01f) {
+            float dx, dy;
+            sway(&dx, &dy);
+            cx += dx * k;
+            cy += dy * k;
+        }
         if (k > 0.01f && !backdrop) r_shadow(cx - d / 2, cy - d / 2, d, d, d / 2, 16, 6, 0.35f * k * alpha / 255.0f);
         panel(backdrop, cx - d / 2, cy - d / 2, d, d, d / 2, 1, k, alpha / 255.0f);
         float is = S.top_w[i] * (1 + 0.14f * k);
@@ -1278,6 +1388,12 @@ static void draw_tile(int i, int backdrop)
     float w = TILE_W * sc, h = TILE_H * sc, rad = TILE_R * sc;
     float x = bx - (w - TILE_W) / 2, y = by - (h - TILE_H) / 2 - 6 * k;
     if (S.moving && focused) x += sinf(SDL_GetTicks() / 40.0f) * 2.0f; /* gentle wobble while moving */
+    if (k > 0.01f) {
+        float dx, dy;
+        sway(&dx, &dy);
+        x += dx * k;
+        y += dy * k;
+    }
     Uint8 r, g, b;
     app_color(a, &r, &g, &b);
     if (k > 0.01f && !backdrop) r_shadow(x, y, w, h, rad, 28, 16, 0.5f * k);
@@ -1294,8 +1410,9 @@ static void draw_tile(int i, int backdrop)
         if (!ht) ht = text_render(S.f_semi, 28, "\xE2\x80\xA2 \xE2\x80\xA2 \xE2\x80\xA2   Hidden", 0, &hw, &hh);
         draw_text(ht, hw, hh, x + (w - hw) / 2, y + (h - hh) / 2, 205);
     }
-    /* rim: focused tiles turn to glass and catch the light */
-    r_shape(x, y, w, h, rad, 255, 255, 255, (Uint8)(90 + 130 * k + (S.moving && focused ? 35 : 0)), 1.5f + k, 1.0f, 0.2f + 0.2f * k);
+    /* rim: a focused tile turns to glass and catches a light that moves as it sways */
+    r_shape(x, y, w, h, rad, 255, 255, 255, (Uint8)(90 * (1 - k) + (S.moving && focused ? 35 : 0)), 1.5f, 1.0f, 0.2f);
+    if (k > 0.01f) r_rim(x, y, w, h, rad, 1.5f + 1.5f * k, (Uint8)(235 * k), S.light_x, S.light_y);
     if (a && k > 0.01f && !backdrop) {
         ensure_app_texts(a);
         float ly = i < COLS ? DOCK_Y - 160 * S.scrolled + DOCK_H + 14 : by + TILE_H + 22; /* top row: under the dock */
@@ -1320,46 +1437,57 @@ static void draw_scene(int backdrop)
 static void draw_sheet(void)
 {
     if (!S.sheet.open) return;
-    r_fill(0, 0, 0, 80);
+    float t = S.sheet.t, tc = t < 0 ? 0 : t > 1 ? 1 : t;
+    r_fill(0, 0, 0, (Uint8)(80 * tc));
     const float BH = 80, BGAP = 16, rad = BH / 2 + PAD; /* corners concentric with the buttons */
     float big = S.sheet_big ? S.sheet_big_h + 24 : 0;
     float pw = 720;
     if (S.sheet.tw + 2 * PAD > pw) pw = S.sheet.tw + 2 * PAD;
     float ph = PAD + S.sheet.th + 24 + big + S.sheet.n * (BH + BGAP) - BGAP + PAD;
     float px = (W - pw) / 2, py = (H - ph) / 2;
-    r_shadow(px, py, pw, ph, rad, 60, 24, 0.45f);
-    panel(0, px, py, pw, ph, rad, 1, 0, 1);
-    draw_text(S.sheet.title, S.sheet.tw, S.sheet.th, px + (pw - S.sheet.tw) / 2, py + PAD, 200);
+    /* grows out of the button it came from on a spring, and its lensing
+     * materialises as it does (Apple: glass appears by bending light) */
+    float gx = S.sheet.fx + (px - S.sheet.fx) * t, gy = S.sheet.fy + (py - S.sheet.fy) * t;
+    float gw = S.sheet.fw + (pw - S.sheet.fw) * t, gh = S.sheet.fh + (ph - S.sheet.fh) * t;
+    float r0 = fminf(S.sheet.fw, S.sheet.fh) / 2, gr = r0 + (rad - r0) * t;
+    if (gw < 1 || gh < 1) return;
+    r_shadow(gx, gy, gw, gh, gr, 60, 24, 0.45f * tc);
+    Glass g = { gx, gy, gw, gh, gr, 1, tc, -0.6f, -0.8f, 0, 1, 0, 0, 0, 0 };
+    r_glass(&g);
+    float c = (t - 0.55f) / 0.45f; /* content fades in once the panel is nearly there */
+    Uint8 ca = (Uint8)(255 * (c < 0 ? 0 : c > 1 ? 1 : c));
+    if (!ca) return;
+    draw_text(S.sheet.title, S.sheet.tw, S.sheet.th, px + (pw - S.sheet.tw) / 2, py + PAD, (Uint8)(200 * ca / 255));
     float y = py + PAD + S.sheet.th + 24;
     if (S.sheet_big) {
-        draw_text(S.sheet_big, S.sheet_big_w, S.sheet_big_h, px + (pw - S.sheet_big_w) / 2, y, 255);
+        draw_text(S.sheet_big, S.sheet_big_w, S.sheet_big_h, px + (pw - S.sheet_big_w) / 2, y, ca);
         y += big;
     }
     for (int i = 0; i < S.sheet.n; i++, y += BH + BGAP) {
         SheetItem *it = &S.sheet.it[i];
         float bx = px + PAD, bw = pw - 2 * PAD, tx = bx + (bw - it->w) / 2, ty = y + (BH - it->h) / 2;
         if (i == S.sheet.index) { /* tvOS: the focused button turns opaque white with a dark label */
-            r_shadow(bx, y, bw, BH, BH / 2, 18, 8, 0.4f);
-            r_shape(bx, y, bw, BH, BH / 2, 245, 245, 247, 255, 0, 1, 1);
-            if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 215, 40, 40, 255, 0);
-            else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 28, 28, 30, 255, 0);
+            r_shadow(bx, y, bw, BH, BH / 2, 18, 8, 0.4f * ca / 255);
+            r_shape(bx, y, bw, BH, BH / 2, 245, 245, 247, ca, 0, 1, 1);
+            if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 215, 40, 40, ca, 0);
+            else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 28, 28, 30, ca, 0);
         } else {
-            r_shape(bx, y, bw, BH, BH / 2, 255, 255, 255, 26, 0, 1, 1);
-            if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 138, 128, 235, 0);
-            else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 255, 255, 235, 0);
+            r_shape(bx, y, bw, BH, BH / 2, 255, 255, 255, (Uint8)(26 * ca / 255), 0, 1, 1);
+            if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 138, 128, (Uint8)(235 * ca / 255), 0);
+            else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 255, 255, (Uint8)(235 * ca / 255), 0);
         }
     }
 }
 
-static int toast_on(void) { return S.toast_tex && SDL_GetTicks() < S.toast_until; }
-
 static void draw_toast(void)
 {
-    if (!toast_on()) return;
-    float tw = S.toast_w + 72, th = S.toast_h + 40, tx = (W - tw) / 2, ty = H - SAFE_Y - th;
-    r_shadow(tx, ty, tw, th, th / 2, 30, 12, 0.4f);
-    panel(0, tx, ty, tw, th, th / 2, 1, 0, 1);
-    draw_text(S.toast_tex, S.toast_w, S.toast_h, (W - S.toast_w) / 2, ty + 20, 245);
+    float t = S.toast_t < 0 ? 0 : S.toast_t > 1 ? 1 : S.toast_t;
+    if (!S.toast_tex || t < 0.01f) return;
+    float tw = S.toast_w + 72, th = S.toast_h + 40, tx = (W - tw) / 2, ty = H - SAFE_Y - th + (1 - S.toast_t) * 40;
+    r_shadow(tx, ty, tw, th, th / 2, 30, 12, 0.4f * t);
+    Glass g = { tx, ty, tw, th, th / 2, 1, t, -0.6f, -0.8f, 0, t, 0, 0, 0, 0 };
+    r_glass(&g);
+    draw_text(S.toast_tex, S.toast_w, S.toast_h, (W - S.toast_w) / 2, ty + 20, (Uint8)(245 * t));
 }
 
 extern int homeplus_screenshot(const char *path);
@@ -1367,14 +1495,18 @@ extern int homeplus_screenshot(const char *path);
 static int render(float dt, const char *shot)
 {
     int anim = update(dt);
-    /* what the glass refracts: the Top Shelf, or the whole scene under a sheet or toast */
+    /* what the dock and top bar refract: the Top Shelf only (the icons sit on the glass) */
     r_backdrop_begin();
-    if (S.sheet.open || toast_on()) draw_scene(1);
-    else draw_shelf(1);
+    draw_shelf(1);
     r_backdrop_end();
 
     r_frame_begin(8, 8, 11);
     draw_scene(0);
+    if (S.sheet.open || S.toast_t > 0.01f) { /* overlays refract the whole scene */
+        r_backdrop_begin();
+        draw_scene(1);
+        r_backdrop_end();
+    }
     draw_sheet();
     draw_toast();
     if (S.black > 0.004f) r_fill(0, 0, 0, (Uint8)(S.black * 255)); /* OLED: idle fades to black */
@@ -1516,7 +1648,19 @@ int main(int argc, char **argv)
                     int mx = e.motion.x, my = e.motion.y;
                     to_logical(&mx, &my);
                     int h = hit_item(mx, my);
-                    if (h >= 0) { S.focus = h; S.zone = 0; }
+                    if (h >= 0) {
+                        S.focus = h;
+                        S.zone = 0;
+                        /* the light comes from where the pointer is, relative to the tile */
+                        float dx = mx - (LEFT + (h % COLS) * (TILE_W + GAP_X) + TILE_W / 2.0f);
+                        float dy = my - (GRID_TOP + (h / COLS) * ROW_H + S.scroll + TILE_H / 2.0f);
+                        float l = sqrtf(dx * dx + dy * dy);
+                        if (l > 8) {
+                            S.ptr_x = dx / l;
+                            S.ptr_y = dy / l;
+                            S.ptr_at = SDL_GetTicks();
+                        }
+                    }
                 }
                 break;
             case SDL_MOUSEBUTTONUP:

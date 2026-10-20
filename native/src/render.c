@@ -102,6 +102,27 @@ static const char *FS_SHADOW =
     "    gl_FragColor = vec4(u_color.rgb, u_color.a * a * a);\n"
     "}\n";
 
+/* A rim that catches the light: brightest where it faces u_light (the direction
+ * the light comes from), a fainter reflection opposite. */
+static const char *FS_RIM =
+    "uniform vec4 u_color;\n"
+    "uniform vec4 u_rect;\n"
+    "uniform float u_radius;\n"
+    "uniform float u_stroke;\n"
+    "uniform vec2 u_light;\n"
+    "void main() {\n"
+    "    vec2 h = u_rect.zw * 0.5;\n"
+    "    vec2 p = v_px - u_rect.xy - h;\n"
+    "    float d = sd_round(p, h, u_radius);\n"
+    "    float a = clamp(0.5 - d, 0.0, 1.0) - clamp(0.5 - (d + u_stroke), 0.0, 1.0);\n"
+    "    if (a <= 0.0) discard;\n"
+    "    vec2 n = vec2(sd_round(p + vec2(1.0, 0.0), h, u_radius) - sd_round(p - vec2(1.0, 0.0), h, u_radius),\n"
+    "                  sd_round(p + vec2(0.0, 1.0), h, u_radius) - sd_round(p - vec2(0.0, 1.0), h, u_radius));\n"
+    "    float facing = dot(n / max(length(n), 0.0001), u_light);\n"
+    "    float k = min(0.25 + 0.95 * max(facing, 0.0) + 0.35 * max(-facing, 0.0), 1.0);\n"
+    "    gl_FragColor = vec4(u_color.rgb, u_color.a * a * k);\n"
+    "}\n";
+
 /* Dual-filter (Kawase) blur: cheap, wide, and stable when things move. */
 static const char *FS_DOWN =
     "uniform sampler2D u_tex;\n"
@@ -204,7 +225,7 @@ static struct {
     int dw, dh;         /* drawable size */
     float orbit_x, orbit_y; /* OLED pixel orbit, screen only */
     float ox, oy;       /* offset for the current target */
-    Prog tex, shape, shadow, down, up, glass;
+    Prog tex, shape, shadow, rim, down, up, glass;
     const Prog *cur;
     GLuint quad;
     Tex white;          /* 1x1, for untextured image draws */
@@ -363,7 +384,7 @@ int r_init(SDL_Window *win, int logical_w, int logical_h)
 #undef X
     SDL_GL_GetDrawableSize(win, &R.dw, &R.dh);
 
-    if (!program(&R.tex, FS_TEX) || !program(&R.shape, FS_SHAPE) || !program(&R.shadow, FS_SHADOW) ||
+    if (!program(&R.tex, FS_TEX) || !program(&R.shape, FS_SHAPE) || !program(&R.shadow, FS_SHADOW) || !program(&R.rim, FS_RIM) ||
         !program(&R.down, FS_DOWN) || !program(&R.up, FS_UP) || !program(&R.glass, FS_GLASS))
         return 0;
 
@@ -486,6 +507,19 @@ void r_shadow(float x, float y, float w, float h, float radius, float blur, floa
     gl.Uniform1f(R.shadow.radius, fminf(radius, fminf(w, h) / 2));
     gl.Uniform1f(R.shadow.blur, blur);
     quad(&R.shadow, x - blur * 1.5f, y + dy - blur * 1.5f, w + blur * 3, h + blur * 3);
+}
+
+void r_rim(float x, float y, float w, float h, float radius, float width, Uint8 a, float light_x, float light_y)
+{
+    if (!a || w <= 0 || h <= 0) return;
+    float ll = sqrtf(light_x * light_x + light_y * light_y);
+    if (ll < 0.001f) { light_x = -0.6f; light_y = -0.8f; ll = 1; }
+    use(&R.rim);
+    gl.Uniform4f(R.rim.color, 1, 1, 1, a / 255.0f);
+    gl.Uniform1f(R.rim.radius, fminf(radius, fminf(w, h) / 2));
+    gl.Uniform1f(R.rim.stroke, width);
+    gl.Uniform2f(R.rim.light, light_x / ll, light_y / ll);
+    quad(&R.rim, x, y, w, h);
 }
 
 void r_fill(Uint8 r, Uint8 g, Uint8 b, Uint8 a)
