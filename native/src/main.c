@@ -22,10 +22,11 @@
 
 /* ------------------------------------------------------------------ layout */
 
-/* Spacing system: five columns of 5:3 tiles 48 px apart, centred inside the
- * 80/60 px TV safe area; containers pad their content 40 px and keep their
- * corners concentric with it (outer radius = inner radius + padding). The Top
- * Shelf text, the rail and the top bar line up with the dock's edges. */
+/* Spacing system: the dock spans the 80/60 px TV safe area; inside its 40 px
+ * padding five columns of 5:3 tiles spread evenly. Containers keep their
+ * corners concentric with their content (outer radius = inner radius +
+ * padding). The Top Shelf text, the rail and the top bar line up with the
+ * dock's edges. */
 #define W 1920
 #define H 1080
 #define SAFE_X 80
@@ -34,11 +35,10 @@
 #define TILE_W 272
 #define TILE_H 163
 #define TILE_R 22                      /* every card's corner: app tiles, Continue Watching, the big Top Shelf tile */
-#define GAP_X 48
 #define PAD 40
-#define GRID_W (COLS * TILE_W + (COLS - 1) * GAP_X)
-#define DOCK_W (GRID_W + 2 * PAD)
-#define DOCK_X ((W - DOCK_W) / 2)      /* glass platform behind the top row, centred */
+#define DOCK_X SAFE_X                  /* glass platform behind the top row, safe area wide */
+#define DOCK_W (W - 2 * DOCK_X)
+#define GAP_X ((DOCK_W - 2 * PAD - COLS * TILE_W) / (COLS - 1)) /* 80: columns spread across the dock */
 #define LEFT (DOCK_X + PAD)            /* first column */
 #define RIGHT (W - DOCK_X)             /* the top bar ends where the dock does */
 #define DOCK_H (TILE_H + 2 * PAD)
