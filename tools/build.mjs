@@ -129,6 +129,9 @@ buildPackage({
     // cJSON is compiled into the binary, so its notice ships with it (the font's is in assets/)
     fs.copyFileSync(path.join(root, 'LICENSE'), path.join(appDir, 'LICENSE'));
     fs.copyFileSync(path.join(root, 'native/third_party/LICENSE-cJSON'), path.join(appDir, 'LICENSE-cJSON'));
+    // stb and the vendored SDL/Khronos headers are compiled in as well
+    fs.copyFileSync(path.join(root, 'THIRD_PARTY_NOTICES.md'), path.join(appDir, 'THIRD_PARTY_NOTICES.md'));
+    fs.copyFileSync(path.join(root, 'native/third_party/SDL2/LICENSE-SDL2.txt'), path.join(appDir, 'LICENSE-SDL2.txt'));
     // the boot script travels with the app, so it can be installed on the TV with cp
     fs.cpSync(path.join(root, 'init.d'), path.join(appDir, 'init.d'), { recursive: true });
     fs.cpSync(path.join(root, 'service'), path.join(data, 'usr/palm/services', svc.id), {

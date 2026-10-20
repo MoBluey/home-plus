@@ -25,8 +25,12 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   (`arm-webos-linux-gnueabi_sdk-buildroot`, from its GitHub releases): `make -C native webos WEBOS_SDK=...`.
   It doesn't run on macOS. On an Apple Silicon Mac, use the `-aarch64` SDK tarball in a
   `linux/arm64` Debian container with `make` and `nodejs` (run `relocate-sdk.sh` once after unpacking).
-- Packages: `node tools/build.mjs native` → `dist/*.ipk`. It needs GNU tar, so on a Mac run it in
-  that container too. Bump versions in `app/appinfo.json`, `service/package.json`, `native/appinfo.json`.
+- Easiest anywhere (macOS too): `tools/docker-build.sh` → `dist/*.ipk` (toolchain release
+  `2026.08-webos`, Intel or Apple Silicon). Without Docker: `WEBOS_SDK=... tools/build-release.sh`.
+- Packages: `node tools/build.mjs` → `dist/com.github.pmiraka.homeplus_<version>_all.ipk` (one
+  package: launcher, service, boot script, licence notices). Versions in `native/appinfo.json` and
+  `service/package.json` must match.
+- CI (`.github/workflows/build.yml`) builds every push; pushing a `v*` tag publishes a release.
 - Desktop preview (Linux): `tools/native-preview/run.sh` → `preview/native-*.png`.
   On a Mac: a `linux/arm64` Debian container with `libsdl2-dev xvfb xauth libgles2 libegl1
   libgl1-mesa-dri python3-pil nodejs` (the Makefile finds the arm64 libSDL2 by itself).
