@@ -5,16 +5,18 @@
 
 #include <SDL.h>
 
+#include "render.h"
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-int homeplus_screenshot(SDL_Renderer *r, const char *path)
+int homeplus_screenshot(const char *path)
 {
     int w, h;
-    SDL_GetRendererOutputSize(r, &w, &h);
+    r_read_pixels(NULL, &w, &h);
     unsigned char *px = malloc((size_t)w * h * 4);
     if (!px) return 0;
-    SDL_RenderReadPixels(r, NULL, SDL_PIXELFORMAT_ABGR8888, px, w * 4);
+    r_read_pixels(px, &w, &h);
     int ok = stbi_write_png(path, w, h, 4, px, w * 4);
     free(px);
     return ok;

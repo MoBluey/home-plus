@@ -1,0 +1,67 @@
+/* Home+ native: a small GLES2 renderer with shaders for shapes and Liquid Glass.
+ *
+ * SDL only provides the window, the GL context and vsync. Everything is drawn
+ * in a fixed logical space (1920x1080) whatever the target, one quad per call:
+ * a frame is a few dozen draws. Glass refracts a "backdrop": a half-resolution
+ * copy of whatever is behind it, drawn between r_backdrop_begin/end, which
+ * also builds the blurred versions the glass samples. Glass is clear unless
+ * what's on it needs help to stay legible. */
+#ifndef HOMEPLUS_RENDER_H
+#define HOMEPLUS_RENDER_H
+
+#include <SDL.h>
+
+typedef struct Tex {
+    unsigned id;
+    int w, h;
+} Tex;
+
+/* Call before SDL_CreateWindow: asks for an OpenGL ES 2.0 context. */
+void r_gl_attributes(void);
+/* Creates the context, programs and render targets. 0 on failure. */
+int r_init(SDL_Window *win, int logical_w, int logical_h);
+void r_shutdown(void);
+
+void r_frame_begin(Uint8 r, Uint8 g, Uint8 b); /* screen target, cleared */
+void r_present(void);
+/* Shifts everything drawn on screen by (dx, dy) logical px: the OLED pixel
+ * orbit. What the glass refracts stays put, so the two stay aligned. */
+void r_set_offset(float dx, float dy);
+
+/* RGBA8, straight alpha. */
+Tex *r_tex(const unsigned char *rgba, int w, int h);
+void r_tex_free(Tex **t);
+
+/* Textured quad tinted by rgba; radius > 0 rounds its corners. */
+void r_image(const Tex *t, float x, float y, float w, float h, Uint8 r, Uint8 g, Uint8 b, Uint8 a, float radius);
+/* Same, scaled to cover the rect and cropped (biased upward, like the shelf art). */
+void r_cover(const Tex *t, float x, float y, float w, float h, Uint8 a, float radius);
+/* Rounded rect (radius = h/2 for a capsule). stroke > 0 draws only a ring that
+ * fades from top_a at the top edge to bottom_a at the bottom (both 0..1). */
+void r_shape(float x, float y, float w, float h, float radius, Uint8 r, Uint8 g, Uint8 b, Uint8 a,
+             float stroke, float top_a, float bottom_a);
+/* Soft shadow of a rounded rect: blur in px, offset dy, alpha 0..1. */
+void r_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float alpha);
+/* Plain fill over the whole target (scrims, dimming). */
+void r_fill(Uint8 r, Uint8 g, Uint8 b, Uint8 a);
+
+/* Everything drawn between these lands in the backdrop the glass refracts. */
+void r_backdrop_begin(void);
+void r_backdrop_end(void);
+
+typedef struct {
+    float x, y, w, h, radius;
+    float legible;           /* 0..1: content on it must stay readable, so blur and dim the
+                                backdrop where it's busy or bright; 0 = always fully clear */
+    float lens;              /* 0..1 how strongly it bends light; animate it to appear/disappear */
+    float light_x, light_y;  /* direction the light comes from (normalised); default top-left */
+    float focus;             /* 0..1 illumination when focused */
+    float alpha;             /* 0..1 */
+    Uint8 tr, tg, tb, ta;    /* tint mixed over the glass */
+} Glass;
+void r_glass(const Glass *g);
+
+/* Reads the screen as RGBA8, top row first; buf holds w*h*4 of the drawable. */
+int r_read_pixels(unsigned char *buf, int *w, int *h);
+
+#endif

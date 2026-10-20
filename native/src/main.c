@@ -1,8 +1,8 @@
 /* Home+ native — a tvOS-style home screen for webOS, drawn with SDL2 + GLES2.
  *
- * Same layout and behaviour as the web version (app/), but rendered on the GPU:
- * every frame is a few dozen tinted textured quads, animations are springs at
- * the display refresh rate, and when nothing moves the loop sleeps.
+ * Rendered on the GPU by our own GLES2 renderer (render.c): Liquid Glass panels,
+ * rounded shapes and text, a few dozen quads a frame. Animations run at the
+ * display refresh rate, and when nothing moves the loop sleeps.
  *
  * Data comes from the Home+ service's local API (see service/service.js). */
 #include <ctype.h>
@@ -17,26 +17,38 @@
 
 #include "cJSON.h"
 #include "gfx.h"
-#include "glass.h"
 #include "net.h"
 
 /* ------------------------------------------------------------------ layout */
 
+/* Spacing system (Apple's tvOS layout guidance): an 80/60 px safe area, five
+ * columns of 5:3 tiles 40 px apart, containers pad their content 40 px and keep
+ * their corners concentric with it (outer radius = inner radius + padding). */
 #define W 1920
 #define H 1080
+#define SAFE_X 80
+#define SAFE_Y 60
 #define COLS 5
-#define TILE_W 300
-#define TILE_H 180
-#define GAP_X 48
-#define ROW_H 290
-#define LEFT 114
-#define GRID_TOP 740
-#define FOCUS_SCALE 1.12f
+#define TILE_W 304
+#define TILE_H 182
+#define TILE_R 24
+#define GAP_X 40
+#define PAD 40
+#define LEFT (SAFE_X + PAD)            /* first column */
+#define DOCK_Y 712                     /* glass platform behind the top row */
+#define DOCK_H (TILE_H + 2 * PAD)
+#define GRID_TOP (DOCK_Y + PAD)
+#define ROW_H (TILE_H + 100)           /* rows at least 100 px apart; labels sit in the gap */
+#define FOCUS_SCALE 1.10f
 #define LONG_PRESS_MS 650
-#define RAIL_CARD_W 300
-#define RAIL_CARD_H 169
-#define RAIL_GAP 34
-#define RAIL_VISIBLE 4
+#define RAIL_CARD_W TILE_W             /* Continue Watching cards sit on the same columns */
+#define RAIL_CARD_H 171                /* 16:9 */
+#define RAIL_GAP GAP_X
+#define RAIL_Y 486
+#define RAIL_VISIBLE 5
+#define BAR 56                         /* clock capsule and round top-bar buttons */
+#define BAR_GAP 16
+#define TEXT_STATIC 218                /* OLED: static text stays at ~85% white */
 
 #define MAX_APPS 128
 #define MAX_RAIL 16
@@ -50,7 +62,6 @@ enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_ICON, TAG_ART, TAG_RAIL_THUMB,
 enum { ZONE_GRID, ZONE_RAIL, ZONE_TOP };
 /* top bar buttons, left of the clock (no Inputs: the remote's Input key has LG's own menu) */
 enum { TOP_RECENTS, TOP_SETTINGS, TOP_COUNT };
-#define TOP_SIZE 56
 #define MAX_RUNNING 32
 #define MAX_SYS 16
 
@@ -58,7 +69,7 @@ typedef struct {
     char id[ID_LEN], title[ID_LEN], icon[ID_LEN + 16], art[ID_LEN + 16];
     Uint8 col[3];
     int has_col, fullbleed;
-    SDL_Texture *icon_tex, *art_tex, *label, *big;
+    Tex *icon_tex, *art_tex, *label, *big;
     int icon_state, art_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
     int lw, lh, bw, bh;
     float s; /* focus animation 0..1 */
@@ -68,7 +79,7 @@ typedef struct {
     char id[64], type[16], name[200], link[400], bg[40], thumb[40];
     float progress;
     int season, episode, remaining;
-    SDL_Texture *thumb_tex, *bg_tex, *name_tex, *title_tex, *meta_tex;
+    Tex *thumb_tex, *bg_tex, *name_tex, *title_tex, *meta_tex;
     int thumb_state, bg_state;
     int nw, nh, tw, th, mw, mh;
     float s;
@@ -83,17 +94,16 @@ typedef struct {
     int arg;
     int destructive;
     char id[ID_LEN]; /* ACT_LAUNCH_ID */
-    SDL_Texture *tex;
+    Tex *tex;
     int w, h;
 } SheetItem;
 
 static struct {
     SDL_Window *win;
-    SDL_Renderer *ren;
     Font *f_medium, *f_semi, *f_bold;
 
-    /* shared shape textures, tinted per draw */
-    SDL_Texture *tile_fill, *tile_rim, *r32_fill, *r32_rim, *r56_fill, *r56_rim, *lens, *lens_rim, *glow, *scrim_v, *scrim_h;
+    /* shared textures, tinted per draw (shapes and glass are shaders) */
+    Tex *glow, *scrim_v, *scrim_h;
 
     App apps[MAX_APPS];
     int napps, generation; /* generation: bumps when the app list is rebuilt */
@@ -113,7 +123,7 @@ static struct {
     int focus, zone; /* ZONE_* */
     int top_index;
     float top_s[TOP_COUNT];
-    SDL_Texture *top_tex[TOP_COUNT];
+    Tex *top_tex[TOP_COUNT];
     int top_w[TOP_COUNT], top_h[TOP_COUNT];
 
     /* Control Center data from /api/system */
@@ -135,11 +145,11 @@ static struct {
     struct {
         int open, index, n, tw, th;
         Action back; /* what Back does besides closing: ACT_RECENTS goes up to the Recents list */
-        SDL_Texture *title;
+        Tex *title;
         SheetItem it[MAX_SHEET];
     } sheet;
 
-    SDL_Texture *clock_tex, *toast_tex;
+    Tex *clock_tex, *toast_tex;
     int clock_w, clock_h, clock_min, toast_w, toast_h;
     Uint32 toast_until;
 
@@ -149,7 +159,11 @@ static struct {
     int service_ok, wake_tries;
     Uint32 next_retry;
     int logged_keys;
-    SDL_Texture *heading_tex, *sub_tex, *sub_connect_tex, *sheet_big;
+    /* OLED protection: idle stages, fades, pixel orbit */
+    Uint32 last_input;
+    int idle_stage, swallow_up, offscreen, orbit_k; /* offscreen: another app is in front */
+    float dim, black;
+    Tex *heading_tex, *sub_tex, *sub_connect_tex, *sheet_big;
     int sheet_big_w, sheet_big_h;
     int hw, hh, sw, sh, scw, sch;
 } S;
@@ -168,11 +182,7 @@ static float approach(float *v, float target, float speed, float dt, int *moving
     return *v;
 }
 
-static void tex_free(SDL_Texture **t)
-{
-    if (*t) SDL_DestroyTexture(*t);
-    *t = NULL;
-}
+static void tex_free(Tex **t) { r_tex_free(t); }
 
 static void log_remote(const char *fmt, ...)
 {
@@ -193,7 +203,7 @@ static void log_remote(const char *fmt, ...)
 static void toast(const char *text, int ms)
 {
     tex_free(&S.toast_tex);
-    S.toast_tex = text_render(S.ren, S.f_medium, 26, text, 1300, &S.toast_w, &S.toast_h);
+    S.toast_tex = text_render(S.f_medium, 26, text, 1300, &S.toast_w, &S.toast_h);
     S.toast_until = SDL_GetTicks() + ms;
 }
 
@@ -391,9 +401,9 @@ static void make_rail_texts(RailItem *it)
         snprintf(left, sizeof left, "%s%d min left", meta[0] ? "  \xC2\xB7  " : "", it->remaining);
         strncat(meta, left, sizeof meta - strlen(meta) - 1);
     }
-    it->name_tex = text_render(S.ren, S.f_semi, 20, it->name, RAIL_CARD_W - 32, &it->nw, &it->nh);
-    it->title_tex = text_render(S.ren, S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
-    it->meta_tex = text_render(S.ren, S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
+    it->name_tex = text_render(S.f_semi, 20, it->name, RAIL_CARD_W - 32, &it->nw, &it->nh);
+    it->title_tex = text_render(S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
+    it->meta_tex = text_render(S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
 }
 
 static void parse_stremio(const char *json)
@@ -410,7 +420,7 @@ static void parse_stremio(const char *json)
         snprintf(heading, sizeof heading, "Continue Watching%s%s", S.rail_stremio ? " \xC2\xB7 Stremio" : "",
                  S.trakt_connected ? " \xC2\xB7 Trakt" : "");
         tex_free(&S.heading_tex);
-        S.heading_tex = text_render(S.ren, S.f_semi, 22, heading, 0, &S.hw, &S.hh);
+        S.heading_tex = text_render(S.f_semi, 22, heading, 0, &S.hw, &S.hh);
     }
     cJSON *arr = cJSON_GetObjectItem(o, "items"), *v;
     char sig[2048] = "";
@@ -507,7 +517,7 @@ static void handle_result(Result *r)
                 net_wake_service();
                 S.next_retry = SDL_GetTicks() + 2000;
             }
-            toast(S.wake_tries < 10 ? "Starting the Home+ service\xE2\x80\xA6" : "Home+ service isn't responding. Is the Home+ web package installed?", 600000);
+            toast(S.wake_tries < 10 ? "Starting the Home+ service\xE2\x80\xA6" : "Home+ service isn't responding. Is the Home+ Service package installed?", 600000);
         }
         if (S.service_ok && S.toast_until > SDL_GetTicks() + 100000) S.toast_until = 0;
         break;
@@ -561,7 +571,7 @@ static void handle_result(Result *r)
                 snprintf(title, sizeof title, "On your phone, go to %s and enter", jstr(pend, "url"));
                 sheet_open(title);
                 tex_free(&S.sheet_big);
-                S.sheet_big = text_render(S.ren, S.f_bold, 96, jstr(pend, "code"), 0, &S.sheet_big_w, &S.sheet_big_h);
+                S.sheet_big = text_render(S.f_bold, 96, jstr(pend, "code"), 0, &S.sheet_big_w, &S.sheet_big_h);
                 sheet_add("Cancel", ACT_CANCEL, 0, 0);
             }
             S.trakt_poll = SDL_GetTicks() + 3000;
@@ -576,7 +586,7 @@ static void handle_result(Result *r)
         if (r->generation == S.generation && r->index < S.napps) {
             App *a = &S.apps[r->index];
             if (r->rgba) {
-                a->icon_tex = gfx_texture_rgba(S.ren, r->rgba, r->w, r->h);
+                a->icon_tex = r_tex(r->rgba, r->w, r->h);
                 a->icon_state = 2;
                 if (r->sampled) {
                     a->fullbleed = r->fullbleed;
@@ -593,7 +603,7 @@ static void handle_result(Result *r)
     case TAG_ART:
         if (r->generation == S.generation && r->index < S.napps) {
             App *a = &S.apps[r->index];
-            a->art_tex = r->rgba ? gfx_texture_rgba(S.ren, r->rgba, r->w, r->h) : NULL;
+            a->art_tex = r->rgba ? r_tex(r->rgba, r->w, r->h) : NULL;
             a->art_state = r->rgba ? 2 : 3;
         }
         break;
@@ -601,7 +611,7 @@ static void handle_result(Result *r)
     case TAG_RAIL_BG:
         if (r->generation == S.rail_generation && r->index < S.nrail) {
             RailItem *it = &S.rail[r->index];
-            SDL_Texture *t = r->rgba ? gfx_texture_rgba(S.ren, r->rgba, r->w, r->h) : NULL;
+            Tex *t = r->rgba ? r_tex(r->rgba, r->w, r->h) : NULL;
             if (r->tag == TAG_RAIL_THUMB) { it->thumb_tex = t; it->thumb_state = t ? 2 : 3; }
             else { it->bg_tex = t; it->bg_state = t ? 2 : 3; }
         }
@@ -653,7 +663,7 @@ static void sheet_open(const char *title)
     sheet_close();
     S.sheet.open = 1;
     S.sheet.index = 0;
-    S.sheet.title = text_render(S.ren, S.f_semi, 30, title, 900, &S.sheet.tw, &S.sheet.th);
+    S.sheet.title = text_render(S.f_semi, 30, title, 900, &S.sheet.tw, &S.sheet.th);
 }
 
 static void sheet_add(const char *label, Action act, int arg, int destructive)
@@ -663,7 +673,7 @@ static void sheet_add(const char *label, Action act, int arg, int destructive)
     it->act = act;
     it->arg = arg;
     it->destructive = destructive;
-    it->tex = text_render(S.ren, S.f_medium, 31, label, 820, &it->w, &it->h);
+    it->tex = text_render(S.f_medium, 31, label, 600, &it->w, &it->h);
 }
 
 static void sheet_add_id(const char *label, const char *id)
@@ -1040,25 +1050,118 @@ static int hit_item(int mx, int my)
     return -1;
 }
 
-/* ------------------------------------------------------------------ drawing */
 
-static void draw_text(SDL_Texture *t, int w, int h, float x, float y, Uint8 a)
+/* ------------------------------------------------------------------ animation */
+
+/* OLED protection: after a while without input the screen dims (all but the
+ * focused tile, like tvOS), then fades to black and stops drawing. */
+#define IDLE_DIM_MS (2 * 60 * 1000)
+#define IDLE_OFF_MS (10 * 60 * 1000)
+
+static float special_s; /* focus animation of the "Hidden" tile */
+
+static void update_clock(void)
 {
-    gfx_draw(S.ren, t, x, y, (float)w, (float)h, 255, 255, 255, a);
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    int m = t->tm_hour * 60 + t->tm_min;
+    if (m == S.clock_min && S.clock_tex) return;
+    char buf[16];
+    int h12 = t->tm_hour % 12 ? t->tm_hour % 12 : 12;
+    snprintf(buf, sizeof buf, "%d:%02d %s", h12, t->tm_min, t->tm_hour < 12 ? "AM" : "PM");
+    tex_free(&S.clock_tex);
+    S.clock_tex = text_render(S.f_semi, 27, buf, 0, &S.clock_w, &S.clock_h);
+    S.clock_min = m;
 }
 
-static void draw_glass(float x, float y, float w, float h, float radius, Uint8 fill_a, Uint8 rim_a, Uint8 cr, Uint8 cg, Uint8 cb)
+/* Advances every animated value once per frame. Drawing only reads them: the
+ * scene is drawn twice, into the glass backdrop and then to the screen. */
+static int update(float dt)
 {
-    SDL_Texture *fill = radius > 40 ? S.r56_fill : S.r32_fill, *rim = radius > 40 ? S.r56_rim : S.r32_rim;
-    int sc = radius > 40 ? 56 : 32;
-    gfx_draw_nine(S.ren, fill, sc, radius, x, y, w, h, cr, cg, cb, fill_a);
-    gfx_draw_nine(S.ren, rim, sc, radius, x, y, w, h, 255, 255, 255, rim_a);
+    int anim = 0;
+    update_clock();
+    int row = S.focus / COLS;
+    approach(&S.scrolled, row > 0 ? 1.0f : 0.0f, 10, dt, &anim);
+    S.scroll_target = row == 0 ? 0 : 380 - (GRID_TOP + row * ROW_H);
+    approach(&S.scroll, S.scroll_target, 11, dt, &anim);
+
+    if (rail_active()) {
+        RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
+        /* background art: lazy-load the focused one, crossfade between items */
+        if (cur && cur->bg[0] && cur->bg_state == 0) {
+            cur->bg_state = 1;
+            net_get_image(cur->bg, TAG_RAIL_BG, S.rail_index, S.rail_generation, 0);
+        }
+        if (S.rail_art_cur != S.rail_index) {
+            S.rail_art_prev = S.rail_art_cur;
+            S.rail_art_cur = S.rail_index;
+            S.rail_art_a = 0;
+        }
+        approach(&S.rail_art_a, 1, 9, dt, &anim);
+        /* keep only nearby full-screen backgrounds in GPU memory (~8 MB each) */
+        for (int i = 0; i < S.nrail; i++) {
+            RailItem *it = &S.rail[i];
+            if (it->bg_tex && abs(i - S.rail_index) > 2 && i != S.rail_art_prev) {
+                tex_free(&it->bg_tex);
+                it->bg_state = 0;
+            }
+        }
+        float shift = (float)(S.rail_index > RAIL_VISIBLE - 1 ? S.rail_index - (RAIL_VISIBLE - 1) : 0) * (RAIL_CARD_W + RAIL_GAP);
+        approach(&S.rail_shift, shift, 12, dt, &anim);
+        for (int i = 0; i < S.nrail; i++)
+            approach(&S.rail[i].s, S.zone == ZONE_RAIL && i == S.rail_index ? 1.0f : 0.0f, 16, dt, &anim);
+    } else {
+        int cur = S.focus < COLS ? S.focus : S.shelf_cur;
+        if (cur != S.shelf_cur) {
+            S.shelf_prev = S.shelf_cur;
+            S.shelf_cur = cur;
+            S.shelf_a = 0;
+        }
+        approach(&S.shelf_a, 1, 9, dt, &anim);
+        App *ca = item_app(S.shelf_cur);
+        if (ca && ca->art[0] && ca->art_state == 0) {
+            ca->art_state = 1;
+            net_get_image(ca->art, TAG_ART, S.items[S.shelf_cur], S.generation, 0);
+        }
+    }
+    for (int i = 0; i < S.nitems; i++) {
+        App *a = item_app(i);
+        approach(a ? &a->s : &special_s, i == S.focus && S.zone == ZONE_GRID ? 1.0f : 0.0f, 18, dt, &anim);
+    }
+    for (int i = 0; i < TOP_COUNT; i++)
+        approach(&S.top_s[i], S.zone == ZONE_TOP && S.top_index == i ? 1.0f : 0.0f, 18, dt, &anim);
+    if (S.moving) anim = 1; /* wobble */
+
+    float dim = S.idle_stage >= 1 ? 1.0f : 0.0f, black = S.idle_stage >= 2 ? 1.0f : 0.0f;
+    approach(&S.dim, dim, dim > S.dim ? 2.5f : 10.0f, dt, &anim);
+    approach(&S.black, black, black > S.black ? 2.5f : 10.0f, dt, &anim);
+    return anim;
+}
+
+/* ------------------------------------------------------------------ drawing */
+
+static void draw_text(Tex *t, int w, int h, float x, float y, Uint8 a)
+{
+    r_image(t, x, y, (float)w, (float)h, 255, 255, 255, a, 0);
+}
+
+/* Liquid Glass (render.h): clear unless what's on it must stay legible. In the
+ * backdrop pass glass can't sample itself, so a faint flat panel stands in. */
+static void panel(int backdrop, float x, float y, float w, float h, float radius, float legible, float focus, float alpha)
+{
+    if (alpha <= 0.004f) return;
+    if (backdrop) {
+        r_shape(x, y, w, h, radius, 255, 255, 255, (Uint8)(14 * alpha), 0, 1, 1);
+        return;
+    }
+    Glass g = { x, y, w, h, radius, legible, 1.0f, -0.6f, -0.8f, focus, alpha, 0, 0, 0, 0 };
+    r_glass(&g);
 }
 
 static void ensure_app_texts(App *a)
 {
-    if (!a->label) a->label = text_render(S.ren, S.f_medium, 26, a->title, TILE_W + 60, &a->lw, &a->lh);
-    if (!a->big) a->big = text_render(S.ren, S.f_bold, 84, a->title, 1000, &a->bw, &a->bh);
+    if (!a->label) a->label = text_render(S.f_medium, 26, a->title, TILE_W + 60, &a->lw, &a->lh);
+    if (!a->big) a->big = text_render(S.f_bold, 84, a->title, 1000, &a->bw, &a->bh);
 }
 
 static void draw_app_shelf(App *a, Uint8 alpha)
@@ -1067,283 +1170,216 @@ static void draw_app_shelf(App *a, Uint8 alpha)
     Uint8 r, g, b;
     app_color(a, &r, &g, &b);
     if (a->art_tex) {
-        gfx_draw_cover(S.ren, a->art_tex, 0, 0, W, H, alpha);
-        gfx_draw(S.ren, S.scrim_v, 0, H * 0.55f, W, H * 0.45f, 255, 255, 255, alpha);
-        gfx_draw(S.ren, S.scrim_h, 0, 0, W * 0.5f, H, 255, 255, 255, alpha);
+        r_cover(a->art_tex, 0, 0, W, H, alpha, 0);
+        r_image(S.scrim_v, 0, H * 0.55f, W, H * 0.45f, 255, 255, 255, alpha, 0);
+        r_image(S.scrim_h, 0, 0, W * 0.5f, H, 255, 255, 255, alpha, 0);
     } else {
         /* a tiny glow texture, stretched by the GPU */
-        gfx_draw(S.ren, S.glow, W * 0.77f - 900, H * 0.33f - 700, 1800, 1400, r, g, b, (Uint8)(alpha * 0.8f));
+        r_image(S.glow, W * 0.77f - 900, H * 0.33f - 700, 1800, 1400, r, g, b, (Uint8)(alpha * 0.8f), 0);
         if (a->icon_tex) {
-            float lx = W - 250 - 400, ly = 120;
-            gfx_draw(S.ren, a->icon_tex, lx + 30, ly + 30, 340, 340, 255, 255, 255, alpha);
-            gfx_draw(S.ren, S.lens, lx, ly, 400, 400, 255, 255, 255, (Uint8)(alpha * 0.07f));
-            gfx_draw(S.ren, S.lens_rim, lx, ly, 400, 400, 255, 255, 255, (Uint8)(alpha * 0.55f));
+            float ls = 400, lx = W - SAFE_X - PAD - ls, ly = SAFE_Y + 60;
+            r_image(a->icon_tex, lx + 30, ly + 30, ls - 60, ls - 60, 255, 255, 255, alpha, 0);
+            r_shape(lx, ly, ls, ls, 96, 255, 255, 255, (Uint8)(alpha * 0.07f), 0, 1, 1);
+            r_shape(lx, ly, ls, ls, 96, 255, 255, 255, (Uint8)(alpha * 0.55f), 2.0f, 1.0f, 0.3f);
         }
     }
     ensure_app_texts(a);
     draw_text(a->big, a->bw, a->bh, LEFT - 4, 340, alpha);
-    SDL_Texture *sub = is_stremio(a) && !S.rail_connected ? S.sub_connect_tex : S.sub_tex;
+    Tex *sub = is_stremio(a) && !S.rail_connected ? S.sub_connect_tex : S.sub_tex;
     int sw = sub == S.sub_tex ? S.sw : S.scw, sh = sub == S.sub_tex ? S.sh : S.sch;
     draw_text(sub, sw, sh, LEFT, 340 + a->bh + 10, (Uint8)(alpha * 0.72f));
 }
 
-static void draw_rail_shelf(Uint8 alpha, int *anim, float dt)
+static void draw_rail_shelf(Uint8 alpha, int backdrop)
 {
     RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
     if (!cur) return;
-    /* background art: lazy-load the focused one, crossfade between items */
-    if (cur->bg[0] && cur->bg_state == 0) {
-        cur->bg_state = 1;
-        net_get_image(cur->bg, TAG_RAIL_BG, S.rail_index, S.rail_generation, 0);
-    }
-    if (S.rail_art_cur != S.rail_index) {
-        S.rail_art_prev = S.rail_art_cur;
-        S.rail_art_cur = S.rail_index;
-        S.rail_art_a = 0;
-    }
-    approach(&S.rail_art_a, 1, 9, dt, anim);
-    /* keep only nearby full-screen backgrounds in GPU memory (~8 MB each) */
-    for (int i = 0; i < S.nrail; i++) {
-        RailItem *it = &S.rail[i];
-        if (it->bg_tex && abs(i - S.rail_index) > 2 && i != S.rail_art_prev) {
-            tex_free(&it->bg_tex);
-            it->bg_state = 0;
-        }
-    }
     RailItem *prev = S.rail_art_prev >= 0 && S.rail_art_prev < S.nrail ? &S.rail[S.rail_art_prev] : NULL;
-    SDL_Texture *pt = prev ? (prev->bg_tex ? prev->bg_tex : prev->thumb_tex) : NULL;
-    SDL_Texture *ct = cur->bg_tex ? cur->bg_tex : cur->thumb_tex;
-    gfx_draw_cover(S.ren, pt, 0, 0, W, H, alpha);
-    gfx_draw_cover(S.ren, ct, 0, 0, W, H, (Uint8)(alpha * S.rail_art_a));
-    gfx_draw(S.ren, S.scrim_v, 0, H * 0.55f, W, H * 0.45f, 255, 255, 255, alpha);
-    gfx_draw(S.ren, S.scrim_h, 0, 0, W * 0.5f, H, 255, 255, 255, alpha);
+    Tex *pt = prev ? (prev->bg_tex ? prev->bg_tex : prev->thumb_tex) : NULL;
+    Tex *ct = cur->bg_tex ? cur->bg_tex : cur->thumb_tex;
+    r_cover(pt, 0, 0, W, H, alpha, 0);
+    r_cover(ct, 0, 0, W, H, (Uint8)(alpha * S.rail_art_a), 0);
+    r_image(S.scrim_v, 0, H * 0.55f, W, H * 0.45f, 255, 255, 255, alpha, 0);
+    r_image(S.scrim_h, 0, 0, W * 0.5f, H, 255, 255, 255, alpha, 0);
 
-    /* heading pill, title, meta */
-    draw_glass(LEFT, 118, S.hw + 44, 46, 23, (Uint8)(alpha * 0.09f), (Uint8)(alpha * 0.35f), 255, 255, 255);
-    draw_text(S.heading_tex, S.hw, S.hh, LEFT + 22, 118 + (46 - S.hh) / 2.0f, alpha);
-    draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, 190, alpha);
-    draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, 190 + cur->th + 8, (Uint8)(alpha * 0.8f));
+    /* heading capsule, title, meta */
+    float hy = SAFE_Y + 58, hh = 46;
+    panel(backdrop, LEFT, hy, S.hw + 44, hh, hh / 2, 1, 0, alpha / 255.0f);
+    draw_text(S.heading_tex, S.hw, S.hh, LEFT + 22, hy + (hh - S.hh) / 2.0f, alpha);
+    draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, hy + hh + 26, alpha);
+    draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, hy + hh + 26 + cur->th + 8, (Uint8)(alpha * 0.8f));
 
-    /* cards */
-    float shift_target = (float)(S.rail_index > RAIL_VISIBLE - 1 ? S.rail_index - (RAIL_VISIBLE - 1) : 0) * (RAIL_CARD_W + RAIL_GAP);
-    approach(&S.rail_shift, shift_target, 12, dt, anim);
+    /* cards, on the grid's columns */
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
-        int focused = S.zone == 1 && i == S.rail_index;
-        approach(&it->s, focused ? 1.0f : 0.0f, 16, dt, anim);
-        float sc = 1 + 0.14f * it->s;
-        float cw = RAIL_CARD_W * sc, ch = RAIL_CARD_H * sc;
+        float sc = 1 + 0.10f * it->s;
+        float cw = RAIL_CARD_W * sc, ch = RAIL_CARD_H * sc, rad = 20 * sc;
         float x = LEFT + i * (RAIL_CARD_W + RAIL_GAP) - S.rail_shift - (cw - RAIL_CARD_W) / 2;
-        float y = 452 - (ch - RAIL_CARD_H) / 2 - 6 * it->s;
+        float y = RAIL_Y - (ch - RAIL_CARD_H) / 2 - 6 * it->s;
         if (x > W || x + cw < 0) continue;
         Uint8 ca = (Uint8)(alpha * (0.75f + 0.25f * it->s));
-        if (it->thumb_tex) gfx_draw_cover(S.ren, it->thumb_tex, x, y, cw, ch, ca);
-        else gfx_draw_nine(S.ren, S.r32_fill, 32, 24, x, y, cw, ch, 255, 255, 255, (Uint8)(ca * 0.08f));
-        gfx_draw(S.ren, S.scrim_v, x, y + ch * 0.45f, cw, ch * 0.55f, 255, 255, 255, ca);
-        gfx_draw_nine(S.ren, S.r32_rim, 32, 24, x, y, cw, ch, 255, 255, 255, (Uint8)(ca * (0.3f + 0.4f * it->s)));
+        if (it->s > 0.01f && !backdrop) r_shadow(x, y, cw, ch, rad, 26, 14, 0.5f * it->s * alpha / 255.0f);
+        if (it->thumb_tex) r_cover(it->thumb_tex, x, y, cw, ch, ca, rad);
+        else r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * 0.08f), 0, 1, 1);
+        r_image(S.scrim_v, x, y + ch * 0.45f, cw, ch * 0.55f, 255, 255, 255, ca, rad);
+        r_shape(x, y, cw, ch, rad, 255, 255, 255, (Uint8)(ca * (0.3f + 0.5f * it->s)), 1.5f + it->s, 1.0f, 0.25f);
         draw_text(it->name_tex, it->nw, it->nh, x + 16 * sc, y + ch - (22 + it->nh) * sc, ca);
-        /* progress bar */
-        float bx = x + 16 * sc, bw = cw - 32 * sc, by = y + ch - 17 * sc;
-        gfx_draw_nine(S.ren, S.r32_fill, 32, 3, bx, by, bw, 5 * sc, 255, 255, 255, (Uint8)(ca * 0.28f));
-        if (it->progress > 0) gfx_draw_nine(S.ren, S.r32_fill, 32, 3, bx, by, bw * it->progress, 5 * sc, 255, 255, 255, ca);
+        float bx = x + 16 * sc, bw = cw - 32 * sc, by = y + ch - 17 * sc, bh = 5 * sc; /* progress */
+        r_shape(bx, by, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ca * 0.28f), 0, 1, 1);
+        if (it->progress > 0) r_shape(bx, by, bw * it->progress, bh, bh / 2, 255, 255, 255, ca, 0, 1, 1);
     }
 }
 
-/* blurred Top Shelf for this frame's glass (NULL without glass support) */
-static SDL_Texture *G_shelf_blur;
-
-static void glass_or_flat(SDL_Texture *blur, float x, float y, float w, float h, float radius,
-                          Uint8 tint_a, Uint8 rim_a, Uint8 alpha)
+static void draw_shelf(int backdrop)
 {
-    if (blur) glass_panel(S.ren, blur, x, y, w, h, radius, 255, 255, 255, tint_a, alpha);
-    else draw_glass(x, y, w, h, radius, (Uint8)(tint_a * alpha / 255), 0, 255, 255, 255);
-    SDL_Texture *rim = radius > 40 ? S.r56_rim : S.r32_rim;
-    gfx_draw_nine(S.ren, rim, radius > 40 ? 56 : 32, radius, x, y, w, h, 255, 255, 255, (Uint8)(rim_a * alpha / 255));
+    Uint8 alpha = (Uint8)(255 * (1 - S.scrolled));
+    if (!alpha) return;
+    if (rail_active()) {
+        draw_rail_shelf(alpha, backdrop);
+    } else {
+        draw_app_shelf(item_app(S.shelf_prev), (Uint8)(alpha * (1 - S.shelf_a)));
+        draw_app_shelf(item_app(S.shelf_cur), (Uint8)(alpha * S.shelf_a));
+    }
 }
 
-/* Recents / Settings: round glass buttons left of the clock */
-static void draw_top_bar(float right, Uint8 alpha, int *anim, float dt)
+/* Recents / Settings: round glass buttons left of the clock, BAR_GAP apart */
+static void draw_top_bar(float right, Uint8 alpha, int backdrop)
 {
     float x = right;
     for (int i = TOP_COUNT - 1; i >= 0; i--) {
-        int f = S.zone == ZONE_TOP && S.top_index == i;
-        approach(&S.top_s[i], f ? 1.0f : 0.0f, 18, dt, anim);
-        float k = S.top_s[i], d = TOP_SIZE * (1 + 0.14f * k);
-        x -= TOP_SIZE + 14;
-        float cx = x + TOP_SIZE / 2.0f, cy = 52 + TOP_SIZE / 2.0f;
-        glass_or_flat(G_shelf_blur, cx - d / 2, cy - d / 2, d, d, d / 2, (Uint8)(26 + 70 * k), (Uint8)(90 + 130 * k), alpha);
+        float k = S.top_s[i], d = BAR * (1 + 0.14f * k);
+        x -= BAR + BAR_GAP;
+        float cx = x + BAR / 2.0f, cy = SAFE_Y + BAR / 2.0f;
+        if (k > 0.01f && !backdrop) r_shadow(cx - d / 2, cy - d / 2, d, d, d / 2, 16, 6, 0.35f * k * alpha / 255.0f);
+        panel(backdrop, cx - d / 2, cy - d / 2, d, d, d / 2, 1, k, alpha / 255.0f);
         float is = S.top_w[i] * (1 + 0.14f * k);
-        gfx_draw(S.ren, S.top_tex[i], cx - is / 2, cy - is / 2, is, is, 255, 255, 255, (Uint8)(alpha * (0.85f + 0.15f * k)));
+        r_image(S.top_tex[i], cx - is / 2, cy - is / 2, is, is, 255, 255, 255, (Uint8)(alpha * (0.85f + 0.15f * k)), 0);
     }
 }
 
-static void draw_clock(Uint8 alpha, int *anim, float dt)
+static void draw_clock(Uint8 alpha, int backdrop)
 {
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    int m = t->tm_hour * 60 + t->tm_min;
-    if (m != S.clock_min || !S.clock_tex) {
-        char buf[16];
-        int h12 = t->tm_hour % 12 ? t->tm_hour % 12 : 12;
-        snprintf(buf, sizeof buf, "%d:%02d %s", h12, t->tm_min, t->tm_hour < 12 ? "AM" : "PM");
-        tex_free(&S.clock_tex);
-        S.clock_tex = text_render(S.ren, S.f_semi, 27, buf, 0, &S.clock_w, &S.clock_h);
-        S.clock_min = m;
-    }
-    float pw = S.clock_w + 48, x = W - 100 - pw;
-    glass_or_flat(G_shelf_blur, x, 52, pw, 56, 28, 26, 90, alpha);
-    draw_text(S.clock_tex, S.clock_w, S.clock_h, x + 24, 52 + (56 - S.clock_h) / 2.0f, (Uint8)(alpha * 0.92f));
-    draw_top_bar(x, alpha, anim, dt);
+    if (!alpha) return;
+    float pw = S.clock_w + 48, x = W - SAFE_X - pw;
+    panel(backdrop, x, SAFE_Y, pw, BAR, BAR / 2, 1, 0, alpha / 255.0f);
+    draw_text(S.clock_tex, S.clock_w, S.clock_h, x + 24, SAFE_Y + (BAR - S.clock_h) / 2.0f, (Uint8)(alpha * TEXT_STATIC / 255));
+    draw_top_bar(x, alpha, backdrop);
 }
 
-static void draw_sheet(SDL_Texture *scene_blur)
+static void draw_tile(int i, int backdrop)
+{
+    App *a = item_app(i);
+    float bx = LEFT + (i % COLS) * (TILE_W + GAP_X);
+    float by = GRID_TOP + (i / COLS) * ROW_H + S.scroll;
+    if (by > H + 40 || by + ROW_H < -40) return;
+    int focused = i == S.focus && S.zone == ZONE_GRID;
+    float k = a ? a->s : special_s;
+    float sc = 1 + (FOCUS_SCALE - 1) * k;
+    float w = TILE_W * sc, h = TILE_H * sc, rad = TILE_R * sc;
+    float x = bx - (w - TILE_W) / 2, y = by - (h - TILE_H) / 2 - 6 * k;
+    if (S.moving && focused) x += sinf(SDL_GetTicks() / 40.0f) * 2.0f; /* gentle wobble while moving */
+    Uint8 r, g, b;
+    app_color(a, &r, &g, &b);
+    if (k > 0.01f && !backdrop) r_shadow(x, y, w, h, rad, 28, 16, 0.5f * k);
+    r_shape(x, y, w, h, rad, r, g, b, a ? (a->fullbleed ? 255 : 153) : 18, 0, 1, 1);
+    if (a && a->icon_tex) {
+        float is = (a->fullbleed ? 156 : 124) * sc;
+        r_image(a->icon_tex, x + (w - is) / 2, y + (h - is) / 2, is, is, 255, 255, 255, 255, 0);
+    } else if (a) {
+        ensure_app_texts(a);
+        if (a->label) draw_text(a->label, a->lw, a->lh, x + (w - a->lw) / 2, y + (h - a->lh) / 2, 230);
+    } else {
+        static Tex *ht;
+        static int hw, hh;
+        if (!ht) ht = text_render(S.f_semi, 28, "\xE2\x80\xA2 \xE2\x80\xA2 \xE2\x80\xA2   Hidden", 0, &hw, &hh);
+        draw_text(ht, hw, hh, x + (w - hw) / 2, y + (h - hh) / 2, 205);
+    }
+    /* rim: focused tiles turn to glass and catch the light */
+    r_shape(x, y, w, h, rad, 255, 255, 255, (Uint8)(90 + 130 * k + (S.moving && focused ? 35 : 0)), 1.5f + k, 1.0f, 0.2f + 0.2f * k);
+    if (a && k > 0.01f && !backdrop) {
+        ensure_app_texts(a);
+        float ly = i < COLS ? DOCK_Y - 160 * S.scrolled + DOCK_H + 14 : by + TILE_H + 22; /* top row: under the dock */
+        draw_text(a->label, a->lw, a->lh, bx + (TILE_W - a->lw) / 2, ly, (Uint8)(TEXT_STATIC * k));
+    }
+}
+
+/* Everything below the overlays. backdrop: the copy the glass refracts. */
+static void draw_scene(int backdrop)
+{
+    draw_shelf(backdrop);
+    float dock_y = DOCK_Y - 160 * S.scrolled, dock_a = 1 - S.scrolled;
+    if (!backdrop && dock_a > 0.004f) r_shadow(SAFE_X, dock_y, W - 2 * SAFE_X, DOCK_H, TILE_R + PAD, 40, 14, 0.3f * dock_a);
+    panel(backdrop, SAFE_X, dock_y, W - 2 * SAFE_X, DOCK_H, TILE_R + PAD, 0, 0, dock_a); /* icons on it are opaque: stays clear */
+    draw_clock((Uint8)(255 * (1 - S.scrolled)), backdrop);
+    for (int i = 0; i < S.nitems; i++)
+        if (i != S.focus) draw_tile(i, backdrop);
+    if (!backdrop && S.dim > 0.004f) r_fill(0, 0, 0, (Uint8)(S.dim * 115)); /* OLED: idle dims all but the focused tile */
+    if (S.focus < S.nitems) draw_tile(S.focus, backdrop);
+}
+
+static void draw_sheet(void)
 {
     if (!S.sheet.open) return;
-    SDL_SetRenderDrawColor(S.ren, 0, 0, 0, scene_blur ? 90 : 140);
-    SDL_RenderFillRect(S.ren, NULL);
-    float iw = 600, ih = 84, gap = 12;
-    float big = S.sheet_big ? S.sheet_big_h + 30 : 0;
-    float pw = iw + 72, ph = 40 + S.sheet.th + 24 + big + S.sheet.n * (ih + gap) + 30;
-    if (S.sheet.tw + 80 > pw) pw = S.sheet.tw + 80;
+    r_fill(0, 0, 0, 80);
+    const float BH = 80, BGAP = 16, rad = BH / 2 + PAD; /* corners concentric with the buttons */
+    float big = S.sheet_big ? S.sheet_big_h + 24 : 0;
+    float pw = 720;
+    if (S.sheet.tw + 2 * PAD > pw) pw = S.sheet.tw + 2 * PAD;
+    float ph = PAD + S.sheet.th + 24 + big + S.sheet.n * (BH + BGAP) - BGAP + PAD;
     float px = (W - pw) / 2, py = (H - ph) / 2;
-    if (scene_blur) {
-        /* liquid glass: frosted, slightly dark so text stays legible over anything */
-        glass_panel(S.ren, scene_blur, px, py, pw, ph, 48, 30, 30, 38, 150, 255);
-        gfx_draw_nine(S.ren, S.r56_rim, 56, 48, px, py, pw, ph, 255, 255, 255, 110);
-    } else {
-        draw_glass(px, py, pw, ph, 48, 242, 70, 44, 44, 54);
-    }
-    draw_text(S.sheet.title, S.sheet.tw, S.sheet.th, px + (pw - S.sheet.tw) / 2, py + 40, 190);
-    float y = py + 40 + S.sheet.th + 24;
+    r_shadow(px, py, pw, ph, rad, 60, 24, 0.45f);
+    panel(0, px, py, pw, ph, rad, 1, 0, 1);
+    draw_text(S.sheet.title, S.sheet.tw, S.sheet.th, px + (pw - S.sheet.tw) / 2, py + PAD, 200);
+    float y = py + PAD + S.sheet.th + 24;
     if (S.sheet_big) {
         draw_text(S.sheet_big, S.sheet_big_w, S.sheet_big_h, px + (pw - S.sheet_big_w) / 2, y, 255);
         y += big;
     }
-    float ix = px + (pw - iw) / 2 - 36;
-    for (int i = 0; i < S.sheet.n; i++, y += ih + gap) {
+    for (int i = 0; i < S.sheet.n; i++, y += BH + BGAP) {
         SheetItem *it = &S.sheet.it[i];
-        int f = i == S.sheet.index;
-        draw_glass(ix + 36, y, iw, ih, 42, f ? 62 : 18, f ? 110 : 0, 255, 255, 255);
-        Uint8 r = 255, g = 255, b = 255;
-        if (it->destructive) { g = 138; b = 128; }
-        gfx_draw(S.ren, it->tex, ix + 36 + 34, y + (ih - it->h) / 2, (float)it->w, (float)it->h, r, g, b, 235);
+        float bx = px + PAD, bw = pw - 2 * PAD, tx = bx + (bw - it->w) / 2, ty = y + (BH - it->h) / 2;
+        if (i == S.sheet.index) { /* tvOS: the focused button turns opaque white with a dark label */
+            r_shadow(bx, y, bw, BH, BH / 2, 18, 8, 0.4f);
+            r_shape(bx, y, bw, BH, BH / 2, 245, 245, 247, 255, 0, 1, 1);
+            if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 215, 40, 40, 255, 0);
+            else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 28, 28, 30, 255, 0);
+        } else {
+            r_shape(bx, y, bw, BH, BH / 2, 255, 255, 255, 26, 0, 1, 1);
+            if (it->destructive) r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 138, 128, 235, 0);
+            else r_image(it->tex, tx, ty, (float)it->w, (float)it->h, 255, 255, 255, 235, 0);
+        }
     }
 }
 
-static int render(float dt)
+static int toast_on(void) { return S.toast_tex && SDL_GetTicks() < S.toast_until; }
+
+static void draw_toast(void)
 {
-    int anim = 0;
-    int glass = glass_ok();
-    /* with glass, the shelf is drawn off-screen first so panels can blur it */
-    if (glass) SDL_SetRenderTarget(S.ren, glass_shelf_target());
-    SDL_SetRenderDrawColor(S.ren, 8, 8, 11, 255);
-    SDL_RenderClear(S.ren);
+    if (!toast_on()) return;
+    float tw = S.toast_w + 72, th = S.toast_h + 40, tx = (W - tw) / 2, ty = H - SAFE_Y - th;
+    r_shadow(tx, ty, tw, th, th / 2, 30, 12, 0.4f);
+    panel(0, tx, ty, tw, th, th / 2, 1, 0, 1);
+    draw_text(S.toast_tex, S.toast_w, S.toast_h, (W - S.toast_w) / 2, ty + 20, 245);
+}
 
-    int row = S.focus / COLS;
-    approach(&S.scrolled, row > 0 ? 1.0f : 0.0f, 10, dt, &anim);
-    S.scroll_target = row == 0 ? 0 : 380 - (GRID_TOP + row * ROW_H);
-    approach(&S.scroll, S.scroll_target, 11, dt, &anim);
+extern int homeplus_screenshot(const char *path);
 
-    /* ---- Top Shelf ---- */
-    Uint8 shelf_alpha = (Uint8)(255 * (1 - S.scrolled));
-    if (shelf_alpha) {
-        if (rail_active()) {
-            draw_rail_shelf(shelf_alpha, &anim, dt);
-        } else {
-            int cur = S.focus < COLS ? S.focus : S.shelf_cur;
-            if (cur != S.shelf_cur) {
-                S.shelf_prev = S.shelf_cur;
-                S.shelf_cur = cur;
-                S.shelf_a = 0;
-            }
-            approach(&S.shelf_a, 1, 9, dt, &anim);
-            App *ca = item_app(S.shelf_cur), *pa = item_app(S.shelf_prev);
-            if (ca && ca->art[0] && ca->art_state == 0) {
-                ca->art_state = 1;
-                net_get_image(ca->art, TAG_ART, S.items[S.shelf_cur], S.generation, 0);
-            }
-            draw_app_shelf(pa, (Uint8)(shelf_alpha * (1 - S.shelf_a)));
-            draw_app_shelf(ca, (Uint8)(shelf_alpha * S.shelf_a));
-        }
-    }
+static int render(float dt, const char *shot)
+{
+    int anim = update(dt);
+    /* what the glass refracts: the Top Shelf, or the whole scene under a sheet or toast */
+    r_backdrop_begin();
+    if (S.sheet.open || toast_on()) draw_scene(1);
+    else draw_shelf(1);
+    r_backdrop_end();
 
-    G_shelf_blur = NULL;
-    if (glass) {
-        SDL_SetRenderTarget(S.ren, glass_scene_target());
-        glass_blit(S.ren, glass_shelf_target());
-        if (shelf_alpha) G_shelf_blur = glass_blur(S.ren, glass_shelf_target());
-    }
-
-    /* ---- liquid-glass dock behind the top row ---- */
-    float dock_y = 704 - 160 * S.scrolled;
-    Uint8 dock_a = (Uint8)(255 * (1 - S.scrolled));
-    glass_or_flat(G_shelf_blur, 72, dock_y, W - 144, 288, 56, G_shelf_blur ? 22 : 15, 70, dock_a);
-
-    /* ---- grid ---- */
-    for (int i = 0; i < S.nitems; i++) {
-        App *a = item_app(i);
-        float bx = LEFT + (i % COLS) * (TILE_W + GAP_X);
-        float by = GRID_TOP + (i / COLS) * ROW_H + S.scroll;
-        if (by > H + 40 || by + ROW_H < -40) continue;
-        int focused = i == S.focus && S.zone == 0;
-        float *sp = a ? &a->s : NULL;
-        static float special_s;
-        if (!sp) sp = &special_s;
-        approach(sp, focused ? 1.0f : 0.0f, 18, dt, &anim);
-        float sc = 1 + (FOCUS_SCALE - 1) * *sp;
-        float w = TILE_W * sc, h = TILE_H * sc;
-        float x = bx - (w - TILE_W) / 2, y = by - (h - TILE_H) / 2;
-        if (S.moving && focused) {
-            x += sinf(SDL_GetTicks() / 40.0f) * 2.0f; /* gentle wobble while moving */
-            anim = 1;
-        }
-        Uint8 r, g, b;
-        app_color(a, &r, &g, &b);
-        Uint8 fill_a = a ? (a->fullbleed ? 255 : 153) : 18;
-        gfx_draw(S.ren, S.tile_fill, x, y, w, h, r, g, b, fill_a);
-        if (a && a->icon_tex) {
-            float is = (a->fullbleed ? 156 : 124) * sc;
-            gfx_draw(S.ren, a->icon_tex, x + (w - is) / 2, y + (h - is) / 2, is, is, 255, 255, 255, 255);
-        } else if (a) {
-            ensure_app_texts(a);
-            if (a->label) draw_text(a->label, a->lw, a->lh, x + (w - a->lw) / 2, y + (h - a->lh) / 2, 230);
-        } else {
-            static SDL_Texture *ht;
-            static int hw, hh;
-            if (!ht) ht = text_render(S.ren, S.f_semi, 28, "\xE2\x80\xA2 \xE2\x80\xA2 \xE2\x80\xA2   Hidden", 0, &hw, &hh);
-            draw_text(ht, hw, hh, x + (w - hw) / 2, y + (h - hh) / 2, 205);
-        }
-        gfx_draw(S.ren, S.tile_rim, x, y, w, h, 255, 255, 255, (Uint8)(90 + 110 * *sp + (S.moving && focused ? 55 : 0)));
-        if (a && *sp > 0.01f) {
-            ensure_app_texts(a);
-            draw_text(a->label, a->lw, a->lh, bx + (TILE_W - a->lw) / 2, by + TILE_H + 26, (Uint8)(255 * *sp));
-        }
-    }
-
-    draw_clock((Uint8)(255 * (1 - S.scrolled)), &anim, dt);
-
-    /* overlays blur the whole composed scene */
-    SDL_Texture *scene_blur = NULL;
-    if (glass) {
-        SDL_SetRenderTarget(S.ren, NULL);
-        glass_blit(S.ren, glass_scene_target());
-        int toast_on = S.toast_tex && SDL_GetTicks() < S.toast_until;
-        if (S.sheet.open || toast_on) scene_blur = glass_blur(S.ren, glass_scene_target());
-    }
-    draw_sheet(scene_blur);
-
-    if (S.toast_tex && SDL_GetTicks() < S.toast_until) {
-        float tw = S.toast_w + 76, th = S.toast_h + 44, tx = (W - tw) / 2, ty = H - 70 - th;
-        if (scene_blur) {
-            glass_panel(S.ren, scene_blur, tx, ty, tw, th, 34, 30, 30, 38, 150, 255);
-            gfx_draw_nine(S.ren, S.r32_rim, 32, 34, tx, ty, tw, th, 255, 255, 255, 110);
-        } else {
-            draw_glass(tx, ty, tw, th, 34, 242, 70, 44, 44, 54);
-        }
-        draw_text(S.toast_tex, S.toast_w, S.toast_h, (W - S.toast_w) / 2, ty + 22, 245);
-    }
-
-    SDL_RenderPresent(S.ren);
+    r_frame_begin(8, 8, 11);
+    draw_scene(0);
+    draw_sheet();
+    draw_toast();
+    if (S.black > 0.004f) r_fill(0, 0, 0, (Uint8)(S.black * 255)); /* OLED: idle fades to black */
+    if (shot) homeplus_screenshot(shot);
+    r_present();
     return anim;
 }
 
@@ -1364,31 +1400,40 @@ static int load_assets(void)
         fprintf(stderr, "homeplus: fonts missing\n");
         return 0;
     }
-
-    /* drawn at focused size so they stay crisp when scaled up */
-    int tw = (int)(TILE_W * FOCUS_SCALE + 0.5f), th = (int)(TILE_H * FOCUS_SCALE + 0.5f);
-    S.tile_fill = gfx_rounded(S.ren, tw, th, 30 * FOCUS_SCALE, 0, 1, 1);
-    S.tile_rim = gfx_rounded(S.ren, tw, th, 30 * FOCUS_SCALE, 2.0f, 1.0f, 0.38f);
-    S.r32_fill = gfx_rounded(S.ren, 80, 80, 32, 0, 1, 1);
-    S.r32_rim = gfx_rounded(S.ren, 80, 80, 32, 1.5f, 1.0f, 0.35f);
-    S.r56_fill = gfx_rounded(S.ren, 128, 128, 56, 0, 1, 1);
-    S.r56_rim = gfx_rounded(S.ren, 128, 128, 56, 1.5f, 1.0f, 0.3f);
-    S.lens = gfx_rounded(S.ren, 400, 400, 96, 0, 1, 1);
-    S.lens_rim = gfx_rounded(S.ren, 400, 400, 96, 2.0f, 1.0f, 0.3f);
-    S.glow = gfx_glow(S.ren, 192, 192);
-    S.scrim_v = gfx_gradient(S.ren, 1, 0.0f, 0.6f);
-    S.scrim_h = gfx_gradient(S.ren, 0, 0.5f, 0.0f);
-    S.heading_tex = text_render(S.ren, S.f_semi, 22, "Continue Watching \xC2\xB7 Stremio", 0, &S.hw, &S.hh);
-    S.sub_tex = text_render(S.ren, S.f_medium, 28, "Press OK to open \xC2\xB7 Hold for options", 0, &S.sw, &S.sh);
-    S.sub_connect_tex = text_render(S.ren, S.f_medium, 28, "Connect your Stremio account to see Continue Watching", 0, &S.scw, &S.sch);
+    S.glow = gfx_glow(192, 192);
+    S.scrim_v = gfx_gradient(1, 0.0f, 0.6f);
+    S.scrim_h = gfx_gradient(0, 0.5f, 0.0f);
+    S.heading_tex = text_render(S.f_semi, 22, "Continue Watching \xC2\xB7 Stremio", 0, &S.hw, &S.hh);
+    S.sub_tex = text_render(S.f_medium, 28, "Press OK to open \xC2\xB7 Hold for options", 0, &S.sw, &S.sh);
+    S.sub_connect_tex = text_render(S.f_medium, 28, "Connect your Stremio account to see Continue Watching", 0, &S.scw, &S.sch);
     static const int kinds[TOP_COUNT] = { ICON_RECENTS, ICON_SETTINGS };
     for (int i = 0; i < TOP_COUNT; i++) {
-        S.top_tex[i] = gfx_icon(S.ren, kinds[i], 64); /* drawn at 34 px; 64 keeps it sharp when focused */
+        S.top_tex[i] = gfx_icon(kinds[i], 64); /* drawn at 34 px; 64 keeps it sharp when focused */
         S.top_w[i] = S.top_h[i] = 34;
     }
-    if (!getenv("HOMEPLUS_NO_GLASS") && !glass_init(S.ren, W, H, S.r56_fill, 56))
-        fprintf(stderr, "homeplus: glass unavailable, using flat panels\n");
     return 1;
+}
+
+/* Any input resets the OLED idle timer. Returns 1 when it only woke a dark
+ * screen, so that press does nothing else (key: its release is dropped too). */
+static int wake(int key)
+{
+    int dark = S.black > 0.01f;
+    S.last_input = SDL_GetTicks();
+    S.idle_stage = 0;
+    if (dark && key) S.swallow_up = 1;
+    return dark;
+}
+
+/* window -> logical coordinates (the GL drawable may not be 1920x1080) */
+static void to_logical(int *x, int *y)
+{
+    int ww, wh;
+    SDL_GetWindowSize(S.win, &ww, &wh);
+    if (ww > 0 && wh > 0) {
+        *x = *x * W / ww;
+        *y = *y * H / wh;
+    }
 }
 
 int main(int argc, char **argv)
@@ -1399,44 +1444,38 @@ int main(int argc, char **argv)
     SDL_SetHint("SDL_WEBOS_ACCESS_POLICY_KEYS_BACK", "true");
     SDL_SetHint("SDL_WEBOS_ACCESS_POLICY_KEYS_EXIT", "true");
     SDL_SetHint("SDL_WEBOS_CURSOR_SLEEP_TIME", "5000");
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "homeplus: SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
+    r_gl_attributes();
     S.win = SDL_CreateWindow("Home+", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, W, H,
-                             (getenv("HOMEPLUS_SCREENSHOT") ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) | SDL_WINDOW_SHOWN);
+                             SDL_WINDOW_OPENGL | (getenv("HOMEPLUS_SCREENSHOT") ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) | SDL_WINDOW_SHOWN);
     if (!S.win) {
         fprintf(stderr, "homeplus: window: %s\n", SDL_GetError());
         return 1;
     }
-    S.ren = SDL_CreateRenderer(S.win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!S.ren) S.ren = SDL_CreateRenderer(S.win, -1, 0);
-    if (!S.ren) {
-        fprintf(stderr, "homeplus: renderer: %s\n", SDL_GetError());
+    if (!r_init(S.win, W, H)) {
+        fprintf(stderr, "homeplus: renderer init failed\n");
         return 1;
     }
-    SDL_RenderSetLogicalSize(S.ren, W, H);
-    SDL_SetRenderDrawBlendMode(S.ren, SDL_BLENDMODE_BLEND);
     if (!load_assets()) return 1;
 
     net_start();
     {
-        SDL_RendererInfo ri;
-        SDL_GetRendererInfo(S.ren, &ri);
-        int ow, oh, ww, wh;
-        SDL_GetRendererOutputSize(S.ren, &ow, &oh);
+        int dw, dh, ww, wh;
+        SDL_GL_GetDrawableSize(S.win, &dw, &dh);
         SDL_GetWindowSize(S.win, &ww, &wh);
-        log_remote("native up: renderer=%s output=%dx%d window=%dx%d glass=%d", ri.name, ow, oh, ww, wh, glass_ok());
+        log_remote("native up: renderer=gles2 drawable=%dx%d window=%dx%d", dw, dh, ww, wh);
     }
     S.shelf_cur = S.shelf_prev = S.rail_art_cur = S.rail_art_prev = -1;
+    S.last_input = SDL_GetTicks();
+    S.orbit_k = -1;
     request_data();
 
     const char *shot = getenv("HOMEPLUS_SCREENSHOT"); /* host preview: render then save a PNG */
     Uint32 shot_at = shot ? SDL_GetTicks() + (Uint32)atoi(getenv("HOMEPLUS_SCREENSHOT_MS") ? getenv("HOMEPLUS_SCREENSHOT_MS") : "2500") : 0;
-    extern int homeplus_screenshot(SDL_Renderer *, const char *);
     extern void homeplus_preview_input(Uint32 elapsed);
 
     int running = 1, animating = 1;
@@ -1459,25 +1498,48 @@ int main(int argc, char **argv)
         while (got) {
             switch (e.type) {
             case SDL_QUIT: running = 0; break;
-            case SDL_KEYDOWN: on_key_down(&e.key); break;
-            case SDL_KEYUP: on_key_up(&e.key); break;
+            case SDL_KEYDOWN:
+                if (e.key.keysym.sym == WEBOS_KEY_CURSOR_HIDE) break; /* the pointer fell asleep: not input */
+                if (wake(1)) break;
+                on_key_down(&e.key);
+                break;
+            case SDL_KEYUP:
+                if (S.swallow_up) {
+                    S.swallow_up = 0;
+                    break;
+                }
+                on_key_up(&e.key);
+                break;
             case SDL_MOUSEMOTION:
+                if (wake(0)) break;
                 if (!S.sheet.open && !S.moving) {
-                    int h = hit_item(e.motion.x, e.motion.y);
+                    int mx = e.motion.x, my = e.motion.y;
+                    to_logical(&mx, &my);
+                    int h = hit_item(mx, my);
                     if (h >= 0) { S.focus = h; S.zone = 0; }
                 }
                 break;
             case SDL_MOUSEBUTTONUP:
-                if (!S.sheet.open && hit_item(e.button.x, e.button.y) >= 0) activate();
+                if (wake(0)) break;
+                if (!S.sheet.open) {
+                    int mx = e.button.x, my = e.button.y;
+                    to_logical(&mx, &my);
+                    if (hit_item(mx, my) >= 0) activate();
+                }
                 break;
             case SDL_MOUSEWHEEL:
+                if (wake(0)) break;
                 if (!S.sheet.open) move_focus(0, e.wheel.y < 0 ? 1 : -1);
                 break;
             case SDL_WINDOWEVENT:
                 if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED || e.window.event == SDL_WINDOWEVENT_SHOWN) {
                     if (S.away) go_home(); /* back from another app (or the Home button): start at the top */
                     S.away = 0;
+                    S.offscreen = 0;
+                    wake(0);
                     request_data();
+                } else if (e.window.event == SDL_WINDOWEVENT_HIDDEN) {
+                    S.offscreen = 1;
                 }
                 break;
             default:
@@ -1515,19 +1577,35 @@ int main(int argc, char **argv)
             struct tm *lt = localtime(&tt);
             if (lt->tm_hour * 60 + lt->tm_min != S.clock_min) dirty = 1;
         }
+        /* OLED: idle stages, and a 1 px step of the pixel orbit every minute (within +-4 px) */
+        {
+            Uint32 idle = now - S.last_input;
+            int stage = idle >= IDLE_OFF_MS ? 2 : idle >= IDLE_DIM_MS ? 1 : 0;
+            if (stage != S.idle_stage && !shot) {
+                S.idle_stage = stage;
+                dirty = 1;
+            }
+            int k = (int)(now / 60000);
+            if (k != S.orbit_k) {
+                S.orbit_k = k;
+                r_set_offset(shot ? 0 : roundf(4 * sinf(k * 0.61f)), shot ? 0 : roundf(4 * sinf(k * 0.37f + 1.0f)));
+                dirty = 1;
+            }
+        }
+        /* nothing to draw while hidden behind another app or once the screen is black */
+        if ((S.offscreen || (S.idle_stage == 2 && S.black >= 0.999f)) && !shot) dirty = animating = 0;
 
         if (dirty || animating || shot) {
             float dt = (now - last) / 1000.0f;
             if (dt > 0.1f) dt = 0.1f;
-            animating = render(dt);
+            int take = shot && now >= shot_at;
+            animating = render(dt, take ? shot : NULL);
+            if (take) running = 0;
         }
         last = now;
-        if (shot && now >= shot_at) {
-            homeplus_screenshot(S.ren, shot);
-            running = 0;
-        }
     }
     net_stop();
+    r_shutdown();
     SDL_Quit();
     return 0;
 }

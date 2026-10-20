@@ -70,12 +70,55 @@ smooth.
 - **Sound:** a soft tick when focus moves and a click on select. Both are synthesised at start-up,
   played through SDL audio, quiet, and can be switched off in Settings.
 
+## OLED protection
+The TV is an LG C3 OLED, and a home screen keeps bright static elements (clock, rims, labels, dock)
+in place for hours.
+- **Pixel orbit:** every 60 s the whole picture moves 1 px along a slow path inside a ±4 px box.
+  This is `r_set_offset`, which applies to the screen only, so the glass stays aligned with what it
+  refracts. It costs one redraw a minute.
+- **Idle stages:**
+  - **After 2 min without input:** unfocused content and the clock dim. This is also tvOS's
+    inactivity behaviour.
+  - **After 10 min:** a 1 s fade to true black. The OLED pixels are off and Home+ stops drawing.
+  - **Waking:** any key wakes it, and that press is swallowed.
+  - The timings are defaults the owner can change.
+- **Brightness caps:** static text (the clock, labels) stays at about 85% white or less, and rim
+  highlights are capped.
+- **LG's own features stay on:** Pixel Refresher, Screen Shift and the screensaver. This sits on top
+  of them.
+
 ## Testing
 - **Desktop:** preview screenshots (Linux, Mesa GLES2) compared side by side with Apple's reference
   images.
 - **TV:** screenshots through `com.webos.service.capture/executeOneShot`, a frame-time log with a
   missed-vsync count while navigating, VmRSS from `/proc`, and CPU while hidden.
 - **Release:** native 0.5.0. Keep the 0.4.0 package for rollback.
+
+## What Apple's material adds (research, 2026-10-20)
+- **Lensing first:** Apple calls lensing "the primary way Liquid Glass visually defines itself".
+  Regular glass also "blurs and adjusts the luminosity of background content" ([WWDC25 219](https://developer.apple.com/videos/play/wwdc2025/219/),
+  [HIG Materials](https://developer.apple.com/design/human-interface-guidelines/materials)).
+- **Appear and disappear:** glass appears and disappears by animating the amount of lensing, not
+  opacity. Larger glass, such as menus, gets stronger lensing, softer light scattering and deeper shadows.
+- **Highlights:** they follow the geometry and move around the silhouette during interactions.
+- **Shadows:** opacity goes up over text and down over light backgrounds. Small glass flips between
+  light and dark; large glass adapts but doesn't flip.
+- **Clear glass:** gets a **35% dark dimming layer** over bright content. Regular and clear are never mixed.
+- **tvOS:** "Liquid Glass appears throughout navigation elements and system experiences such as Top
+  Shelf and Control Center. Certain interface elements, like image views and buttons, adopt Liquid
+  Glass when they gain focus." So tiles and buttons turn into glass on focus.
+- **Focus** ([HIG Focus](https://developer.apple.com/design/human-interface-guidelines/focus-and-selection)):
+  - Focused items elevate, illuminate, sway gently and get larger.
+  - A focused button is opaque white with a black label and a deeper shadow. Unfocused ones are
+    translucent and pick up the content's colour.
+  - After a period of inactivity, out-of-focus content dims and the focused item expands.
+- **Grid** ([HIG Layout](https://developer.apple.com/design/human-interface-guidelines/layout)): 5 columns
+  are 320 px wide with 40 px gaps and 80 px side margins (5×320 + 4×40 + 2×80 = 1920). Rows are at
+  least 100 px apart. Icons are 5:3 (800×480 layered assets), so tiles are 320×192.
+- **Not published:** corner radii, blur radius, opacities other than the 35%, focus scale and timings.
+  These are tuned by eye against Apple's videos.
+- **Unverified:** how Control Center opens and its layout. It follows tvOS 18 conventions until
+  confirmed.
 
 ## Coordination
 - This work lives in the `liquid-glass` branch, in the worktree `.claude/worktrees/liquid-glass`.
