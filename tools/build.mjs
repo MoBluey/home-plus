@@ -1,4 +1,5 @@
-// Builds the .ipk packages into dist/ without ares-cli.
+// Builds the .ipk packages into dist/ without ares-cli or a system tar, so macOS and Linux
+// produce the same packages.
 // An .ipk is an `ar` archive of: debian-binary, control.tar.gz, data.tar.gz.
 //   node tools/build.mjs          -> web app + service (com.atvlauncher.app)
 //   node tools/build.mjs native   -> also the native front end (com.atvlauncher.native);
@@ -6,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
-import { execFileSync } from 'node:child_process';
+import zlib from 'node:zlib';
 
 const root = path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
 const dist = path.join(root, 'dist');
@@ -35,6 +36,44 @@ function ar(dir, members) {
   return Buffer.concat(chunks);
 }
 
+// The .tar.gz that `tar --format=gnu --owner=0 --group=0 --numeric-owner --sort=name -czf out -C dir .`
+// writes. macOS's bsdtar has none of those flags, and it would add ._* entries for extended attributes.
+function tarGz(dir) {
+  const blocks = [];
+  const header = (name, st, type, size) => {
+    if (Buffer.byteLength(name) > 100) throw new Error(`path too long for a tar header: ${name}`);
+    const h = Buffer.alloc(512);
+    const octal = (offset, width, n) => h.write(n.toString(8).padStart(width - 1, '0'), offset, 'ascii');
+    h.write(name, 0);
+    octal(100, 8, st.mode & 0o7777);
+    octal(108, 8, 0); // uid
+    octal(116, 8, 0); // gid
+    octal(124, 12, size);
+    octal(136, 12, Math.floor(st.mtimeMs / 1000));
+    h.write(type, 156, 'ascii');
+    h.write('ustar  ', 257, 'ascii'); // GNU magic and version
+    h.fill(' ', 148, 156); // the checksum is summed with spaces in its own field
+    const sum = h.reduce((a, b) => a + b, 0);
+    h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'ascii');
+    return h;
+  };
+  (function add(rel) {
+    const p = path.join(dir, rel);
+    const st = fs.statSync(p);
+    if (st.isDirectory()) {
+      blocks.push(header(rel ? `./${rel}/` : './', st, '5', 0));
+      for (const name of fs.readdirSync(p).sort()) add(rel ? `${rel}/${name}` : name);
+    } else {
+      const data = fs.readFileSync(p);
+      blocks.push(header(`./${rel}`, st, '0', data.length), data, Buffer.alloc((512 - data.length % 512) % 512));
+    }
+  })('');
+  blocks.push(Buffer.alloc(1024)); // end-of-archive marker
+  const size = blocks.reduce((a, b) => a + b.length, 0);
+  blocks.push(Buffer.alloc((10240 - size % 10240) % 10240)); // pad to whole 10 KiB records, as tar does
+  return zlib.gzipSync(Buffer.concat(blocks));
+}
+
 // stage(appDir) fills the data tree; services lists service ids for packageinfo.
 function buildPackage({ appinfo, stage: fill, services = [] }) {
   const { id, version } = appinfo;
@@ -60,9 +99,8 @@ function buildPackage({ appinfo, stage: fill, services = [] }) {
     'webOS-Package-Format-Version: 2', 'webOS-Packager-Version: x.y.x', ''
   ].join('\n'));
 
-  const tarArgs = ['--format=gnu', '--owner=0', '--group=0', '--numeric-owner', '--sort=name', '-czf'];
-  execFileSync('tar', [...tarArgs, path.join(build, 'control.tar.gz'), '-C', ctrl, '.']);
-  execFileSync('tar', [...tarArgs, path.join(build, 'data.tar.gz'), '-C', data, '.']);
+  fs.writeFileSync(path.join(build, 'control.tar.gz'), tarGz(ctrl));
+  fs.writeFileSync(path.join(build, 'data.tar.gz'), tarGz(data));
   fs.writeFileSync(path.join(build, 'debian-binary'), '2.0\n');
 
   fs.mkdirSync(dist, { recursive: true });
