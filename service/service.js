@@ -286,8 +286,10 @@ async function unmountRedirect() {
   await luna(APPMGR + '/closeByAppId', { id: LG_HOME });
 }
 
+// Until the launcher has asked "Use Home+ as your home screen?", the Home button is left alone.
 function homeMode(cfg) {
-  return cfg.homeOverride === false ? 'off' : (cfg.homeMode || 'watch');
+  if (cfg.homeOverride === false || (!cfg.homeAsked && !cfg.homeMode)) return 'off';
+  return cfg.homeMode || 'watch';
 }
 
 async function applyHomeMode() {
@@ -298,6 +300,84 @@ async function applyHomeMode() {
   }
 }
 setTimeout(() => applyHomeMode().catch((e) => log('home mode error', e.message)), 1500);
+
+// ---- boot script: once elevated, the service installs the copy shipped in its package,
+// so Homebrew Channel re-elevates and starts it at every boot. Updated when the package is.
+
+const APP_DIR = path.join(__dirname, '..', '..', 'applications', NATIVE_ID);
+const INITD_DIR = '/var/lib/webosbrew/init.d';
+const INITD = path.join(INITD_DIR, '50-homeplus');
+
+function installBootScript() {
+  if (!isRoot()) return false;
+  try {
+    const want = fs.readFileSync(path.join(APP_DIR, 'init.d', '50-homeplus'));
+    let have = null;
+    try { have = fs.readFileSync(INITD); } catch (e) { /* not installed yet */ }
+    if (have && have.equals(want)) return true;
+    if (!fs.existsSync(INITD_DIR)) { log('boot script: no', INITD_DIR, '(Homebrew Channel missing?)'); return false; }
+    fs.writeFileSync(INITD, want, { mode: 0o755 });
+    fs.chmodSync(INITD, 0o755);
+    log('boot script installed:', INITD);
+    return true;
+  } catch (e) {
+    log('boot script failed:', e.message);
+    return false;
+  }
+}
+
+function isRoot() { return !!(process.getuid && process.getuid() === 0); }
+setTimeout(installBootScript, 2000);
+
+// ---- Remove Home+: undo everything Home+ set up on the TV, then uninstall the package.
+
+const INPUTHOOK_BINDS = '/home/root/.config/lginputhook/keybinds.json';
+const OUR_IDS = [NATIVE_ID, 'com.atvlauncher.native', 'com.atvlauncher.app'];
+
+function dropInputhookBinds() {
+  // lginputhook keybinds that launch Home+ (e.g. the Home key) are removed; other binds stay
+  let binds;
+  try { binds = JSON.parse(fs.readFileSync(INPUTHOOK_BINDS, 'utf8')); } catch (e) { return 0; }
+  let n = 0;
+  for (const [key, b] of Object.entries(binds || {})) {
+    if (b && OUR_IDS.includes(b.id)) { delete binds[key]; n++; }
+  }
+  if (n) fs.writeFileSync(INPUTHOOK_BINDS, JSON.stringify(binds, null, 2));
+  return n;
+}
+
+function dropElevation() {
+  // Homebrew Channel's elevation leaves per-service files under /var/luna-service2-dev
+  const root = '/var/luna-service2-dev';
+  let n = 0;
+  try {
+    for (const dir of fs.readdirSync(root)) {
+      const d = path.join(root, dir);
+      if (!fs.statSync(d).isDirectory()) continue;
+      for (const f of fs.readdirSync(d)) {
+        if (f.startsWith(NATIVE_ID)) { fs.rmSync(path.join(d, f), { force: true }); n++; }
+      }
+    }
+  } catch (e) { /* not elevated this way */ }
+  return n;
+}
+
+async function uninstall() {
+  const steps = {};
+  await unmountRedirect().catch(() => {});
+  try { fs.rmSync(INITD, { force: true }); steps.bootScript = true; } catch (e) { steps.bootScript = e.message; }
+  try { steps.inputhookBinds = dropInputhookBinds(); } catch (e) { steps.inputhookBinds = e.message; }
+  try { fs.rmSync('/var/lib/homeplus', { recursive: true, force: true }); steps.settings = true; } catch (e) { steps.settings = e.message; }
+  steps.elevationFiles = dropElevation();
+  log('uninstall:', steps);
+  // removing the package stops this service, so it goes last, after the reply is sent
+  setTimeout(async () => {
+    await run('ls-control', ['scan-services']);
+    const r = await luna('luna://com.webos.appInstallService/dev/remove', { id: NATIVE_ID });
+    log('uninstall: remove package', r && r.returnValue === false ? r.errorText : 'requested');
+  }, 800);
+  return steps;
+}
 
 // When each app was last in front: Recents lists the most recent first, like tvOS.
 const lastUsed = new Map();
@@ -519,12 +599,16 @@ async function handleApi(req, res) {
       log('closed', ids);
       return sendJSON(res, 200, { returnValue: true, closed: ids });
     }
+    if (url.pathname === '/api/uninstall' && req.method === 'POST') {
+      return sendJSON(res, 200, Object.assign({ returnValue: true }, await uninstall()));
+    }
     if (url.pathname === '/api/home') {
       const cfg = readConfig();
       if (req.method === 'POST') {
         const b = await readBody(req);
         if (['redirect', 'watch'].includes(b.mode)) { cfg.homeMode = b.mode; cfg.homeOverride = true; }
         if (b.mode === 'off') cfg.homeOverride = false;
+        if (b.asked) cfg.homeAsked = true;
         writeConfig(cfg);
         await unmountRedirect();
         await applyHomeMode();
@@ -579,7 +663,19 @@ const imageServer = http.createServer(async (req, res) => {
   /* without the token: only whether Home+ is set up (the launcher asks before it has one) */
   if ((req.url || '') === '/api/status' && !req.headers.origin) {
     tokenWritten = writeToken(); /* again: installing the launcher replaces its folder */
-    return sendJSON(res, 200, { version: pkg.version, elevated: !!(process.getuid && process.getuid() === 0), token: tokenWritten });
+    const cfg = readConfig();
+    return sendJSON(res, 200, {
+      version: pkg.version, elevated: isRoot(), token: tokenWritten,
+      bootScript: fs.existsSync(INITD), homeAsked: !!cfg.homeAsked, homeMode: homeMode(cfg)
+    });
+  }
+  /* the launcher just had Homebrew Channel elevate us: exit so the next start runs as root.
+   * Refused once elevated, so it can't be used to knock a working service over. */
+  if ((req.url || '') === '/api/restart' && req.method === 'POST' && !req.headers.origin && !isRoot()) {
+    log('restart requested (not elevated yet)');
+    sendJSON(res, 200, { returnValue: true });
+    setTimeout(() => process.exit(0), 200);
+    return;
   }
   if (!allowed(req)) {
     res.writeHead(403);

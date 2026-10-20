@@ -8,9 +8,13 @@ ASSETS=${TMPDIR:-/tmp}/homeplus-native-preview
 export HOMEPLUS_TOKEN_FILE=${TMPDIR:-/tmp}/homeplus-api-token
 python3 "$HERE/make-assets.py" "$ASSETS" "$ROOT/native/assets/fonts/Inter-Bold.ttf" > "$ASSETS.apps" && mv "$ASSETS.apps" "$ASSETS/apps.txt"
 make -s -C "$ROOT/native"
-NODE_PATH="$HERE/stub" node "$HERE/harness.js" "$ASSETS" "$ROOT/service" & SVC=$!
+service() { # start the harness service with the given environment
+  [ -n "${SVC:-}" ] && kill $SVC 2>/dev/null && sleep 0.5
+  env "$@" NODE_PATH="$HERE/stub" node "$HERE/harness.js" "$ASSETS" "$ROOT/service" & SVC=$!
+  sleep 1
+}
 trap 'kill $SVC 2>/dev/null; rm -rf /var/lib/homeplus/config.json' EXIT
-sleep 1
+service HOMEPLUS_PREVIEW=1
 # Prefer a real GLES2 renderer (Mesa under Xvfb) so the glass effects show, like on the TV.
 if command -v xvfb-run >/dev/null; then
   RUN="xvfb-run -a -s '-screen 0 1920x1080x24'"; DRIVER="SDL_VIDEODRIVER=x11 SDL_RENDER_DRIVER=opengles2"
@@ -29,3 +33,10 @@ shot sheet "H" 3500
 shot topbar "U" 3000
 shot settings "UO" 3500
 shot recents "ULLO" 3800
+shot settings-remove "UODDDO" 4500
+# first run: a fresh install asks about the Home button; an unelevated service
+# with no Homebrew Channel (no luna-send here) shows that screen
+service HOMEPLUS_PREVIEW_FRESH=1
+shot first-run-home "" 3000
+service HOMEPLUS_PREVIEW_UNROOTED=1
+shot first-run-no-hbc "" 6000

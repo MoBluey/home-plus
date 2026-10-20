@@ -13,7 +13,11 @@ const COLORS = { netflix: '#E50914', prime: '#00A8E1', disney: '#113CCF', hdmi1:
 
 // Stremio: a signed-in config and five shows mid-watch.
 fs.mkdirSync('/var/lib/homeplus', { recursive: true });
-fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify({ stremioAuthKey: 'preview' }));
+// HOMEPLUS_PREVIEW_FRESH: a first install (Home button question not answered yet)
+fs.writeFileSync('/var/lib/homeplus/config.json', JSON.stringify(
+  process.env.HOMEPLUS_PREVIEW_FRESH ? { stremioAuthKey: 'preview' } : { stremioAuthKey: 'preview', homeAsked: true, homeMode: 'watch' }));
+// HOMEPLUS_PREVIEW_UNROOTED: the service as Homebrew Channel installs it, before elevation
+if (process.env.HOMEPLUS_PREVIEW_UNROOTED) process.getuid = () => 1000;
 const SHOWS = ['Severed Signals', 'The Long Orbit', 'Northbound', 'Glass City', 'Midnight Kitchen'];
 const library = SHOWS.map((name, i) => ({
   _id: `tt000000${i}`, type: i % 2 ? 'movie' : 'series', name, removed: false,

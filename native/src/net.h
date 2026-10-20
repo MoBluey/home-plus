@@ -17,7 +17,7 @@
  * is malloc'd and NUL-terminated (caller frees). post_body NULL means GET. */
 int http_request(const char *path, const char *post_body, char **body, size_t *len);
 
-typedef enum { JOB_JSON, JOB_IMAGE, JOB_POST, JOB_WAKE } JobKind;
+typedef enum { JOB_JSON, JOB_IMAGE, JOB_POST, JOB_WAKE, JOB_LUNA } JobKind;
 
 typedef struct {
     JobKind kind;
@@ -46,6 +46,9 @@ void net_post(const char *path, const char *body, int tag);
 void net_get_image(const char *path, int tag, int index, int generation, int sample, int fit_w, int fit_h);
 /* Starts the service via luna-send (the HTTP server only runs while it's alive). */
 void net_wake_service(void);
+/* One luna-send call; the result's body is luna-send's output and status is 200
+ * when it reported returnValue true. uri and payload must not contain single quotes. */
+void net_luna(const char *uri, const char *payload, int tag);
 
 /* Pops one finished result; returns 0 when none are waiting. */
 int net_poll(Result *out);

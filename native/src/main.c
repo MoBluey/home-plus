@@ -79,6 +79,7 @@
 
 enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_ICON, TAG_ART, TAG_RAIL_THUMB, TAG_RAIL_BG, TAG_LAUNCH, TAG_WAKE,
        TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET,
+       TAG_STATUS, TAG_ELEVATE, TAG_RESTART, TAG_UNINSTALL,
        TAG_PREFS };
 
 /* zones: what the remote is moving through */
@@ -113,7 +114,15 @@ typedef struct {
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_STREMIO_HELP, ACT_CANCEL,
                ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK,
-               ACT_HOME_MODE, ACT_SOUNDS } Action;
+               ACT_HOME_MODE, ACT_SOUNDS,
+               ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE } Action;
+
+/* First run: the service has to be running and elevated (root, via Homebrew
+ * Channel) before Home+ can list apps. Each step that can fail has a screen. */
+enum { SETUP_CHECK, SETUP_STARTING, SETUP_ELEVATING, SETUP_RESTARTING, SETUP_NO_HBC, SETUP_DENIED,
+       SETUP_FAILED, SETUP_REMOVING, SETUP_DONE };
+#define HBC_ELEVATE "luna://org.webosbrew.hbchannel.service/elevateService"
+#define SHEET_BODY_LINES 3
 
 typedef struct {
     Action act;
@@ -199,6 +208,9 @@ static struct {
 
     struct {
         int open, index, n, tw, th;
+        int locked;           /* setup screens: Back doesn't close them */
+        Tex *body[SHEET_BODY_LINES];
+        int bw[SHEET_BODY_LINES], bh[SHEET_BODY_LINES], nbody;
         int first;            /* first list button on screen: long lists scroll */
         float scroll, scroll_v; /* where the list is drawn from, springing to first */
         float t, tv;          /* morph: 0 = still the button it grew from, 1 = open */
@@ -216,6 +228,8 @@ static struct {
     int ok_long;
     int away;           /* we launched another app; reset to the top when we're back */
     int service_ok, wake_tries;
+    int setup, setup_tries, elevate_tries, home_asked;
+    Uint32 setup_retry;
     Uint32 next_retry;
     int logged_keys;
     /* OLED protection: idle stages, fades, pixel orbit */
@@ -621,6 +635,9 @@ static void request_data(void)
 }
 
 static void sheet_open(const char *title);
+static void on_status(Result *r);
+static void sheet_body(const char *text);
+static void on_elevate(Result *r);
 static void open_top(int which);
 static void sw_fill(const char *json);
 static void sw_reset(void);
@@ -841,6 +858,25 @@ static void handle_result(Result *r)
     case TAG_LAYOUT:
         if (r->status == 200) parse_layout(r->body);
         break;
+    case TAG_STATUS:
+        on_status(r);
+        break;
+    case TAG_ELEVATE:
+        on_elevate(r);
+        break;
+    case TAG_RESTART:
+        break; /* the service exits; setup_retry wakes it and checks again */
+    case TAG_UNINSTALL:
+        if (r->status == 200) {
+            sheet_open("Home+ Is Being Removed");
+            sheet_body("Press Home to go back to LG\xE2\x80\x99s home screen.");
+            S.sheet.locked = 1;
+        } else {
+            S.setup = SETUP_DONE;
+            sheet_close();
+            toast("Couldn\xE2\x80\x99t remove Home+", 4000);
+        }
+        break;
     case TAG_APPS:
         if (r->status == 200) {
             S.service_ok = 1;
@@ -990,6 +1026,9 @@ static void sheet_close(void)
 {
     tex_free(&S.sheet.title);
     tex_free(&S.sheet_big);
+    for (int i = 0; i < S.sheet.nbody; i++) tex_free(&S.sheet.body[i]);
+    S.sheet.nbody = 0;
+    S.sheet.locked = 0;
     S.trakt_poll = 0;
     for (int i = 0; i < S.sheet.n; i++) tex_free(&S.sheet.it[i].tex);
     S.sheet.open = 0;
@@ -1100,6 +1139,23 @@ static void sheet_add(const char *label, Action act, int arg, int destructive)
     it->arg = arg;
     it->destructive = destructive;
     it->tex = text_render(S.f_medium, 31, label, 600, &it->w, &it->h);
+}
+
+/* A few lines of explanation under the sheet's title; lines are split on '\n'. */
+static void sheet_body(const char *text)
+{
+    char line[300];
+    const char *p = text;
+    while (*p && S.sheet.nbody < SHEET_BODY_LINES) {
+        const char *e = strchr(p, '\n');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (n >= sizeof line) n = sizeof line - 1;
+        memcpy(line, p, n);
+        line[n] = 0;
+        int i = S.sheet.nbody++;
+        S.sheet.body[i] = text_render(S.f_medium, 26, line, 900, &S.sheet.bw[i], &S.sheet.bh[i]);
+        p = e ? e + 1 : p + n;
+    }
 }
 
 static void sheet_add_id(const char *label, const char *id)
@@ -1225,6 +1281,134 @@ static void sw_update(float dt, int *anim)
 }
 
 /* Control Center: TV settings + accounts */
+/* ------------------------------------------------------------------ first run */
+
+static void setup_check(void) { net_get_json("/api/status", TAG_STATUS, 0, 0); }
+
+/* The screen for the current setup step: plain words, no SSH or service names. */
+static void setup_screen(void)
+{
+    const char *title, *body;
+    switch (S.setup) {
+    case SETUP_NO_HBC:
+        title = "Homebrew Channel Needed";
+        body = "Home+ runs on rooted LG TVs with the Homebrew Channel installed.\nInstall it, then try again.";
+        break;
+    case SETUP_DENIED:
+        title = "Couldn\xE2\x80\x99t Get Permission";
+        body = "The Homebrew Channel didn\xE2\x80\x99t give Home+ the access it needs.\nCheck that your TV is rooted and the Homebrew Channel is up to date.";
+        break;
+    case SETUP_FAILED:
+        title = "Home+ Couldn\xE2\x80\x99t Start";
+        body = "Part of Home+ that runs in the background didn\xE2\x80\x99t respond.\nRestarting the TV usually fixes this.";
+        break;
+    case SETUP_REMOVING:
+        title = "Removing Home+\xE2\x80\xA6";
+        body = "Turning off the Home button takeover and clearing Home+\xE2\x80\x99s settings.";
+        break;
+    default:
+        title = "Setting Up Home+";
+        body = "Getting Home+ ready. The first time takes a few seconds.";
+    }
+    sheet_open(title);
+    sheet_body(body);
+    S.sheet.locked = 1;
+    if (S.setup == SETUP_NO_HBC || S.setup == SETUP_DENIED || S.setup == SETUP_FAILED)
+        sheet_add("Try Again", ACT_SETUP_RETRY, 0, 0);
+}
+
+static void setup_set(int state)
+{
+    int changed = state != S.setup;
+    S.setup = state;
+    if (state == SETUP_DONE) {
+        if (S.sheet.open && S.sheet.locked) sheet_dismiss();
+        return;
+    }
+    /* "Setting up" steps share one screen: only redraw it when the words change */
+    int working = state == SETUP_STARTING || state == SETUP_ELEVATING || state == SETUP_RESTARTING;
+    if (changed && !(working && S.sheet.open && S.sheet.locked && S.sheet.n == 0)) setup_screen();
+}
+
+static void ask_home_screen(void)
+{
+    sheet_open("Use Home+ as Your Home Screen?");
+    sheet_body("The Home button will open Home+ instead of LG\xE2\x80\x99s home screen.\nYou can change this any time in Settings.");
+    sheet_add("Use Home+", ACT_HOME_YES, 0, 0);
+    sheet_add("Not Now", ACT_HOME_NO, 0, 0);
+}
+
+static void set_home_mode(const char *mode, int asked)
+{
+    char body[64];
+    snprintf(body, sizeof body, "{\"mode\":\"%s\"%s}", mode, asked ? ",\"asked\":true" : "");
+    net_post("/api/home", body, TAG_HOME_SET);
+    snprintf(S.home_mode, sizeof S.home_mode, "%s", mode);
+}
+
+static void on_status(Result *r)
+{
+    if (S.setup == SETUP_DONE || S.setup == SETUP_REMOVING) return;
+    cJSON *o = r->status == 200 ? cJSON_Parse(r->body) : NULL;
+    if (!o) {
+        /* nothing answered: start the service (luna starts it on demand) and look again */
+        if (S.setup_tries++ < 12) {
+            net_wake_service();
+            S.setup_retry = SDL_GetTicks() + 2000;
+            if (S.setup != SETUP_RESTARTING) setup_set(SETUP_STARTING);
+        } else {
+            setup_set(SETUP_FAILED);
+        }
+        return;
+    }
+    int elevated = cJSON_IsTrue(cJSON_GetObjectItem(o, "elevated"));
+    S.home_asked = cJSON_IsTrue(cJSON_GetObjectItem(o, "homeAsked"));
+    cJSON_Delete(o);
+    if (elevated) {
+        setup_set(SETUP_DONE);
+        request_data();
+        if (!S.home_asked) ask_home_screen();
+        return;
+    }
+    if (S.setup == SETUP_RESTARTING && S.setup_tries++ < 6) {
+        S.setup_retry = SDL_GetTicks() + 1500; /* still the old, unelevated process: give it a moment */
+        return;
+    }
+    if (S.elevate_tries++ < 2) {
+        setup_set(SETUP_ELEVATING);
+        net_luna(HBC_ELEVATE, "{\"id\":\"" SERVICE_ID "\"}", TAG_ELEVATE);
+    } else {
+        setup_set(SETUP_DENIED);
+    }
+}
+
+static void on_elevate(Result *r)
+{
+    if (r->status == 200) {
+        /* elevated: the running process is still unprivileged, so restart it */
+        S.setup_tries = 0;
+        setup_set(SETUP_RESTARTING);
+        net_post("/api/restart", "{}", TAG_RESTART);
+        S.setup_retry = SDL_GetTicks() + 1500;
+        return;
+    }
+    const char *out = r->body ? r->body : "";
+    fprintf(stderr, "homeplus: elevateService: %s\n", out);
+    if (contains_ci(out, "does not exist") || contains_ci(out, "unknown service") || contains_ci(out, "not found") ||
+        contains_ci(out, "luna-send: not found") || !*out)
+        setup_set(SETUP_NO_HBC);
+    else
+        setup_set(SETUP_DENIED);
+}
+
+static void setup_retry_now(void)
+{
+    S.setup_tries = S.elevate_tries = 0;
+    S.setup = SETUP_CHECK;
+    setup_screen();
+    setup_check();
+}
+
 static int stremio_installed(void)
 {
     for (int i = 0; i < S.napps; i++)
@@ -1238,12 +1422,15 @@ static void open_settings_sheet(void)
     for (int i = 0; i < S.nsettings; i++) sheet_add_id(S.settings[i].label, S.settings[i].id);
     /* no-flash needs LG's home to be a web app; on TVs where it's native (the C3)
      * Home+ always uses standard mode, so there's nothing to switch */
-    if (S.noflash_available)
+    int home_on = S.home_mode[0] && strcmp(S.home_mode, "off");
+    sheet_add(home_on ? "Home Button: Opens Home+" : "Home Button: Opens LG Home", ACT_HOME_TOGGLE, 0, 0);
+    if (home_on && S.noflash_available)
         sheet_add(S.noflash_active ? "Home Button: No Flash" : "Home Button: Standard", ACT_HOME_MODE, 0, 0);
     sheet_add(S.sounds_off ? "Sounds: Off" : "Sounds: On", ACT_SOUNDS, 0, 0);
     if (S.trakt_connected) sheet_add("Disconnect Trakt", ACT_TRAKT_UNLINK, 0, 1);
     else if (S.trakt_configured) sheet_add("Connect Trakt", ACT_TRAKT_LINK, 0, 0);
     if (!S.rail_stremio && stremio_installed()) sheet_add("Connect Stremio", ACT_STREMIO_HELP, 0, 0);
+    sheet_add("Remove Home+\xE2\x80\xA6", ACT_REMOVE_ASK, 0, 1);
     sheet_add("Cancel", ACT_CANCEL, 0, 0);
 }
 
@@ -1331,6 +1518,33 @@ static void run_action(Action act, int arg)
         toast(!strcmp(next, "redirect") ? "Home button: no-flash mode" : "Home button: standard mode", 3000);
         break;
     }
+    case ACT_SETUP_RETRY:
+        setup_retry_now();
+        break;
+    case ACT_HOME_YES:
+        set_home_mode(S.noflash_available ? "redirect" : "watch", 1);
+        toast("The Home button now opens Home+", 3000);
+        break;
+    case ACT_HOME_NO:
+        set_home_mode("off", 1);
+        toast("You can turn this on later in Settings", 3000);
+        break;
+    case ACT_HOME_TOGGLE: {
+        int on = S.home_mode[0] && strcmp(S.home_mode, "off");
+        set_home_mode(on ? "off" : S.noflash_available ? "redirect" : "watch", 1);
+        toast(on ? "The Home button opens LG\xE2\x80\x99s home screen" : "The Home button now opens Home+", 3000);
+        break;
+    }
+    case ACT_REMOVE_ASK:
+        sheet_open("Remove Home+?");
+        sheet_body("This deletes Home+\xE2\x80\x99s boot script, settings and sign-ins (Stremio, Trakt),\nturns off the Home button takeover and uninstalls Home+.");
+        sheet_add("Remove Home+", ACT_REMOVE, 0, 1);
+        sheet_add("Cancel", ACT_CANCEL, 0, 0);
+        break;
+    case ACT_REMOVE:
+        setup_set(SETUP_REMOVING);
+        net_post("/api/uninstall", "{}", TAG_UNINSTALL);
+        break;
     case ACT_TRAKT_LINK:
         toast("Asking Trakt for a code\xE2\x80\xA6", 4000);
         net_post("/api/trakt/link", "{}", TAG_TRAKT_LINK);
@@ -1559,7 +1773,7 @@ static void on_key_down(SDL_KeyboardEvent *e)
     if (S.sheet.open) {
         if (k == SDLK_UP && S.sheet.index > 0) S.sheet.index--;
         else if (k == SDLK_DOWN && S.sheet.index < S.sheet.n - 1) S.sheet.index++;
-        else if (is_back(k)) {
+        else if (is_back(k) && !S.sheet.locked) {
             sheet_dismiss();
         }
         return;
@@ -1597,6 +1811,7 @@ static void on_key_up(SDL_KeyboardEvent *e)
     if (S.recents.open) {
         sw_ok();
     } else if (S.sheet.open) {
+        if (!S.sheet.n) return; /* "Setting up…": nothing to press */
         SheetItem it = S.sheet.it[S.sheet.index];
         sheet_dismiss();
         if (it.act == ACT_LAUNCH_ID) launch(it.id, NULL);
@@ -2107,9 +2322,16 @@ static int sheet_footer(void)
     return k;
 }
 
+static float sheet_body_h(void)
+{
+    float h = 0;
+    for (int i = 0; i < S.sheet.nbody; i++) h += S.sheet.bh[i] + 6;
+    return h ? h + 18 : 0;
+}
+
 static float sheet_head(void)
 {
-    return PAD + S.sheet.th + 24 + (S.sheet_big ? S.sheet_big_h + 24 : 0);
+    return PAD + S.sheet.th + 24 + sheet_body_h() + (S.sheet_big ? S.sheet_big_h + 24 : 0);
 }
 
 /* List rows on screen: all of them when they fit, else as many as fit above the
@@ -2148,7 +2370,8 @@ static void draw_sheet(void)
     int nfoot = sheet_footer(), nlist = S.sheet.n - nfoot, rows = sheet_rows(nfoot);
     float pw = 720;
     if (S.sheet.tw + 2 * PAD > pw) pw = S.sheet.tw + 2 * PAD;
-    float ph = sheet_head() + (rows + nfoot) * (BH + BGAP) - BGAP + PAD;
+    for (int i = 0; i < S.sheet.nbody; i++) if (S.sheet.bw[i] + 2 * PAD > pw) pw = S.sheet.bw[i] + 2 * PAD;
+    float ph = sheet_head() + (rows + nfoot) * (BH + BGAP) - (S.sheet.n ? BGAP : 24) + PAD;
     float px = (W - pw) / 2, py = (H - ph) / 2;
     S.sheet.px = px; S.sheet.py = py; S.sheet.pw = pw; S.sheet.ph = ph; S.sheet.pr = rad;
     /* grows out of the button it came from on a spring, and its lensing
@@ -2165,6 +2388,11 @@ static void draw_sheet(void)
     if (!ca) return;
     draw_text(S.sheet.title, S.sheet.tw, S.sheet.th, px + (pw - S.sheet.tw) / 2, py + PAD, (Uint8)(200 * ca / 255));
     float y = py + PAD + S.sheet.th + 24;
+    for (int i = 0; i < S.sheet.nbody; i++) {
+        draw_text(S.sheet.body[i], S.sheet.bw[i], S.sheet.bh[i], px + (pw - S.sheet.bw[i]) / 2, y, (Uint8)(185 * ca / 255));
+        y += S.sheet.bh[i] + 6;
+    }
+    if (S.sheet.nbody) y += 18;
     if (S.sheet_big) {
         draw_text(S.sheet_big, S.sheet_big_w, S.sheet_big_h, px + (pw - S.sheet_big_w) / 2, y, ca);
         y += big;
@@ -2413,12 +2641,12 @@ static int next_wake_ms(void)
     Uint32 now = SDL_GetTicks();
     Uint32 dim_ms = S.idle_dim_ms ? S.idle_dim_ms : IDLE_DIM_MS, off_ms = S.idle_off_ms ? S.idle_off_ms : IDLE_OFF_MS;
     int visible = !S.offscreen && S.idle_stage < 2;
-    Uint32 due[7] = { S.next_retry, S.trakt_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0,
+    Uint32 due[8] = { S.setup_retry, S.next_retry, S.trakt_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0,
                       S.toast_tex && S.toast_until > now ? S.toast_until : 0,
                       S.offscreen ? 0 : S.idle_stage == 0 ? S.last_input + dim_ms : S.idle_stage == 1 ? S.last_input + off_ms : 0,
                       snd_active() ? now + 1000 : 0, visible ? now + (60000 - now % 60000) : 0 };
     int wait = -1;
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
         if (!due[i]) continue;
         int d = (Sint32)(due[i] - now) > 0 ? (int)(due[i] - now) : 0;
         if (wait < 0 || d < wait) wait = d;
@@ -2471,7 +2699,8 @@ static void come_back(void)
     S.offscreen = 0;
     S.last_input = SDL_GetTicks();
     S.idle_stage = 0;
-    request_data();
+    if (S.setup == SETUP_DONE) request_data();
+    else if (S.setup != SETUP_REMOVING) setup_retry_now();
 }
 
 /* Any input resets the OLED idle timer. Returns 1 when it only woke a dark
@@ -2534,7 +2763,7 @@ int main(int argc, char **argv)
     S.shelf_cur = S.shelf_prev = S.rail_art_cur = S.rail_art_prev = -1;
     S.last_input = SDL_GetTicks();
     S.orbit_k = -1;
-    request_data();
+    setup_check(); /* loads the data once the service is up and elevated */
 
     const char *shot = getenv("HOMEPLUS_SCREENSHOT"); /* host preview: render then save a PNG */
     Uint32 shot_at = shot ? SDL_GetTicks() + (Uint32)atoi(getenv("HOMEPLUS_SCREENSHOT_MS") ? getenv("HOMEPLUS_SCREENSHOT_MS") : "2500") : 0;
@@ -2638,6 +2867,11 @@ int main(int argc, char **argv)
         if (S.trakt_poll && now >= S.trakt_poll) {
             S.trakt_poll = 0;
             net_get_json("/api/trakt/status", TAG_TRAKT_STATUS, 0, 0);
+        }
+        if (S.setup_retry && now >= S.setup_retry) {
+            S.setup_retry = 0;
+            net_wake_service();
+            setup_check();
         }
         if (S.next_retry && now >= S.next_retry) {
             S.next_retry = 0;

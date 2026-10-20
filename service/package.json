@@ -1,6 +1,6 @@
 {
   "name": "com.github.pmiraka.homeplus.service",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Home+ helper service: app list/launch and Stremio Continue Watching",
   "license": "MIT",
   "main": "service.js"

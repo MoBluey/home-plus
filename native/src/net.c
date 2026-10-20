@@ -294,6 +294,23 @@ static void run_job(Job *j)
     r.index = j->index;
     r.generation = j->generation;
 
+    if (j->kind == JOB_LUNA) {
+        char cmd[MAX_PATH_LEN + 600];
+        snprintf(cmd, sizeof cmd, "luna-send -n 1 -w 20000 '%s' '%s' 2>&1", j->path, j->post ? j->post : "{}");
+        FILE *p = popen(cmd, "r");
+        size_t cap = 4096, n = 0;
+        char *out = malloc(cap + 1);
+        if (p) {
+            size_t k;
+            while (n < cap && (k = fread(out + n, 1, cap - n, p)) > 0) n += k;
+            pclose(p);
+        }
+        out[n] = 0;
+        r.body = out;
+        r.status = strstr(out, "\"returnValue\":true") || strstr(out, "\"returnValue\": true") ? 200 : 0;
+        push_done(&r);
+        return;
+    }
     if (j->kind == JOB_WAKE) {
         /* luna-send is how a webOS service gets started; ignore its output. */
         int rc = system("luna-send -n 1 -w 5000 luna://" SERVICE_ID "/ping '{}' >/dev/null 2>&1");
@@ -406,6 +423,13 @@ void net_get_image(const char *path, int tag, int index, int generation, int sam
     j->sample = sample;
     j->fit_w = fit_w;
     j->fit_h = fit_h;
+    push_job(j);
+}
+
+void net_luna(const char *uri, const char *payload, int tag)
+{
+    Job *j = new_job(JOB_LUNA, uri, tag, 0, 0);
+    j->post = payload ? strdup(payload) : NULL;
     push_job(j);
 }
 

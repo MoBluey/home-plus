@@ -52,6 +52,22 @@ appears in your own SSH command line** — it kills the session. Use:
   build, then kill it. The install also un-elevates the service, so always re-run `elevate-service`.
 - Screenshot: `luna-send -n 1 luna://com.webos.service.capture/executeOneShot '{"path":"/tmp/s.png","method":"DISPLAY","format":"PNG","width":1920,"height":1080}'`.
 
+## First run and removal
+- The launcher starts with `GET /api/status` (no token needed). No answer: it wakes the service with
+  luna-send and retries ("Setting Up Home+"; after ~24 s "Home+ Couldn't Start"). Answer but not
+  root: it calls Homebrew Channel's `elevateService` with the service id, then `POST /api/restart`
+  (refused once root) so the next start runs elevated. Errors: "Homebrew Channel Needed" (luna says
+  the service doesn't exist) or "Couldn't Get Permission". Every failure screen has Try Again.
+- Once root, the service copies `init.d/50-homeplus` from its package into
+  `/var/lib/webosbrew/init.d/` (and updates it when the package changes).
+- The Home button is left alone (`homeMode` "off") until the launcher has asked
+  "Use Home+ as Your Home Screen?" once (`homeAsked` in config.json). Settings has the switch.
+- Settings → Remove Home+ (`POST /api/uninstall`): unmounts the no-flash page, deletes the boot
+  script, lginputhook binds that launch Home+, `/var/lib/homeplus` and the elevation files, then
+  `appInstallService/dev/remove`s the package.
+- Preview modes: `HOMEPLUS_PREVIEW_FRESH=1` (question not answered), `HOMEPLUS_PREVIEW_UNROOTED=1`
+  (unelevated service; with no luna-send on the host this shows the Homebrew Channel screen).
+
 ## Known TV quirks
 - LG's SDL puts the *scancode* in `keysym.sym` (Right arrow arrives as 79); see `remote_key()`.
   LG's own codes come the same way, with `scancode=1`: Back 482 (seen), pointer show/hide 484/485
