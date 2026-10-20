@@ -57,7 +57,7 @@
 #define ROW_H (TILE_H + 80)            /* the next row peeks out under the dock; labels sit in the gap */
 #define FOCUS_SCALE 1.20f
 #define LONG_PRESS_MS 650
-#define ROTATE_MS 8000                 /* the Top Shelf carousel turns to its next title */
+#define ROTATE_MS 10000                /* the Top Shelf carousel turns to its next title */
 #define MAX_DOTS 16                    /* its position, as dots */
 #define BAR 56                         /* the clock capsule */
 #define TOP_Y 52                       /* where tvOS 26 has it */
@@ -124,7 +124,7 @@ typedef struct {
 } RailItem;
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
-               ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_TMDB,
+               ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_TMDB, ACT_SHELF,
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY,
@@ -261,6 +261,7 @@ static struct {
     int setup, setup_tries, elevate_tries, home_asked;
     int reduce_motion, reduce_transparency; /* Settings -> Accessibility (tvOS's names) */
     int clock24, orbit_off, vivid_covers;    /* Settings: 24-hour clock, no pixel shift, brand-colour covers */
+    int shelf_still;                         /* Settings: the Top Shelf doesn't turn pages by itself */
     int at_page, at_index, at_parent_index;  /* the Settings row an action came from */
     int last_unknown_key;                    /* Settings -> About: what a remote sent that Home+ ignores */
     char svc_version[24];                    /* from /api/status */
@@ -1131,6 +1132,7 @@ static void handle_result(Result *r)
             if (c24 != S.clock24) S.clock24 = c24, S.clock_min = -1;
             S.orbit_off = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "pixelShift"));
             S.vivid_covers = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "calmColours"));
+            S.shelf_still = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "shelfTurns"));
             cJSON_Delete(o);
         }
         break;
@@ -1731,6 +1733,7 @@ static void settings_page(int page, int index)
         settings_row("Turn Off After", minutes(S.idle_off_ms, IDLE_OFF_MS, v2, sizeof v2), ACT_OFF, 0, 0, 0);
         settings_row("Pixel Shift", S.orbit_off ? "Off" : "On", ACT_ORBIT, 0, 0, 0);
         settings_row("Calm Colours", S.vivid_covers ? "Off" : "On", ACT_CALM, 0, 0, 0);
+        settings_row("Top Shelf", S.shelf_still ? "Stays Still" : "Turns Pages", ACT_SHELF, 0, 0, 0);
         break;
     case PAGE_ACCESS:
         sheet_open("Accessibility");
@@ -2029,6 +2032,11 @@ static void run_action(Action act, int arg)
         settings_again();
         break;
     }
+    case ACT_SHELF: /* the carousel turns to its next title every 10 s, or waits for Up and Left/Right */
+        S.shelf_still = !S.shelf_still;
+        net_post("/api/prefs", S.shelf_still ? "{\"shelfTurns\":false}" : "{\"shelfTurns\":true}", 0);
+        settings_again();
+        break;
     case ACT_ORBIT:
         S.orbit_off = !S.orbit_off;
         net_post("/api/prefs", S.orbit_off ? "{\"pixelShift\":false}" : "{\"pixelShift\":true}", 0);
@@ -2524,8 +2532,10 @@ static int update(float dt)
     if (rail_active()) {
         Uint32 now = SDL_GetTicks();
         int nx = (S.rail_index + 1) % S.nrail;
-        /* it turns every 8 s while its app has focus, nothing covers it and the screen is awake */
-        int turning = S.zone == ZONE_GRID && S.nrail > 1 && !S.sheet.open && !S.recents.open && !S.moving && S.idle_stage == 0;
+        /* it turns every 10 s while its app has focus, nothing covers it and the screen is awake
+         * (unless Settings says it stays still) */
+        int turning = !S.shelf_still && S.zone == ZONE_GRID && S.nrail > 1 && !S.sheet.open && !S.recents.open && !S.moving &&
+                      S.idle_stage == 0;
         if (!turning) S.rail_next = 0;
         else if (!S.rail_next) S.rail_next = now + ROTATE_MS;
         else if (now >= S.rail_next && S.rail[nx].bg_state != 1) { /* the next picture is ready (or has none) */

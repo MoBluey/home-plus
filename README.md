@@ -15,7 +15,7 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with C
 - **Top Shelf:** focus an app in the top row and the screen fills with its pictures, one title at a time, like tvOS. Stremio, Jellyfin and Plex show what you're partway through; streaming apps show what's popular on them (with a free TMDB key); other apps get a glow taken from their icon.
 - **Liquid Glass:** the dock, clock, buttons and menus bend the light at their edges and blur only what sits behind text. Focused tiles lift, sway and catch a moving light. The Magic Remote pointer steers that light.
 - **Motion and sound:** everything moves on springs, and menus grow out of the button that opened them. A soft tick plays when focus moves; **Settings → Sounds** turns it off.
-- **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. It turns to the next title every 8 seconds; press **Up**, then **Left** and **Right**, to step through them. You sign in with a code or a QR code, so no password is typed on the TV.
+- **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. It turns to the next title every 10 seconds (or stays still: **Settings → Display & OLED → Top Shelf**); press **Up**, then **Left** and **Right**, to step through them. You sign in with a code or a QR code, so no password is typed on the TV.
 - **Recents:** an App Switcher for open apps, most recent first. Open them, close them one by one, or close them all. Press **Back** on the first app to open it.
 - **Your layout:** hold **OK** on an app to move it, move it to the front or hide it. Hidden apps collect in a "Hidden" tile at the end.
 - **Home button:** optionally, the Home button opens Home+ instead of LG's home screen.
@@ -73,7 +73,7 @@ From the top row, press **Up** to reach the clock at the top right, as on tvOS; 
 | Row | What's there |
 |---|---|
 | **Home Button** | Whether the Home button opens Home+ or LG's home screen, and No Flash on TVs that support it |
-| **Display & OLED** | Dim After, Turn Off After, Pixel Shift, and Calm Colours (dark app backgrounds, so ambient lights don't flood the room) |
+| **Display & OLED** | Dim After, Turn Off After, Pixel Shift, Calm Colours (dark app backgrounds, so ambient lights don't flood the room), and whether the Top Shelf turns pages by itself |
 | **Sounds** | Focus sounds on or off |
 | **Clock** | 12-hour or 24-hour |
 | **Accessibility** | Reduce Motion, Reduce Transparency |
@@ -85,7 +85,7 @@ From the top row, press **Up** to reach the clock at the top right, as on tvOS; 
 
 ## Continue Watching
 
-Focus Stremio, Jellyfin or Plex in the top row, and the Top Shelf shows what you're partway through there: one title at a time, with its picture, its logo and how far you are, turning to the next every 8 seconds. Press **Up** (the chevron above the dock says you can), then **Left** and **Right**, to step through them.
+Focus Stremio, Jellyfin or Plex in the top row, and the Top Shelf shows what you're partway through there: one title at a time, with its picture, its logo and how far you are, turning to the next every 10 seconds. Press **Up** (the chevron above the dock says you can), then **Left** and **Right**, to step through them.
 
 Sign in under **Settings → Accounts**, or hold **OK** on the app and choose **Sign In**. The TV shows a code, and a QR code where the service has one; you approve it on your phone or computer, where you're already signed in. No password is typed on the TV.
 
