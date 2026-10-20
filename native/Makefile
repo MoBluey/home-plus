@@ -5,7 +5,7 @@
 # Compiled against vendored SDL 2.0.14 headers so the binary only uses
 # functions the TV's libSDL2 actually has.
 
-SRC := src/main.c src/gfx.c src/render.c src/sound.c src/net.c src/preview.c third_party/cJSON.c
+SRC := src/main.c src/gfx.c src/render.c src/sound.c src/net.c src/luna.c src/preview.c third_party/cJSON.c
 CFLAGS := -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
           -Ithird_party -Ithird_party/SDL2 -D_REENTRANT
 
@@ -20,7 +20,7 @@ all: build/host/homeplus
 
 build/host/homeplus: $(SRC) src/*.h
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ $(SRC) $(HOST_SDL) -lm -lpthread
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(HOST_SDL) -lm -lpthread -ldl
 	@rm -rf $(@D)/assets && cp -r assets $(@D)/assets
 
 webos: build/webos/homeplus
@@ -28,7 +28,7 @@ webos: build/webos/homeplus
 build/webos/homeplus: $(SRC) src/*.h
 	@mkdir -p $(@D)
 	$(WEBOS_CC) $(CFLAGS) -o $@ $(SRC) \
-	  -L$(WEBOS_SYSROOT)/usr/lib -lSDL2 -lm -lpthread -Wl,-rpath-link,$(WEBOS_SYSROOT)/usr/lib
+	  -L$(WEBOS_SYSROOT)/usr/lib -lSDL2 -lm -lpthread -ldl -Wl,-rpath-link,$(WEBOS_SYSROOT)/usr/lib
 	$(WEBOS_SDK)/bin/arm-webos-linux-gnueabi-strip $@
 	@rm -rf $(@D)/assets && cp -r assets $(@D)/assets
 

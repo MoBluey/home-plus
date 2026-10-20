@@ -1,5 +1,6 @@
 /* Home+ native: HTTP to the service + background workers. See net.h. */
 #include "net.h"
+#include "luna.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -295,6 +296,15 @@ static void run_job(Job *j)
     r.generation = j->generation;
 
     if (j->kind == JOB_LUNA) {
+        /* the bus directly, as our app id; luna-send only where that's unavailable */
+        char *reply = NULL;
+        int rc = luna_call(j->path, j->post ? j->post : "{}", 20000, &reply);
+        if (rc >= 0) {
+            r.body = reply ? reply : strdup("");
+            r.status = rc == 1 ? 200 : 0;
+            push_done(&r);
+            return;
+        }
         char cmd[MAX_PATH_LEN + 600];
         snprintf(cmd, sizeof cmd, "luna-send -n 1 -w 20000 '%s' '%s' 2>&1", j->path, j->post ? j->post : "{}");
         FILE *p = popen(cmd, "r");
@@ -306,15 +316,17 @@ static void run_job(Job *j)
             pclose(p);
         }
         out[n] = 0;
+        luna_diag("luna-send %s -> %.300s", j->path, out);
         r.body = out;
         r.status = strstr(out, "\"returnValue\":true") || strstr(out, "\"returnValue\": true") ? 200 : 0;
         push_done(&r);
         return;
     }
     if (j->kind == JOB_WAKE) {
-        /* luna-send is how a webOS service gets started; ignore its output. */
-        int rc = system("luna-send -n 1 -w 5000 luna://" SERVICE_ID "/ping '{}' >/dev/null 2>&1");
-        r.status = rc == 0 ? 200 : 0;
+        /* any call starts a webOS service; ping it on the bus, else with luna-send */
+        int rc = luna_call("luna://" SERVICE_ID "/ping", "{}", 8000, NULL);
+        if (rc < 0) rc = system("luna-send -n 1 -w 5000 luna://" SERVICE_ID "/ping '{}' >/dev/null 2>&1") == 0;
+        r.status = rc == 1 ? 200 : 0;
         push_done(&r);
         return;
     }
@@ -372,6 +384,7 @@ static int worker(void *arg)
 void net_start(void)
 {
     net_event = SDL_RegisterEvents(1);
+    luna_setup();
     lock = SDL_CreateMutex();
     wake = SDL_CreateCond();
     /* the token sits next to the binary on the TV; HOMEPLUS_TOKEN_FILE for the desktop preview */

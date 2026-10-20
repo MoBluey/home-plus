@@ -11,7 +11,8 @@
 #include <stddef.h>
 
 #define SERVICE_PORT 47823
-#define SERVICE_ID "com.github.pmiraka.homeplus.service"
+#define APP_ID "com.github.pmiraka.homeplus"
+#define SERVICE_ID APP_ID ".service"
 
 /* Blocking request. Returns the HTTP status (0 on connection failure); *body
  * is malloc'd and NUL-terminated (caller frees). post_body NULL means GET. */

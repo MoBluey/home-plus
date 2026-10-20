@@ -53,8 +53,14 @@ appears in your own SSH command line** — it kills the session. Use:
 - Screenshot: `luna-send -n 1 luna://com.webos.service.capture/executeOneShot '{"path":"/tmp/s.png","method":"DISPLAY","format":"PNG","width":1920,"height":1080}'`.
 
 ## First run and removal
-- The launcher starts with `GET /api/status` (no token needed). No answer: it wakes the service with
-  luna-send and retries ("Setting Up Home+"; after ~24 s "Home+ Couldn't Start"). Answer but not
+- The launcher runs in the app sandbox, where `luna-send` can't reach other services (seen on the
+  C3: the wake ping and Homebrew Channel's elevateService both failed). `native/src/luna.c` calls
+  the bus itself via the TV's libluna-service2 (dlopen), registered under the app id; luna-send is
+  only the fallback. It logs every call to `/tmp/homeplus-native.log` (inside the app's jail).
+- Homebrew Channel doesn't elevate other apps' services on install (only its own), and every
+  install un-elevates ours, so the launcher's elevation step runs after each update too.
+- The launcher starts with `GET /api/status` (no token needed). No answer: it wakes the service
+  (a luna ping) and retries ("Setting Up Home+"; after ~24 s "Home+ Couldn't Start"). Answer but not
   root: it calls Homebrew Channel's `elevateService` with the service id, then `POST /api/restart`
   (refused once root) so the next start runs elevated. Errors: "Homebrew Channel Needed" (luna says
   the service doesn't exist) or "Couldn't Get Permission". Every failure screen has Try Again.
