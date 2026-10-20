@@ -11,9 +11,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <SDL.h>
+/* LG's libSDL2 is the Wayland build; the vendored generic headers only show
+ * SDL_SysWMinfo's Wayland members when asked */
+#define SDL_VIDEO_DRIVER_WAYLAND 1
+#include <SDL_syswm.h>
 
 #include "cJSON.h"
 #include "gfx.h"
@@ -53,6 +60,9 @@
 #define RAIL_Y (DOCK_Y - PAD - RAIL_CARD_H - 16)
 #define RAIL_VISIBLE 5
 #define BAR 56                         /* clock capsule and round top-bar buttons */
+#define ICON_FIT 256                   /* icons feed logos, covers and the big Top Shelf tile */
+#define THUMB_FIT_W 480                /* rail thumbnails: cards, and briefly the background */
+#define THUMB_FIT_H 270
 #define BAR_GAP 16
 #define TEXT_STATIC 218                /* OLED: static text stays at ~85% white */
 
@@ -177,6 +187,8 @@ static struct {
     /* OLED protection: idle stages, fades, pixel orbit */
     Uint32 last_input;
     int idle_stage, swallow_up, offscreen, orbit_k; /* offscreen: another app is in front */
+    int wl_fd;              /* Wayland socket the idle wait sleeps on, -1 = SDL's own wait */
+    Uint32 keys_until;      /* a key went down lately: keep pumping so SDL makes its repeats */
     float dim, black;
     /* motion: the focused element sways briefly and its highlight follows a moving light */
     float sway_t;           /* seconds since focus last moved */
@@ -432,14 +444,16 @@ static void parse_apps(const char *json)
         App *a = &S.apps[i];
         if (a->icon[0]) {
             a->icon_state = 1;
-            net_get_image(a->icon, TAG_ICON, i, S.generation, 1);
+            net_get_image(a->icon, TAG_ICON, i, S.generation, 1, ICON_FIT, ICON_FIT);
         }
     }
     S.shelf_cur = S.shelf_prev = -1;
 }
 
-static void make_rail_texts(RailItem *it)
+/* the big title and meta line, made only for the card on show (~0.4 MB each) */
+static void ensure_rail_texts(RailItem *it)
 {
+    if (it->title_tex) return;
     /* "Season 2 · Episode 5 · 31 min left" / "Episode 5 · ..." (anime) / "Movie · 48 min left" */
     char meta[200] = "";
     if (!strcmp(it->type, "series") && it->season)
@@ -453,7 +467,6 @@ static void make_rail_texts(RailItem *it)
         snprintf(left, sizeof left, "%s%d min left", meta[0] ? "  \xC2\xB7  " : "", it->remaining);
         strncat(meta, left, sizeof meta - strlen(meta) - 1);
     }
-    it->name_tex = text_render(S.f_semi, 20, it->name, RAIL_CARD_W - 32, &it->nw, &it->nh);
     it->title_tex = text_render(S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
     it->meta_tex = text_render(S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
 }
@@ -506,10 +519,10 @@ static void parse_stremio(const char *json)
         it->season = (int)jnum(v, "season");
         it->episode = (int)jnum(v, "episode");
         it->remaining = (int)jnum(v, "remainingMin");
-        make_rail_texts(it);
+        it->name_tex = text_render(S.f_semi, 20, it->name, RAIL_CARD_W - 32, &it->nw, &it->nh);
         if (it->thumb[0]) {
             it->thumb_state = 1;
-            net_get_image(it->thumb, TAG_RAIL_THUMB, S.nrail, S.rail_generation, 0);
+            net_get_image(it->thumb, TAG_RAIL_THUMB, S.nrail, S.rail_generation, 0, THUMB_FIT_W, THUMB_FIT_H);
         }
         S.nrail++;
     }
@@ -847,27 +860,7 @@ static void handle_result(Result *r)
         if (r->generation == S.generation && r->index < S.napps) {
             App *a = &S.apps[r->index];
             if (r->rgba) {
-                /* some icons are huge (a 2048 px one costs 16 MB on the GPU): shrink to <= 256 px */
-                int f = (r->w > r->h ? r->w : r->h) / 256 + ((r->w > 256 || r->h > 256) ? 1 : 0);
-                if (f > 1) {
-                    int sw = r->w / f, sh = r->h / f;
-                    unsigned char *small = malloc((size_t)sw * sh * 4);
-                    if (small) {
-                        for (int y = 0; y < sh; y++)
-                            for (int x = 0; x < sw; x++)
-                                for (int c = 0; c < 4; c++) {
-                                    unsigned sum = 0;
-                                    for (int yy = 0; yy < f; yy++)
-                                        for (int xx = 0; xx < f; xx++)
-                                            sum += r->rgba[((size_t)(y * f + yy) * r->w + (x * f + xx)) * 4 + c];
-                                    small[((size_t)y * sw + x) * 4 + c] = (unsigned char)(sum / (f * f));
-                                }
-                        make_logo(a, small, sw, sh);
-                        free(small);
-                    }
-                } else {
-                    make_logo(a, r->rgba, r->w, r->h);
-                }
+                make_logo(a, r->rgba, r->w, r->h); /* already shrunk to ICON_FIT while decoding */
                 a->icon_state = 2;
             } else {
                 a->icon_state = 3;
@@ -1419,7 +1412,7 @@ static int update(float dt)
         /* background art: lazy-load the focused one, crossfade between items */
         if (cur && cur->bg[0] && cur->bg_state == 0) {
             cur->bg_state = 1;
-            net_get_image(cur->bg, TAG_RAIL_BG, S.rail_index, S.rail_generation, 0);
+            net_get_image(cur->bg, TAG_RAIL_BG, S.rail_index, S.rail_generation, 0, W, H);
         }
         if (S.rail_art_cur != S.rail_index) {
             S.rail_art_prev = S.rail_art_cur;
@@ -1450,7 +1443,7 @@ static int update(float dt)
         App *ca = item_app(S.shelf_cur);
         if (ca && ca->art[0] && ca->art_state == 0) {
             ca->art_state = 1;
-            net_get_image(ca->art, TAG_ART, S.items[S.shelf_cur], S.generation, 0);
+            net_get_image(ca->art, TAG_ART, S.items[S.shelf_cur], S.generation, 0, W, H);
         }
     }
     for (int i = 0; i < S.nitems; i++) {
@@ -1527,9 +1520,14 @@ static void panel(int backdrop, float x, float y, float w, float h, float radius
     r_glass(&g);
 }
 
-static void ensure_app_texts(App *a)
+/* text is made when first shown: a big title is ~0.4 MB of GPU memory */
+static void ensure_label(App *a)
 {
     if (!a->label) a->label = text_render(S.f_medium, 26, a->title, TILE_W + 60, &a->lw, &a->lh);
+}
+
+static void ensure_big(App *a)
+{
     if (!a->big) a->big = text_render(S.f_bold, 84, a->title, 1000, &a->bw, &a->bh);
 }
 
@@ -1562,7 +1560,7 @@ static void draw_app_art(App *a, Uint8 alpha)
 static void draw_app_text(App *a, Uint8 alpha)
 {
     if (!a || !alpha) return;
-    ensure_app_texts(a);
+    ensure_big(a);
     draw_text(a->big, a->bw, a->bh, LEFT - 4, 340, alpha);
     Tex *sub = is_stremio(a) && !S.rail_connected ? S.sub_connect_tex : S.sub_tex;
     int sw = sub == S.sub_tex ? S.sw : S.scw, sh = sub == S.sub_tex ? S.sh : S.sch;
@@ -1590,6 +1588,7 @@ static void draw_rail_content(Uint8 alpha, int backdrop)
     float hy = SAFE_Y + 58, hh = 46;
     panel(backdrop, LEFT, hy, S.hw + 44, hh, hh / 2, 1, 0, alpha / 255.0f);
     draw_text(S.heading_tex, S.hw, S.hh, LEFT + 22, hy + (hh - S.hh) / 2.0f, alpha);
+    ensure_rail_texts(cur);
     draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, hy + hh + 26, alpha);
     draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, hy + hh + 26 + cur->th + 8, (Uint8)(alpha * 0.8f));
 
@@ -1707,7 +1706,7 @@ static void draw_tile(int i, int backdrop)
         float lw = a->logo_w * sc, lh = a->logo_h * sc;
         r_image(a->logo_tex, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh, 255, 255, 255, 255, a->logo_r * sc);
     } else if (a) {
-        ensure_app_texts(a);
+        ensure_label(a);
         if (a->label) draw_text(a->label, a->lw, a->lh, x + (w - a->lw) / 2, y + (h - a->lh) / 2, 230);
     } else {
         static Tex *ht;
@@ -1717,7 +1716,7 @@ static void draw_tile(int i, int backdrop)
     }
     if (S.moving && focused) r_shape(x, y, w, h, rad, 255, 255, 255, 200, 2.0f, 1, 1); /* the tile you're moving */
     if (a && k > 0.01f && !backdrop) {
-        ensure_app_texts(a);
+        ensure_label(a);
         float ly = i < COLS ? DOCK_Y - 160 * S.scrolled + DOCK_H + 14 : by + TILE_H + 22; /* top row: under the dock */
         draw_text(a->label, a->lw, a->lh, bx + (TILE_W - a->lw) / 2, ly, (Uint8)(TEXT_STATIC * k));
     }
@@ -1873,6 +1872,135 @@ static int load_assets(void)
     return 1;
 }
 
+/* ------------------------------------------------------------------ idle wait */
+
+/* LG's SDL 2.0.14 has no real blocking wait: SDL_WaitEventTimeout checks for
+ * events every 10 ms, 100 wake-ups a second even while hidden. On the TV the
+ * loop sleeps in poll() on the Wayland socket and on a pipe that queued events
+ * (network results) write to. While hidden it still pumps SDL every 100 ms:
+ * LG's SDL finishes SAM's relaunch, i.e. the Home button, in SDL_PumpEvents. */
+#define HIDDEN_PUMP_MS 100
+
+static int wake_pipe[2] = { -1, -1 };
+
+/* the Wayland socket SDL reads events from, or -1 (not Wayland, e.g. the desktop preview) */
+static int wayland_fd(void)
+{
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(S.win, &info) || info.subsystem != SDL_SYSWM_WAYLAND) return -1;
+    void *lib = SDL_LoadObject("libwayland-client.so.0"); /* SDL has it loaded already */
+    int (*get_fd)(struct wl_display *) = lib ? (int (*)(struct wl_display *))SDL_LoadFunction(lib, "wl_display_get_fd") : NULL;
+    return get_fd ? get_fd(info.info.wl.display) : -1;
+}
+
+/* runs on whichever thread queues an SDL event and wakes the loop out of poll() */
+static int SDLCALL wake_loop(void *userdata, SDL_Event *e)
+{
+    char c = 1;
+    ssize_t n = write(wake_pipe[1], &c, 1); /* fails only when full: the loop is awake then */
+    (void)userdata;
+    (void)e;
+    (void)n;
+    return 0;
+}
+
+static void start_idle_wait(void)
+{
+    S.wl_fd = wayland_fd();
+    if (S.wl_fd < 0 || pipe(wake_pipe) != 0) {
+        S.wl_fd = -1;
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(wake_pipe[i], F_SETFL, O_NONBLOCK);
+        fcntl(wake_pipe[i], F_SETFD, FD_CLOEXEC); /* not inherited by luna-send */
+    }
+    SDL_AddEventWatch(wake_loop, NULL);
+}
+
+/* drew: a frame went out since the last wait (drawing can leave events read off
+ * the socket but not yet handed to SDL) */
+static int wait_event(SDL_Event *e, int timeout_ms, int drew)
+{
+    if (S.wl_fd < 0) return SDL_WaitEventTimeout(e, timeout_ms < 0 ? -1 : timeout_ms > 0 ? timeout_ms : 1);
+    if (drew && SDL_PollEvent(e)) return 1;
+    struct pollfd fds[2] = { { S.wl_fd, POLLIN, 0 }, { wake_pipe[0], POLLIN, 0 } };
+    poll(fds, 2, timeout_ms);
+    char buf[64];
+    while (read(wake_pipe[0], buf, sizeof buf) > 0) {
+    }
+    return SDL_PollEvent(e);
+}
+
+/* How long the loop may sleep: until what's due next (a retry, a Trakt check, a
+ * long press, the toast ending, the next OLED stage, closing the audio, the
+ * next minute for the clock and pixel orbit while something is on screen), or
+ * the hidden pump. -1 = until something happens. */
+static int next_wake_ms(void)
+{
+    Uint32 now = SDL_GetTicks();
+    Uint32 dim_ms = S.idle_dim_ms ? S.idle_dim_ms : IDLE_DIM_MS, off_ms = S.idle_off_ms ? S.idle_off_ms : IDLE_OFF_MS;
+    int visible = !S.offscreen && S.idle_stage < 2;
+    Uint32 due[7] = { S.next_retry, S.trakt_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0,
+                      S.toast_tex && S.toast_until > now ? S.toast_until : 0,
+                      S.offscreen ? 0 : S.idle_stage == 0 ? S.last_input + dim_ms : S.idle_stage == 1 ? S.last_input + off_ms : 0,
+                      snd_active() ? now + 1000 : 0, visible ? now + (60000 - now % 60000) : 0 };
+    int wait = -1;
+    for (int i = 0; i < 7; i++) {
+        if (!due[i]) continue;
+        int d = (Sint32)(due[i] - now) > 0 ? (int)(due[i] - now) : 0;
+        if (wait < 0 || d < wait) wait = d;
+    }
+    if (visible) { /* the clock's next minute */
+        time_t tt = time(NULL);
+        int d = (60 - (int)(tt % 60)) * 1000 + 5;
+        if (wait < 0 || d < wait) wait = d;
+    }
+    if (S.offscreen && (wait < 0 || wait > HIDDEN_PUMP_MS)) wait = HIDDEN_PUMP_MS;
+    return wait;
+}
+
+/* Another app is in front: free the big pictures except the one on show (they
+ * come back on demand; ~8 MB each on this GPU). */
+static void release_images(void)
+{
+    App *keep = item_app(S.shelf_cur);
+    for (int i = 0; i < S.napps; i++) {
+        App *a = &S.apps[i];
+        if (a == keep || !a->art_tex) continue;
+        tex_free(&a->art_tex);
+        a->art_state = 0;
+    }
+    for (int i = 0; i < S.nrail; i++) {
+        RailItem *it = &S.rail[i];
+        if (i == S.rail_index || !it->bg_tex) continue;
+        tex_free(&it->bg_tex);
+        it->bg_state = 0;
+    }
+}
+
+/* Another app is in front (LG's SDL may say so as HIDDEN, MINIMIZED or
+ * DIDENTERBACKGROUND): stop drawing, release the audio and the big pictures. */
+static void go_offscreen(void)
+{
+    if (S.offscreen) return;
+    S.offscreen = 1;
+    S.keys_until = 0;
+    snd_suspend();
+    release_images();
+}
+
+static void come_back(void)
+{
+    if (S.away) go_home(); /* back from another app (or the Home button): start at the top */
+    S.away = 0;
+    S.offscreen = 0;
+    S.last_input = SDL_GetTicks();
+    S.idle_stage = 0;
+    request_data();
+}
+
 /* Any input resets the OLED idle timer. Returns 1 when it only woke a dark
  * screen, so that press does nothing else (key: its release is dropped too). */
 static int wake(int key)
@@ -1923,11 +2051,12 @@ int main(int argc, char **argv)
     snd_init();
 
     net_start();
+    start_idle_wait();
     {
         int dw, dh, ww, wh;
         SDL_GL_GetDrawableSize(S.win, &dw, &dh);
         SDL_GetWindowSize(S.win, &ww, &wh);
-        log_remote("native up: renderer=gles2 drawable=%dx%d window=%dx%d", dw, dh, ww, wh);
+        log_remote("native up: renderer=gles2 drawable=%dx%d window=%dx%d idle=%s", dw, dh, ww, wh, S.wl_fd >= 0 ? "poll" : "sdl");
     }
     S.shelf_cur = S.shelf_prev = S.rail_art_cur = S.rail_art_prev = -1;
     S.last_input = SDL_GetTicks();
@@ -1938,28 +2067,23 @@ int main(int argc, char **argv)
     Uint32 shot_at = shot ? SDL_GetTicks() + (Uint32)atoi(getenv("HOMEPLUS_SCREENSHOT_MS") ? getenv("HOMEPLUS_SCREENSHOT_MS") : "2500") : 0;
     extern void homeplus_preview_input(Uint32 elapsed);
 
-    int running = 1, animating = 1;
+    int running = 1, animating = 1, drew = 1;
     Uint32 last = SDL_GetTicks(), start = last;
     while (running) {
         SDL_Event e;
-        /* sleep while idle; wake on input, a finished network job, a due retry or the clock */
+        /* sleep while idle or hidden; wake on input, a queued event or what's due next */
         int got;
-        if (animating || S.ok_down || shot) {
-            got = SDL_PollEvent(&e);
-        } else {
-            int wait = 1000;
-            Uint32 t0 = SDL_GetTicks();
-            if (S.next_retry) wait = S.next_retry > t0 ? (int)(S.next_retry - t0) : 0;
-            if (S.trakt_poll && (int)(S.trakt_poll - t0) < wait) wait = S.trakt_poll > t0 ? (int)(S.trakt_poll - t0) : 0;
-            if (S.toast_tex && S.toast_until > t0 && (int)(S.toast_until - t0) < wait) wait = (int)(S.toast_until - t0);
-            got = SDL_WaitEventTimeout(&e, wait > 0 ? wait : 1);
-        }
+        if (shot || (animating && !S.offscreen)) got = SDL_PollEvent(&e);
+        else if ((Sint32)(S.keys_until - SDL_GetTicks()) > 0) got = SDL_WaitEventTimeout(&e, 10);
+        else got = wait_event(&e, next_wake_ms(), drew);
+        drew = 0;
         int dirty = got;
         while (got) {
             switch (e.type) {
             case SDL_QUIT: running = 0; break;
             case SDL_KEYDOWN:
                 if (e.key.keysym.sym == WEBOS_KEY_CURSOR_HIDE) break; /* the pointer fell asleep: not input */
+                S.keys_until = SDL_GetTicks() + 600;
                 if (wake(1)) break;
                 on_key_down(&e.key);
                 break;
@@ -2003,17 +2127,18 @@ int main(int argc, char **argv)
                 if (wake(0)) break;
                 if (!S.sheet.open) move_focus(0, e.wheel.y < 0 ? 1 : -1);
                 break;
+            case SDL_APP_DIDENTERBACKGROUND:
+                go_offscreen();
+                break;
+            case SDL_APP_DIDENTERFOREGROUND:
+                come_back();
+                break;
             case SDL_WINDOWEVENT:
-                if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED || e.window.event == SDL_WINDOWEVENT_SHOWN) {
-                    if (S.away) go_home(); /* back from another app (or the Home button): start at the top */
-                    S.away = 0;
-                    S.offscreen = 0;
-                    wake(0);
-                    request_data();
-                } else if (e.window.event == SDL_WINDOWEVENT_HIDDEN) {
-                    S.offscreen = 1;
-                    snd_suspend();
-                }
+                if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED || e.window.event == SDL_WINDOWEVENT_SHOWN ||
+                    e.window.event == SDL_WINDOWEVENT_RESTORED)
+                    come_back();
+                else if (e.window.event == SDL_WINDOWEVENT_HIDDEN || e.window.event == SDL_WINDOWEVENT_MINIMIZED)
+                    go_offscreen();
                 break;
             default:
                 if (e.type == net_event) {
@@ -2078,6 +2203,7 @@ int main(int argc, char **argv)
             if (dt > 0.1f) dt = 0.1f;
             int take = shot && now >= shot_at;
             animating = render(dt, take ? shot : NULL);
+            drew = 1;
             if (take) running = 0;
         }
         last = now;

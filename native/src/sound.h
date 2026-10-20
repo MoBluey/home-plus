@@ -14,5 +14,7 @@ void snd_play(int which);
 void snd_idle(void);
 /* Another app is in front: release the device now. */
 void snd_suspend(void);
+/* 1 while the audio device is open (the loop wakes to close it). */
+int snd_active(void);
 
 #endif

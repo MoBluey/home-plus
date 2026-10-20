@@ -125,11 +125,80 @@ static void sample_icon(const unsigned char *px, int w, int h, Result *r)
     }
 }
 
+/* ------------------------------------------------------------------ shrinking */
+
+/* Adds w x one source row's colour to an output row: alpha-weighted r, g, b sums and alpha. */
+static void add_row(float *acc, const float *row, int n, float w)
+{
+    for (int i = 0; i < n * 4; i++) acc[i] += w * row[i];
+}
+
+static void put_row(unsigned char *out, const float *acc, int n, float area)
+{
+    for (int i = 0; i < n; i++, acc += 4, out += 4) {
+        float a = acc[3];
+        for (int c = 0; c < 3; c++) out[c] = a > 0 ? (unsigned char)fminf(acc[c] / a + 0.5f, 255) : 0;
+        out[3] = (unsigned char)fminf(a / area + 0.5f, 255);
+    }
+}
+
+/* Shrinks RGBA pixels to nw x nh (each no larger than the source) by averaging the area of
+ * the source each new pixel covers. Colour is weighted by alpha, so the transparent pixels
+ * around an icon don't darken its edges. NULL when out of memory. */
+static unsigned char *shrink(const unsigned char *px, int w, int h, int nw, int nh)
+{
+    float sx = (float)w / nw, sy = (float)h / nh;
+    float *row = malloc(sizeof(float) * 4 * nw), *acc = calloc((size_t)nw * 4, sizeof(float));
+    unsigned char *out = malloc((size_t)nw * nh * 4);
+    if (!row || !acc || !out) {
+        free(row);
+        free(acc);
+        free(out);
+        return NULL;
+    }
+    int oy = 0;
+    for (int y = 0; y < h && oy < nh; y++) {
+        /* this source row averaged across into nw pixels */
+        const unsigned char *s = px + (size_t)y * w * 4;
+        for (int ox = 0; ox < nw; ox++) {
+            float x0 = ox * sx, x1 = x0 + sx, r = 0, g = 0, b = 0, a = 0;
+            for (int x = (int)x0; x < w && x < x1; x++) {
+                float k = (fminf(x + 1, x1) - fmaxf(x, x0)) * s[x * 4 + 3];
+                r += k * s[x * 4];
+                g += k * s[x * 4 + 1];
+                b += k * s[x * 4 + 2];
+                a += k;
+            }
+            float *d = row + ox * 4;
+            d[0] = r; d[1] = g; d[2] = b; d[3] = a;
+        }
+        /* ...then shared between the output rows it overlaps (at most two when shrinking) */
+        float top = (float)y;
+        while (oy < nh) {
+            float end = (oy + 1) * sy;
+            if (y + 1 < end) {
+                add_row(acc, row, nw, y + 1 - top);
+                break;
+            }
+            add_row(acc, row, nw, end - top);
+            put_row(out + (size_t)oy * nw * 4, acc, nw, sx * sy);
+            memset(acc, 0, sizeof(float) * 4 * nw);
+            oy++;
+            top = end;
+            if (top >= y + 1) break;
+        }
+    }
+    if (oy < nh) put_row(out + (size_t)oy * nw * 4, acc, nw, sx * sy); /* float rounding left the last row open */
+    free(row);
+    free(acc);
+    return out;
+}
+
 /* ------------------------------------------------------------------ job queue */
 
 typedef struct Job {
     JobKind kind;
-    int tag, index, generation, sample;
+    int tag, index, generation, sample, fit_w, fit_h;
     char path[MAX_PATH_LEN];
     char *post;
     struct Job *next;
@@ -195,6 +264,20 @@ static void run_job(Job *j)
             int n;
             r.rgba = stbi_load_from_memory((unsigned char *)body, (int)len, &r.w, &r.h, &n, 4);
             if (r.rgba && j->sample) sample_icon(r.rgba, r.w, r.h, &r);
+            /* bigger than it's ever drawn: shrink to just cover the fit box */
+            float s = r.rgba && j->fit_w > 0 ? fmaxf((float)j->fit_w / r.w, (float)j->fit_h / r.h) : 1;
+            if (s < 1) {
+                int nw = (int)lroundf(r.w * s), nh = (int)lroundf(r.h * s);
+                if (nw < j->fit_w) nw = j->fit_w;
+                if (nh < j->fit_h) nh = j->fit_h;
+                unsigned char *small = shrink(r.rgba, r.w, r.h, nw, nh);
+                if (small) {
+                    stbi_image_free(r.rgba);
+                    r.rgba = small; /* malloc'd like stb's own buffers: net_result_free frees either */
+                    r.w = nw;
+                    r.h = nh;
+                }
+            }
         }
         free(body);
     } else {
@@ -264,10 +347,12 @@ void net_post(const char *path, const char *body, int tag)
     push_job(j);
 }
 
-void net_get_image(const char *path, int tag, int index, int generation, int sample)
+void net_get_image(const char *path, int tag, int index, int generation, int sample, int fit_w, int fit_h)
 {
     Job *j = new_job(JOB_IMAGE, path, tag, index, generation);
     j->sample = sample;
+    j->fit_w = fit_w;
+    j->fit_h = fit_h;
     push_job(j);
 }
 

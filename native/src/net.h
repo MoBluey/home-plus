@@ -2,8 +2,8 @@
  *
  * The service (com.atvlauncher.app.service) listens on 127.0.0.1:47823.
  * Jobs are queued from the main thread; worker threads do the HTTP request
- * (and image decoding) and post results back, which the main thread drains
- * once per frame. */
+ * (and image decoding and shrinking) and post results back, which the main
+ * thread drains once per frame. */
 #ifndef HOMEPLUS_NET_H
 #define HOMEPLUS_NET_H
 
@@ -40,7 +40,9 @@ void net_stop(void);
 
 void net_get_json(const char *path, int tag, int index, int generation);
 void net_post(const char *path, const char *body, int tag);
-void net_get_image(const char *path, int tag, int index, int generation, int sample);
+/* fit_w x fit_h: the largest the image is ever drawn (scaled to cover it). Bigger images are
+ * shrunk to that when decoded, since GPU memory, not the file, is what they cost. 0 = as is. */
+void net_get_image(const char *path, int tag, int index, int generation, int sample, int fit_w, int fit_h);
 /* Starts the service via luna-send (the HTTP server only runs while it's alive). */
 void net_wake_service(void);
 

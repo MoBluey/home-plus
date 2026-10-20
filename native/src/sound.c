@@ -79,3 +79,5 @@ void snd_suspend(void)
     SDL_CloseAudioDevice(A.dev);
     A.dev = 0;
 }
+
+int snd_active(void) { return A.dev != 0; }
