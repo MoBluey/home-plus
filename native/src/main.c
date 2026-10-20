@@ -72,6 +72,8 @@ typedef struct {
     Uint8 col[3];
     int has_col, fullbleed;
     Tex *icon_tex, *art_tex, *label, *big;
+    Tex *logo_tex;          /* the icon's logo, background keyed out and trimmed (tiles) */
+    float logo_w, logo_h, logo_r; /* its size on a tile, and corner radius for picture icons */
     int icon_state, art_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
     int lw, lh, bw, bh;
     float s, sv; /* focus animation 0..1, and its spring velocity */
@@ -365,6 +367,7 @@ static void parse_layout(const char *json)
 
 static void free_app(App *a)
 {
+    tex_free(&a->logo_tex);
     tex_free(&a->icon_tex);
     tex_free(&a->art_tex);
     tex_free(&a->label);
@@ -534,6 +537,130 @@ static void open_recents_sheet(const char *json);
 static void sheet_close(void);
 static void sheet_add(const char *label, Action act, int arg, int destructive);
 
+/* ------------------------------------------------------------------ uniform tiles */
+
+/* Like tvOS app icons, every tile is the icon's own background colour from edge
+ * to edge with its logo centred at the same visual size. LG icons are small
+ * squares with their own background, so: find that colour on the border, key
+ * it out, trim to the logo and size it to a common target. Icons without a
+ * solid background keep their whole picture, at one size, with round corners;
+ * logo-only icons (transparent) get one graphite tile (light if the logo is dark). */
+static float smooth01(float a, float b, float x)
+{
+    float t = (x - a) / (b - a);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return t * t * (3 - 2 * t);
+}
+
+static void make_logo(App *a, const unsigned char *px, int w, int h)
+{
+    /* background: the first opaque pixel (2 px in, past the anti-aliased edge)
+     * on 24 lines inward from each side */
+    enum { LINES = 24 };
+    unsigned char samp[4 * LINES][3];
+    int n = 0;
+    double m[3] = { 0 };
+    for (int side = 0; side < 4; side++) {
+        for (int k = 1; k <= LINES; k++) {
+            int along = side < 2 ? w : h, depth = side < 2 ? h : w, t = k * along / (LINES + 1);
+            for (int d = 0; d < depth / 3; d++) {
+                int dd = d;
+                int x = side == 0 || side == 1 ? t : side == 2 ? dd : w - 1 - dd;
+                int y = side == 0 ? dd : side == 1 ? h - 1 - dd : t;
+                if (px[((size_t)y * w + x) * 4 + 3] <= 200) continue;
+                dd = d + 2 < depth ? d + 2 : d;
+                x = side == 0 || side == 1 ? t : side == 2 ? dd : w - 1 - dd;
+                y = side == 0 ? dd : side == 1 ? h - 1 - dd : t;
+                const unsigned char *p = px + ((size_t)y * w + x) * 4;
+                memcpy(samp[n++], p, 3);
+                m[0] += p[0];
+                m[1] += p[1];
+                m[2] += p[2];
+                break;
+            }
+        }
+    }
+    enum { SOLID, PICTURE, CLEAR } mode = CLEAR;
+    if (n >= 4 * LINES * 3 / 4) {
+        double dev = 0;
+        for (int c = 0; c < 3; c++) m[c] /= n;
+        for (int i = 0; i < n; i++) dev += fabs(samp[i][0] - m[0]) + fabs(samp[i][1] - m[1]) + fabs(samp[i][2] - m[2]);
+        mode = dev / n < 24 ? SOLID : PICTURE;
+    }
+
+    /* keyed copy: background pixels fade to transparent; then the logo's bounding box */
+    unsigned char *k = malloc((size_t)w * h * 4);
+    if (!k) return;
+    int x0 = w, y0 = h, x1 = -1, y1 = -1;
+    double lum = 0, lum_n = 0;
+    for (int i = 0; i < w * h; i++) {
+        const unsigned char *p = px + (size_t)i * 4;
+        unsigned char *q = k + (size_t)i * 4;
+        float alpha = p[3];
+        if (mode == SOLID) {
+            float dist = fabsf(p[0] - (float)m[0]) + fabsf(p[1] - (float)m[1]) + fabsf(p[2] - (float)m[2]);
+            alpha *= smooth01(24, 72, dist);
+        }
+        memcpy(q, p, 3);
+        q[3] = (unsigned char)alpha;
+        if (mode == PICTURE ? p[3] > 40 : alpha > 40) {
+            int x = i % w, y = i / w;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+            lum += (0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]) / 255;
+            lum_n++;
+        }
+    }
+    if (x1 < x0) { /* nothing but background: keep the whole icon */
+        x0 = y0 = 0;
+        x1 = w - 1;
+        y1 = h - 1;
+        mode = PICTURE;
+    }
+    if (mode == PICTURE) memcpy(k, px, (size_t)w * h * 4);
+    x0 = x0 > 2 ? x0 - 2 : 0;
+    y0 = y0 > 2 ? y0 - 2 : 0;
+    x1 = x1 < w - 3 ? x1 + 2 : w - 1;
+    y1 = y1 < h - 3 ? y1 + 2 : h - 1;
+    int cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+    unsigned char *crop = malloc((size_t)cw * ch * 4);
+    if (!crop) {
+        free(k);
+        return;
+    }
+    for (int y = 0; y < ch; y++) memcpy(crop + (size_t)y * cw * 4, k + ((size_t)(y0 + y) * w + x0) * 4, (size_t)cw * 4);
+    free(k);
+    tex_free(&a->logo_tex);
+    a->logo_tex = r_tex(crop, cw, ch);
+    free(crop);
+
+    /* one visual size: about the same area for every logo, within a box */
+    if (mode == PICTURE) {
+        float side = TILE_H * 0.62f;
+        a->logo_w = a->logo_h = side;
+        a->logo_r = side * 0.2f;
+    } else {
+        float sc = fminf(fminf(TILE_W * 0.56f / cw, TILE_H * 0.48f / ch), sqrtf(TILE_W * TILE_H * 0.16f / ((float)cw * ch)));
+        a->logo_w = cw * sc;
+        a->logo_h = ch * sc;
+        a->logo_r = 0;
+    }
+    /* the tile: the icon's background, a darkened average behind pictures, graphite behind bare logos */
+    if (mode == SOLID) {
+        for (int c = 0; c < 3; c++) a->col[c] = (Uint8)(m[c] + 0.5);
+    } else if (mode == PICTURE) {
+        for (int c = 0; c < 3; c++) a->col[c] = (Uint8)(n ? m[c] * 0.55 : 40);
+    } else {
+        int light = lum_n > 0 && lum / lum_n < 0.25;
+        a->col[0] = a->col[1] = light ? 236 : 40;
+        a->col[2] = light ? 240 : 46;
+    }
+    a->has_col = 1;
+    a->fullbleed = mode == SOLID;
+}
+
 /* ------------------------------------------------------------------ results */
 
 static void handle_result(Result *r)
@@ -637,13 +764,7 @@ static void handle_result(Result *r)
             if (r->rgba) {
                 a->icon_tex = r_tex(r->rgba, r->w, r->h);
                 a->icon_state = 2;
-                if (r->sampled) {
-                    a->fullbleed = r->fullbleed;
-                    if (r->fullbleed || !a->has_col) {
-                        memcpy(a->col, r->rgb, 3);
-                        if (!r->fullbleed) a->has_col = 1;
-                    }
-                }
+                make_logo(a, r->rgba, r->w, r->h);
             } else {
                 a->icon_state = 3;
             }
@@ -1422,10 +1543,10 @@ static void draw_tile(int i, int backdrop)
     Uint8 r, g, b;
     app_color(a, &r, &g, &b);
     if (k > 0.01f && !backdrop) r_shadow(x, y, w, h, rad, 28, 16, 0.5f * k);
-    r_shape(x, y, w, h, rad, r, g, b, a ? (a->fullbleed ? 255 : 153) : 18, 0, 1, 1);
-    if (a && a->icon_tex) {
-        float is = (a->fullbleed ? 156 : 124) * sc;
-        r_image(a->icon_tex, x + (w - is) / 2, y + (h - is) / 2, is, is, 255, 255, 255, 255, 0);
+    r_shape(x, y, w, h, rad, r, g, b, a ? 255 : 18, 0, 1, 1); /* uniform: opaque, the icon's own colour */
+    if (a && a->logo_tex) {
+        float lw = a->logo_w * sc, lh = a->logo_h * sc;
+        r_image(a->logo_tex, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh, 255, 255, 255, 255, a->logo_r * sc);
     } else if (a) {
         ensure_app_texts(a);
         if (a->label) draw_text(a->label, a->lw, a->lh, x + (w - a->lw) / 2, y + (h - a->lh) / 2, 230);
@@ -1452,11 +1573,13 @@ static void draw_scene(int backdrop)
     float dock_y = DOCK_Y - 160 * S.scrolled, dock_a = 1 - S.scrolled;
     if (!backdrop && dock_a > 0.004f) r_shadow(SAFE_X, dock_y, W - 2 * SAFE_X, DOCK_H, TILE_R + PAD, 40, 14, 0.3f * dock_a);
     panel(backdrop, SAFE_X, dock_y, W - 2 * SAFE_X, DOCK_H, TILE_R + PAD, 0, 0, dock_a); /* icons on it are opaque: stays clear */
-    draw_clock((Uint8)(255 * (1 - S.scrolled)), backdrop);
+    int dimmed = !backdrop && S.dim > 0.004f, top = S.zone == ZONE_TOP;
+    if (!(dimmed && top)) draw_clock((Uint8)(255 * (1 - S.scrolled)), backdrop);
     for (int i = 0; i < S.nitems; i++)
         if (i != S.focus) draw_tile(i, backdrop);
-    if (!backdrop && S.dim > 0.004f) r_fill(0, 0, 0, (Uint8)(S.dim * 115)); /* OLED: idle dims all but the focused tile */
+    if (dimmed) r_fill(0, 0, 0, (Uint8)(S.dim * 115)); /* OLED: idle dims all but what has focus */
     if (S.focus < S.nitems) draw_tile(S.focus, backdrop);
+    if (dimmed && top) draw_clock((Uint8)(255 * (1 - S.scrolled)), backdrop);
 }
 
 static void draw_sheet(void)
