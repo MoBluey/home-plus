@@ -58,6 +58,8 @@
 #define FOCUS_SCALE 1.20f
 #define LONG_PRESS_MS 650
 #define ROTATE_MS 10000                /* the Top Shelf carousel turns to its next title */
+#define PAGE_WAIT_MS 1200              /* the longest the Top Shelf waits for a page's picture */
+#define SKEL_MS 250                    /* a wait longer than this shows placeholders (a skeleton) */
 #define MAX_DOTS 16                    /* its position, as dots */
 #define BAR 56                         /* the clock capsule */
 #define TOP_Y 52                       /* where tvOS 26 has it */
@@ -135,6 +137,12 @@ typedef struct {
     int bg_state, logo_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
     int tw, th, mw, mh, lw, lh;
 } RailItem;
+
+/* A picture the Top Shelf can show: app i's artwork, its glow (its icon blurred, with its
+ * tile large; the cover: the glow alone), title i's picture, or held picture i (one whose
+ * owner let go of it while it was on show, kept until something covers it). */
+enum { PIC_NONE, PIC_ART, PIC_GLOW, PIC_COVER, PIC_RAIL, PIC_HELD };
+typedef struct { int kind, i; } Pic;
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
                ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_TMDB, ACT_SHELF,
@@ -223,10 +231,20 @@ static struct {
     int moving;
     float scroll, scroll_v, scroll_target; /* grid y offset */
     float scrolled;              /* 0 at the top row, 1 below it */
-    int shelf_cur, shelf_prev;   /* item indices shown in the Top Shelf */
-    float shelf_a;               /* crossfade: 0 = prev, 1 = cur */
-    int rail_art_cur, rail_art_prev;
-    float rail_art_a;
+    int shelf_cur;               /* the item whose Top Shelf it is */
+    /* The Top Shelf shows a page: an app's own (its name), or one of its carousel's titles
+     * (rail -1: the app's own; -2: none, its carousel left). The next page waits until its
+     * picture is in (PAGE_WAIT_MS at most), so a title never sits on another's picture, and
+     * the picture on show stays underneath until the new one has covered it. */
+    int page_app, page_rail, page_step; /* step: it came from the title before it, in the same carousel */
+    int prev_app, prev_rail;     /* the page that left, fading out */
+    float page_a, page_leave, prev_vis; /* the page coming in; the page on show leaving while the next one loads */
+    float skel_a;                /* placeholders for the text, while the next page takes a while */
+    int want_app, want_rail;     /* the page the Top Shelf wants next, since want_at */
+    Uint32 want_at;
+    Pic pic_under, pic_top;      /* the picture on show, and the next one fading in over it */
+    float pic_a;
+    Tex *pic_held[2];
 
     /* App Switcher (Recents, like tvOS): the running apps as big cards over the
      * blurred home screen, most recent first */
@@ -313,8 +331,8 @@ static struct {
     struct { /* the Control Center */
         int open, index, ninputs;
         float t, tv, s[CC_COUNT], sv[CC_COUNT];
-        Tex *icon[CC_COUNT], *title[CC_COUNT], *value[CC_COUNT];
-        int tw[CC_COUNT], th[CC_COUNT], vw[CC_COUNT], vh[CC_COUNT];
+        Tex *icon[CC_COUNT], *title[CC_COUNT], *value[CC_COUNT], *wired;
+        int tw[CC_COUNT], th[CC_COUNT], vw[CC_COUNT], vh[CC_COUNT], net; /* net: 0 Wi-Fi, 1 Ethernet, 2 none */
         struct { char app[ID_LEN], name[120]; int plugged; } inputs[12];
     } cc;
     float chevron_a;
@@ -519,6 +537,37 @@ static void save_layout(void)
     cJSON_Delete(o);
 }
 
+static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
+
+/* a layer lets go of its picture (a held one is freed) */
+static void pic_drop(Pic *p)
+{
+    if (p->kind == PIC_HELD) tex_free(&S.pic_held[p->i]);
+    *p = (Pic){ PIC_NONE, 0 };
+}
+
+/* The owner of layer p's picture is about to free it (*tex): the layer holds it instead,
+ * in the slot the other layer isn't using, until something covers it. */
+static void pic_hold(Pic *p, Tex **tex)
+{
+    Pic *o = p == &S.pic_top ? &S.pic_under : &S.pic_top;
+    int s = o->kind == PIC_HELD && o->i == 0;
+    tex_free(&S.pic_held[s]);
+    if (tex && *tex) {
+        S.pic_held[s] = *tex;
+        *tex = NULL;
+        *p = (Pic){ PIC_HELD, s };
+    } else {
+        *p = (Pic){ PIC_NONE, 0 };
+    }
+}
+
+/* the carousel title i's picture is on show (or fading in or out) */
+static int pic_rail(int i)
+{
+    return (S.pic_under.kind == PIC_RAIL && S.pic_under.i == i) || (S.pic_top.kind == PIC_RAIL && S.pic_top.i == i);
+}
+
 static void parse_layout(const char *json)
 {
     cJSON *o = cJSON_Parse(json);
@@ -533,7 +582,7 @@ static void parse_layout(const char *json)
     S.layout_loaded = 1;
     if (S.napps) { /* the apps arrived first (the requests race): put them in this order now */
         rebuild_items();
-        S.shelf_cur = S.shelf_prev = -1;
+        S.shelf_cur = S.page_app = S.prev_app = -1;
     }
 }
 
@@ -569,6 +618,13 @@ static void parse_apps(const char *json)
     App *fa = item_app(S.focus);
     if (fa) snprintf(keep, sizeof keep, "%s", fa->id);
 
+    /* the Top Shelf's picture stays until one from the new list covers it */
+    for (int l = 0; l < 2; l++) {
+        Pic *p = l ? &S.pic_top : &S.pic_under;
+        if (p->kind == PIC_ART) pic_hold(p, &S.apps[p->i].art_tex);
+        else if (p->kind == PIC_GLOW || p->kind == PIC_COVER) pic_hold(p, &S.apps[p->i].cover_tex);
+    }
+    S.page_app = S.prev_app = -1;
     for (int i = 0; i < S.napps; i++) free_app(&S.apps[i]);
     memset(S.apps, 0, sizeof S.apps);
     S.napps = 0;
@@ -596,7 +652,7 @@ static void parse_apps(const char *json)
             net_get_image(a->icon, TAG_ICON, i, S.generation, 1, ICON_FIT, ICON_FIT);
         }
     }
-    S.shelf_cur = S.shelf_prev = -1;
+    S.shelf_cur = -1;
 }
 
 /* the big title and meta line, made only for the card on show (~0.4 MB each) */
@@ -722,7 +778,9 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
     memcpy(old, S.rail, sizeof old);
     memset(S.rail, 0, sizeof S.rail);
     S.nrail = 0;
-    S.rail_generation++; /* pictures on the way are for the old order */
+    net_drop(TAG_RAIL_BG, -1, S.rail_generation); /* pictures not yet on the way are for the old order */
+    net_drop(TAG_RAIL_LOGO, -1, S.rail_generation);
+    S.rail_generation++; /* and the ones on the way are ignored */
     cJSON_ArrayForEach(v, arr) {
         if (S.nrail >= MAX_RAIL) break;
         RailItem *it = &S.rail[S.nrail++];
@@ -738,13 +796,16 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
         it->remaining = (int)jnum(v, "remainingMin");
         it->year = (int)jnum(v, "year");
     }
-    int at = S.rail_index, kept = 0;
+    int at = S.rail_index, moved[MAX_RAIL], pic_to[MAX_RAIL]; /* where each old title went, and its picture */
+    for (int k = 0; k < nold; k++) moved[k] = pic_to[k] = -1;
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
         for (int k = 0; k < nold; k++) {
             RailItem *o = &old[k];
-            if (strcmp(o->id, it->id) || strcmp(o->bg, it->bg) || strcmp(o->logo, it->logo)) continue;
-            if (o->bg_state == 2) it->bg_tex = o->bg_tex, it->bg_state = 2, o->bg_tex = NULL;
+            if (strcmp(o->id, it->id)) continue;
+            moved[k] = i;
+            if (strcmp(o->bg, it->bg) || strcmp(o->logo, it->logo)) break;
+            if (o->bg_state == 2) it->bg_tex = o->bg_tex, it->bg_state = 2, o->bg_tex = NULL, pic_to[k] = i;
             if (o->logo_state == 2) it->logo_tex = o->logo_tex, it->logo_state = 2, it->lw = o->lw, it->lh = o->lh, o->logo_tex = NULL;
             if (it->progress == o->progress && it->remaining == o->remaining) {
                 it->title_tex = o->title_tex, it->tw = o->tw, it->th = o->th, o->title_tex = NULL;
@@ -752,15 +813,23 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
             }
             break;
         }
-        if (keep[0] && !strcmp(it->id, keep)) at = i, kept = 1;
+        if (keep[0] && !strcmp(it->id, keep)) at = i;
     }
+    /* what's on show stays: the pages follow their titles (-2: it left), and a picture
+     * whose title left is held until something covers it */
+    for (int l = 0; l < 2; l++) {
+        Pic *p = l ? &S.pic_top : &S.pic_under;
+        if (p->kind != PIC_RAIL) continue;
+        if (p->i < nold && pic_to[p->i] >= 0) p->i = pic_to[p->i];
+        else pic_hold(p, p->i < nold ? &old[p->i].bg_tex : NULL);
+    }
+    if (S.page_rail >= 0) S.page_rail = S.page_rail < nold && moved[S.page_rail] >= 0 ? moved[S.page_rail] : -2;
+    if (S.prev_rail >= 0) S.prev_rail = S.prev_rail < nold && moved[S.prev_rail] >= 0 ? moved[S.prev_rail] : -2;
     for (int k = 0; k < nold; k++) {
         RailItem *o = &old[k];
         tex_free(&o->bg_tex); tex_free(&o->logo_tex); tex_free(&o->title_tex); tex_free(&o->meta_tex);
     }
     rail_focus(at < S.nrail ? at : S.nrail - 1);
-    S.rail_art_cur = S.rail_art_prev = -1;
-    if (kept && S.rail[S.rail_index].bg_tex) S.rail_art_cur = S.rail_index, S.rail_art_a = 1; /* no fade: it's still on show */
     if (!S.nrail && S.zone == ZONE_RAIL) S.zone = ZONE_GRID;
 }
 
@@ -802,7 +871,7 @@ static void parse_continue(const char *json, int src)
 static void cc_value(int i, const char *text)
 {
     tex_free(&S.cc.value[i]);
-    if (text && text[0]) S.cc.value[i] = text_render(S.f_medium, 19, text, 118, &S.cc.vw[i], &S.cc.vh[i]);
+    if (text && text[0]) S.cc.value[i] = text_render(S.f_medium, 18, text, 126, &S.cc.vw[i], &S.cc.vh[i]);
 }
 
 /* the Control Center's state, from the service (also its answer to every action) */
@@ -810,7 +879,16 @@ static void parse_control(const char *json)
 {
     cJSON *o = cJSON_Parse(json), *v;
     if (!o) return;
-    cc_value(CC_NETWORK, jstr(cJSON_GetObjectItem(o, "network"), "name"));
+    cJSON *net = cJSON_GetObjectItem(o, "network");
+    const char *kind = jstr(net, "kind");
+    int k = !strcmp(kind, "wired") ? 1 : !strcmp(kind, "wifi") ? 0 : 2;
+    if (k != S.cc.net) { /* its name, and its icon (drawn from the choice), follow the connection */
+        S.cc.net = k;
+        tex_free(&S.cc.title[CC_NETWORK]);
+        S.cc.title[CC_NETWORK] = text_render(S.f_semi, 21, k == 1 ? "Ethernet" : k == 0 ? "Wi-Fi" : "Network", 220,
+                                             &S.cc.tw[CC_NETWORK], &S.cc.th[CC_NETWORK]);
+    }
+    cc_value(CC_NETWORK, jstr(net, "name"));
     cc_value(CC_SOUND, jstr(cJSON_GetObjectItem(o, "sound"), "label"));
     const char *sl = jstr(o, "sleepTimer");
     char t[32];
@@ -1294,12 +1372,7 @@ static void handle_result(Result *r)
         if (r->generation == S.generation && r->index < S.napps) {
             App *a = &S.apps[r->index];
             a->art_tex = r->rgba ? r_tex(r->rgba, r->w, r->h) : NULL;
-            a->art_state = r->rgba ? 2 : 3;
-            /* the shelf is showing this app: fade its artwork in over the cover */
-            if (a->art_tex && S.shelf_cur >= 0 && S.shelf_cur < S.nitems && S.items[S.shelf_cur] == r->index) {
-                S.shelf_prev = S.shelf_cur;
-                S.shelf_a = 0;
-            }
+            a->art_state = r->rgba ? 2 : 3; /* on show already: it fades in over the glow */
         }
         break;
     case TAG_QR:
@@ -1319,7 +1392,6 @@ static void handle_result(Result *r)
             } else {
                 tex_free(&it->bg_tex);
                 it->bg_tex = t, it->bg_state = t ? 2 : 3;
-                if (t && r->index == S.rail_index && S.rail_art_a > 0.5f) S.rail_art_a = 0; /* it came late: fade it in now */
             }
         }
         break;
@@ -1342,11 +1414,13 @@ static int rail_active(void)
     return S.focus < COLS && rail_for(item_app(S.focus));
 }
 
-/* hint: optional message the system shows over the app once it has opened */
-static void launch(const char *id, const char *hint)
+/* Opens an app. params: where in it (its launch parameters, as JSON), or NULL; hint: an
+ * optional message the system shows over the app once it has opened. */
+static void launch_app(const char *id, const char *params, const char *hint)
 {
-    cJSON *o = cJSON_CreateObject();
+    cJSON *o = cJSON_CreateObject(), *p = params ? cJSON_Parse(params) : NULL;
     cJSON_AddStringToObject(o, "id", id);
+    if (p) cJSON_AddItemToObject(o, "params", p);
     if (hint && hint[0]) cJSON_AddStringToObject(o, "toast", hint);
     char *body = cJSON_PrintUnformatted(o);
     net_post("/api/launch", body, TAG_LAUNCH);
@@ -1354,6 +1428,8 @@ static void launch(const char *id, const char *hint)
     cJSON_Delete(o);
     S.away = 1;
 }
+
+static void launch(const char *id, const char *hint) { launch_app(id, NULL, hint); }
 
 static void sheet_close(void)
 {
@@ -1591,7 +1667,7 @@ static void sw_update(float dt, int *anim)
             toast("That app is taking a while to open", 3500);
         }
     }
-    if (S.recents.loading) *anim = 1; /* "Loading…" fades in after a moment */
+    if (S.recents.loading) *anim = 1; /* its placeholders shimmer */
 }
 
 /* Control Center: TV settings + accounts */
@@ -2186,7 +2262,10 @@ static void cc_activate(void)
 {
     switch (S.cc.index) {
     case CC_POWER: net_post("/api/control", "{\"action\":\"powerOff\"}", TAG_CONTROL); cc_close(); break;
-    case CC_NETWORK: cc_close(); launch("com.palm.app.settings", NULL); break; /* LG's network settings live there */
+    case CC_NETWORK: /* LG's network settings: what its own Quick Settings open (its Settings app has no such page) */
+        cc_close();
+        launch_app("com.webos.app.firstuse-overlay", "{\"target\":\"network\"}", NULL);
+        break;
     case CC_SCREEN: net_post("/api/control", "{\"action\":\"screenOff\"}", TAG_CONTROL); cc_close(); break;
     case CC_SOUND: net_post("/api/control", "{\"action\":\"sound\",\"value\":\"next\"}", TAG_CONTROL); break;
     case CC_SLEEP: net_post("/api/control", "{\"action\":\"sleepTimer\",\"value\":\"next\"}", TAG_CONTROL); break;
@@ -2637,6 +2716,84 @@ static void update_clock(void)
     S.clock_min = m;
 }
 
+/* the app list hasn't come yet (and Home+ isn't stuck on an error) */
+static int apps_loading(void) { return !S.nitems && (S.setup <= SETUP_RESTARTING || S.setup == SETUP_DONE); }
+
+/* app a's carousel is on the way: its Continue Watching, or what's popular on it */
+static int carousel_coming(const App *a)
+{
+    int src = media_source(a);
+    if (src) return S.rail_req == src;
+    return S.tmdb_configured && S.service_ok && (a->feat <= 1 || (a->feat == 2 && !rail_for(a)));
+}
+
+/* Whether the Top Shelf can show the page (item, rail) yet: a title once its picture and
+ * logo are in (or failed, or it has none); an app's own page once no carousel is on the
+ * way for it and its artwork isn't loading. */
+static int page_ready(int item, int rail)
+{
+    App *a = item_app(item);
+    if (!a) return 1;
+    if (rail >= 0) {
+        const RailItem *r = &S.rail[rail];
+        return (r->bg_state >= 2 || !r->bg[0]) && (r->logo_state >= 2 || !r->logo[0]);
+    }
+    return !carousel_coming(a) && !(a->art[0] && a->art_state < 2);
+}
+
+/* a page's picture: its title's, else its app's artwork, else the app's glow (with its
+ * tile large on its own page; the glow alone behind a title). Once another carousel has
+ * taken its place, the picture on show stays. */
+static Pic page_pic(int item, int rail)
+{
+    App *a = item_app(item);
+    int mine = a && rail_for(a);
+    if (rail == -2 || (rail >= 0 && !mine)) return S.pic_top;
+    if (rail >= 0 && rail < S.nrail && S.rail[rail].bg_tex) return (Pic){ PIC_RAIL, rail };
+    if (!a) return (Pic){ PIC_NONE, 0 };
+    return (Pic){ a->art_tex ? PIC_ART : rail == -1 ? PIC_GLOW : PIC_COVER, (int)(a - S.apps) };
+}
+
+/* The Top Shelf's next page shows once it's ready, or after PAGE_WAIT_MS; meanwhile the
+ * page on show stays and its text leaves. Its picture fades in over the one on show. */
+static void update_page(float dt, int *anim)
+{
+    App *a = item_app(S.shelf_cur);
+    int wi = S.shelf_cur, wr = a && rail_for(a) ? S.rail_index : -1;
+    Uint32 now = SDL_GetTicks();
+    /* the wait starts over for another app, or another title (stepping through them),
+     * not when the app's carousel comes in */
+    if (wi != S.want_app || (wr >= 0 && S.want_rail >= 0 && wr != S.want_rail)) S.want_at = now;
+    S.want_app = wi, S.want_rail = wr;
+    int on = wi == S.page_app && wr == S.page_rail;
+    if (!on && (page_ready(wi, wr) || now - S.want_at >= PAGE_WAIT_MS)) {
+        S.page_step = wr >= 0 && S.page_rail >= 0 && wi == S.page_app; /* the next title, same carousel */
+        S.prev_app = S.page_app, S.prev_rail = S.page_rail, S.prev_vis = 1 - S.page_leave;
+        S.page_app = wi, S.page_rail = wr;
+        S.page_a = S.page_leave = 0;
+        on = 1;
+    }
+    approach(&S.page_leave, on ? 0 : 1, 10, dt, anim);
+    approach(&S.page_a, 1, 9, dt, anim);
+    /* a carousel's page that takes a while: placeholders stand in for its text */
+    int slow = !on && now - S.want_at >= SKEL_MS && (wr >= 0 || (a && carousel_coming(a)));
+    approach(&S.skel_a, slow ? 1 : 0, 8, dt, anim);
+    if (S.skel_a > 0.004f && !S.reduce_motion) *anim = 1; /* their shimmer */
+    Pic want = page_pic(S.page_app, S.page_rail);
+    if (!pic_eq(want, S.pic_top)) {
+        if (S.pic_a >= 0.5f) { /* mostly in: it's the one underneath now */
+            pic_drop(&S.pic_under);
+            S.pic_under = S.pic_top;
+        } else {
+            pic_drop(&S.pic_top);
+        }
+        S.pic_top = want;
+        S.pic_a = 0;
+    }
+    approach(&S.pic_a, 1, 5, dt, anim);
+    if (S.pic_a >= 1) pic_drop(&S.pic_under); /* covered */
+}
+
 /* Advances every animated value once per frame. Drawing only reads them: the
  * scene is drawn twice, into the glass backdrop and then to the screen. */
 static int update(float dt)
@@ -2657,13 +2814,7 @@ static int update(float dt)
 
     /* the Top Shelf belongs to the last top-row app focused, also while it shows
      * Continue Watching: scrolled below the dock, its picture stays behind, blurred */
-    int cur = S.focus < COLS ? S.focus : S.shelf_cur;
-    if (cur != S.shelf_cur) {
-        S.shelf_prev = S.shelf_cur;
-        S.shelf_cur = cur;
-        S.shelf_a = 0;
-    }
-    approach(&S.shelf_a, 1, 9, dt, &anim);
+    if (S.focus < COLS) S.shelf_cur = S.focus;
     /* the chevron shows while Up from the focused app goes into its Continue Watching */
     int chev = S.zone == ZONE_GRID && S.focus < COLS && rail_active() && !S.sheet.open && !S.recents.open && !S.moving;
     approach(&S.chevron_a, chev ? 1.0f : 0.0f, 8, dt, &anim);
@@ -2682,45 +2833,53 @@ static int update(float dt)
                       S.idle_stage == 0;
         if (!turning) S.rail_next = 0;
         else if (!S.rail_next) S.rail_next = now + ROTATE_MS;
-        else if (now >= S.rail_next && S.rail[nx].bg_state != 1) { /* the next picture is ready (or has none) */
+        else if (now >= S.rail_next && S.rail[nx].bg_state != 1 && S.rail[nx].logo_state != 1) { /* the next is ready */
             rail_focus(nx);
             nx = (S.rail_index + 1) % S.nrail;
             S.rail_next = now + ROTATE_MS;
         }
-        /* pictures: the title on show and both of its neighbours, loaded ahead so turning
-         * or stepping through never waits, and the one fading out (~8 MB each on this GPU) */
-        int pv = (S.rail_index + S.nrail - 1) % S.nrail;
-        for (int i = 0; i < S.nrail; i++) {
-            RailItem *it = &S.rail[i];
-            if (i == S.rail_index || i == nx || i == pv) {
-                if (it->bg[0] && it->bg_state == 0) {
-                    it->bg_state = 1;
-                    net_get_image(it->bg, TAG_RAIL_BG, i, S.rail_generation, 0, W, H);
-                }
-                if (it->logo[0] && it->logo_state == 0) {
-                    it->logo_state = 1;
-                    net_get_image(it->logo, TAG_RAIL_LOGO, i, S.rail_generation, 0, 640, 240);
-                }
-            } else if (i != S.rail_art_prev) {
-                if (it->bg_tex) tex_free(&it->bg_tex), it->bg_state = 0;
-                if (it->logo_tex) tex_free(&it->logo_tex), it->logo_state = 0;
-                tex_free(&it->title_tex);
-                tex_free(&it->meta_tex);
+        /* pictures: the selected title's first, then both of its neighbours, loaded ahead so
+         * turning or stepping through never waits; and those still on show. The rest are let
+         * go (~8 MB each on this GPU), with their requests that haven't started. */
+        int pv = (S.rail_index + S.nrail - 1) % S.nrail, order[3] = { S.rail_index, nx, pv };
+        RailItem *sel = &S.rail[S.rail_index];
+        if (sel->logo_state == 1) net_bump(TAG_RAIL_LOGO, S.rail_index, S.rail_generation); /* asked for as a neighbour */
+        if (sel->bg_state == 1) net_bump(TAG_RAIL_BG, S.rail_index, S.rail_generation);
+        for (int k = 0; k < 3; k++) {
+            RailItem *it = &S.rail[order[k]];
+            if (it->bg[0] && it->bg_state == 0) {
+                it->bg_state = 1;
+                net_get_image(it->bg, TAG_RAIL_BG, order[k], S.rail_generation, 0, W, H);
+            }
+            if (it->logo[0] && it->logo_state == 0) {
+                it->logo_state = 1;
+                net_get_image(it->logo, TAG_RAIL_LOGO, order[k], S.rail_generation, 0, 640, 240);
             }
         }
-        if (S.rail_art_cur != S.rail_index) {
-            S.rail_art_prev = S.rail_art_cur;
-            S.rail_art_cur = S.rail_index;
-            S.rail_art_a = 0;
+        for (int i = 0; i < S.nrail; i++) {
+            if (i == S.rail_index || i == nx || i == pv || i == S.page_rail || i == S.prev_rail || pic_rail(i)) continue;
+            RailItem *it = &S.rail[i];
+            if (it->bg_state == 1 && net_drop(TAG_RAIL_BG, i, S.rail_generation)) it->bg_state = 0;
+            if (it->logo_state == 1 && net_drop(TAG_RAIL_LOGO, i, S.rail_generation)) it->logo_state = 0;
+            if (it->bg_tex) tex_free(&it->bg_tex), it->bg_state = 0;
+            if (it->logo_tex) tex_free(&it->logo_tex), it->logo_state = 0;
+            tex_free(&it->title_tex);
+            tex_free(&it->meta_tex);
         }
-        approach(&S.rail_art_a, 1, 5, dt, &anim);
     } else {
         App *ca = item_app(S.shelf_cur);
-        if (ca && ca->art[0] && ca->art_state == 0) {
+        if (ca && ca->art[0] && ca->art_state == 0 && !rail_for(ca) && !carousel_coming(ca)) { /* its own page */
             ca->art_state = 1;
             net_get_image(ca->art, TAG_ART, S.items[S.shelf_cur], S.generation, 0, W, H);
         }
     }
+    update_page(dt, &anim);
+    if (!S.reduce_motion && !S.offscreen && apps_loading()) anim = 1; /* placeholders shimmer */
+    if (!S.reduce_motion && !S.offscreen) /* so do tiles while their icons load */
+        for (int i = 0; i < S.nitems && !anim; i++) {
+            App *a = item_app(i);
+            if (a && a->icon_state == 1) anim = 1;
+        }
     /* while OK is down the focused thing sinks a little (1.06), then pops back */
     int pressed = S.ok_down && !S.ok_long && !S.sheet.open && !S.recents.open;
     float on = pressed ? 0.6f : 1.0f, resp = pressed ? 0.12f : 0.35f, damp = pressed ? 1.0f : 0.7f;
@@ -2862,6 +3021,13 @@ static void ensure_big(App *a)
     a->big = text_render(S.f_bold, 84, name, 1000, &a->bw, &a->bh);
 }
 
+/* A placeholder while something loads (a skeleton): a soft bar that a slow shimmer passes over. */
+static void draw_skeleton(float x, float y, float w, float h, float radius, float alpha)
+{
+    float wave = S.reduce_motion ? 0.5f : 0.5f + 0.5f * sinf(2 * (float)M_PI * (SDL_GetTicks() / 1400.0f - (x + 0.5f * y) / 1800.0f));
+    r_shape(x, y, w, h, radius, 255, 255, 255, (Uint8)(255 * alpha * (0.08f + 0.08f * wave)), 0, 1, 1);
+}
+
 /* darkens where text sits: the bottom (dock), the left (titles), the top (top bar) */
 static void draw_scrims(Uint8 alpha)
 {
@@ -2895,21 +3061,11 @@ static void draw_big_tile(App *a, float x, float y, float w, float h, float radi
 /* The Top Shelf is a picture (artwork, or the app's tile large on a glow, under
  * scrims) and content (titles, the Continue Watching rail). The picture stays
  * behind the grid when you scroll down, blurred; the content scrolls away. */
-/* The Top Shelf picture: the app's artwork, else a cover made from its icon. */
-static void draw_app_cover(App *a, Uint8 alpha)
-{
-    if (!a || !alpha) return;
-    Uint8 r, g, b;
-    app_color(a, &r, &g, &b);
-    if (a->art_tex) r_cover(a->art_tex, 0, 0, W, H, alpha, 0);
-    else if (a->cover_tex) r_cover(a->cover_tex, 0, 0, W, H, alpha, 0);
-    else r_shape(0, 0, W, H, 0, r, g, b, (Uint8)(alpha * 0.25f), 0, 1, 1);
-}
 
 /* Apps without artwork also get their tile, large, on the right. */
 static void draw_app_bigtile(App *a, Uint8 alpha)
 {
-    if (!a || !alpha || a->art_tex || !a->logo_tex) return;
+    if (!a || !alpha || !a->logo_tex) return;
     /* it leaves with the shelf's content, so it never ghosts behind the grid */
     float leave = fmaxf(0, 1 - 2.5f * S.scrolled);
     if (leave <= 0) return;
@@ -2939,27 +3095,37 @@ static void draw_app_text(App *a, Uint8 alpha, float dy)
         sw = S.top_hw[S.top_index];
         sh = S.top_hh[S.top_index];
     }
-    draw_text(sub, sw, sh, LEFT, 340 + a->bh + 10 + dy, (Uint8)(alpha * 0.92f));
+    draw_text(sub, sw, sh, LEFT, 340 + a->bh + 10 + dy,
+              (Uint8)(alpha * 0.92f * (1 - fminf(fmaxf(S.cc.t, 0), 1)))); /* the Control Center says what OK does */
 }
 
-static void draw_rail_art(Uint8 alpha)
+static void draw_pic(Pic p, Uint8 alpha)
 {
-    RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
-    if (!cur || !alpha) return;
-    RailItem *prev = S.rail_art_prev >= 0 && S.rail_art_prev < S.nrail ? &S.rail[S.rail_art_prev] : NULL;
-    Tex *pt = prev ? prev->bg_tex : NULL;
-    if (pt) r_cover(pt, 0, 0, W, H, alpha, 0);
-    else draw_app_cover(shelf_app(), alpha); /* until the first picture is in: the app's own */
-    r_cover(cur->bg_tex, 0, 0, W, H, (Uint8)(alpha * S.rail_art_a), 0);
-    draw_scrims(alpha);
+    if (!alpha) return;
+    App *a = p.kind == PIC_ART || p.kind == PIC_GLOW || p.kind == PIC_COVER ? &S.apps[p.i] : NULL;
+    if (p.kind == PIC_ART) r_cover(a->art_tex, 0, 0, W, H, alpha, 0);
+    else if (a && a->cover_tex) r_cover(a->cover_tex, 0, 0, W, H, alpha, 0);
+    else if (a) {
+        Uint8 r, g, b;
+        app_color(a, &r, &g, &b);
+        r_shape(0, 0, W, H, 0, r, g, b, (Uint8)(alpha * 0.25f), 0, 1, 1);
+    } else if (p.kind == PIC_RAIL && p.i < S.nrail) r_cover(S.rail[p.i].bg_tex, 0, 0, W, H, alpha, 0);
+    else if (p.kind == PIC_HELD) r_cover(S.pic_held[p.i], 0, 0, W, H, alpha, 0);
+}
+
+/* covers what's under it (a plain colour glow doesn't) */
+static int pic_opaque(Pic p)
+{
+    return p.kind == PIC_ART || p.kind == PIC_RAIL || p.kind == PIC_HELD || ((p.kind == PIC_GLOW || p.kind == PIC_COVER) && S.apps[p.i].cover_tex);
 }
 
 /* The carousel's title, like tvOS's Top Shelf: a heading, the title's logo (or its
  * name), what it is, how far you are, where the app opens, and dots for where it
- * is among the others (brighter while you step through them). */
-static void draw_rail_content(Uint8 alpha, int backdrop)
+ * is among the others (brighter while you step through them). title: how far the
+ * title itself is in (0..1), apart from the rest; skel: placeholders where the next
+ * one goes, while it loads. */
+static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float skel, int backdrop)
 {
-    RailItem *cur = S.rail_index < S.nrail ? &S.rail[S.rail_index] : NULL;
     if (!cur || !alpha) return;
     ensure_rail_texts(cur);
     /* the heading mirrors the clock: same height and top, on the dock's left edge as the
@@ -2971,8 +3137,12 @@ static void draw_rail_content(Uint8 alpha, int backdrop)
     float k = logo ? fminf(fminf(560.0f / cur->lw, 190.0f / cur->lh), 1.6f) : 0;
     float title_h = logo ? cur->lh * k + 18 : cur->th + 8;
     float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + S.rail_hint_h + (n > 1 ? 32 : 0);
-    Uint8 ta = (Uint8)(alpha * fminf(1, 0.25f + S.rail_art_a)); /* the title comes in with its picture */
+    Uint8 ta = (Uint8)(alpha * title);
     float y = DOCK_Y - 64 - total;
+    if (skel > 0.004f) { /* bottom-aligned with the title, then the line under it */
+        draw_skeleton(LEFT, y + title_h - 82, 400, 64, 14, alpha / 255.0f * skel);
+        draw_skeleton(LEFT, y + title_h + (cur->mh - 20) / 2, 250, 20, 10, alpha / 255.0f * skel);
+    }
     if (logo) {
         float lw = cur->lw * k, lh = cur->lh * k;
         r_image(cur->logo_tex, LEFT, y, lw, lh, 255, 255, 255, ta, 0);
@@ -2989,8 +3159,9 @@ static void draw_rail_content(Uint8 alpha, int backdrop)
         r_shape(LEFT, y, bw * cur->progress, bh, bh / 2, 255, 255, 255, ta, 0, 1, 1);
         y += bh + 16;
     }
+    float cc = 1 - fminf(fmaxf(S.cc.t, 0), 1); /* the Control Center, open, says what OK does */
     if (S.zone == ZONE_RAIL && S.rail_browse) draw_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(alpha * 0.85f));
-    else draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(alpha * 0.7f)); /* it can't resume from here */
+    else draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(alpha * 0.7f * cc)); /* it can't resume from here */
     y += S.rail_hint_h + 22;
     int browsing = S.zone == ZONE_RAIL;
     for (int i = 0; n > 1 && i < n; i++) {
@@ -3000,48 +3171,67 @@ static void draw_rail_content(Uint8 alpha, int backdrop)
     }
 }
 
-/* the shelf shows the carousel when its app was the last top-row app focused,
- * even after focus moves on below the dock */
-static int shelf_rail(void)
-{
-    return rail_active() || (S.focus >= COLS && rail_for(item_app(S.shelf_cur)));
-}
-
+/* The new picture fades in over the one on show, which stays at full strength underneath
+ * (two half-faded pictures let the dark background show through), and the scrims are
+ * drawn once over both. */
 static void draw_shelf_art(Uint8 alpha)
 {
     if (!alpha) return;
-    if (shelf_rail()) {
-        draw_rail_art(alpha);
-    } else {
-        /* the new picture fades in over the old one, which stays at full strength
-         * underneath (two half-faded pictures let the dark background show through),
-         * and the scrim is drawn once over both */
-        App *pa = item_app(S.shelf_prev), *ca = item_app(S.shelf_cur);
-        float t = S.shelf_a;
-        if (t < 1) draw_app_cover(pa, alpha);
-        draw_app_cover(ca, (Uint8)(alpha * t));
-        draw_scrims(alpha);
-        if (t < 1) draw_app_bigtile(pa, (Uint8)(alpha * (1 - smooth01(0, 0.5f, t))));
-        draw_app_bigtile(ca, (Uint8)(alpha * smooth01(0.3f, 1, t)));
-    }
+    float t = S.pic_a;
+    if (t < 1) draw_pic(S.pic_under, pic_opaque(S.pic_top) ? alpha : (Uint8)(alpha * (1 - t)));
+    draw_pic(S.pic_top, (Uint8)(alpha * t));
+    draw_scrims(alpha);
+    if (t < 1 && S.pic_under.kind == PIC_GLOW) draw_app_bigtile(&S.apps[S.pic_under.i], (Uint8)(alpha * (1 - smooth01(0, 0.5f, t))));
+    if (S.pic_top.kind == PIC_GLOW) draw_app_bigtile(&S.apps[S.pic_top.i], (Uint8)(alpha * smooth01(0.3f, 1, t)));
 }
 
+/* a page's text: its app's name, or its carousel's title (-2: none) */
+static void draw_page(int item, int rail, Uint8 alpha, float title, float skel, float dy, int backdrop)
+{
+    App *a = item_app(item);
+    if (!a || !alpha) return;
+    if (rail == -1) draw_app_text(a, alpha, dy);
+    else if (rail >= 0 && rail < S.nrail && rail_for(a)) draw_rail_content(&S.rail[rail], alpha, title, skel, backdrop);
+}
+
+/* The Top Shelf while a carousel loads: placeholders where its heading and title go. */
+static void draw_shelf_skeleton(float a, int backdrop)
+{
+    panel(backdrop, DOCK_X, TOP_Y, 300, BAR, BAR / 2, 1, 0, a);
+    draw_skeleton(DOCK_X + 24, TOP_Y + (BAR - 14) / 2.0f, 220, 14, 7, a);
+    float y = DOCK_Y - 64 - 170;
+    draw_skeleton(LEFT, y, 400, 64, 14, a);
+    draw_skeleton(LEFT, y + 84, 250, 20, 10, a);
+    draw_skeleton(LEFT, y + 122, 330, 18, 9, a);
+}
+
+/* Stepping through a carousel, only the title changes, coming in with its picture.
+ * Otherwise one page at a time: the old one leaves quickly, then the new one rises in.
+ * While the next page loads, the text on show leaves (stepping through: the title). */
 static void draw_shelf_content(Uint8 alpha, int backdrop)
 {
     if (!alpha) return;
-    if (rail_active()) {
-        draw_rail_content(alpha, backdrop);
-    } else {
-        /* one title at a time: the old one leaves quickly, then the new one rises in */
-        float t = S.shelf_a, in = smooth01(0.35f, 1, t);
-        if (t < 0.4f) draw_app_text(item_app(S.shelf_prev), (Uint8)(alpha * (1 - smooth01(0, 0.4f, t))), 0);
-        draw_app_text(item_app(S.shelf_cur), (Uint8)(alpha * in), S.reduce_motion ? 0 : 14 * (1 - in));
+    int stepping = S.want_app == S.page_app && S.want_rail >= 0 && S.page_rail >= 0;
+    float stay = 1 - S.page_leave;
+    float skel = S.skel_a; /* the next page is taking a while */
+    if (skel > 0.004f && !stepping) draw_shelf_skeleton(alpha / 255.0f * skel, backdrop);
+    if (S.page_step) {
+        draw_page(S.page_app, S.page_rail, stepping ? alpha : (Uint8)(alpha * stay),
+                  fminf(1, 0.25f + S.page_a) * (stepping ? stay : 1), stepping ? skel : 0, 0, backdrop);
+        return;
     }
+    float t = S.page_a, in = smooth01(0.35f, 1, t);
+    if (t < 0.4f && S.prev_vis > 0)
+        draw_page(S.prev_app, S.prev_rail, (Uint8)(alpha * S.prev_vis * (1 - smooth01(0, 0.4f, t))), 1, 0, 0, backdrop);
+    draw_page(S.page_app, S.page_rail, (Uint8)(alpha * in * (stepping ? 1 : stay)), stepping ? stay : 1, stepping ? skel : 0,
+              S.reduce_motion ? 0 : 14 * (1 - in), backdrop);
 }
 
-/* The clock capsule, like tvOS 26's: the time, and at its end a circle (Settings,
- * where tvOS shows the profile picture). The whole capsule is the button: focused,
- * it lifts and turns into a white platter. */
+/* The clock capsule, like tvOS 26's: the time, and at its end a circle (the Control
+ * Center's glyph, where tvOS shows the profile picture). The whole capsule is the
+ * button: focused, it lifts and turns into a white platter. With the Control Center
+ * open, it's tvOS's header: the capsule's glass goes, the time stays on its own, and
+ * the circle grows into the selected tab, solid white with the glyph dark. */
 static void draw_clock(Uint8 alpha, int backdrop)
 {
     if (!alpha) return;
@@ -3053,19 +3243,20 @@ static void draw_clock(Uint8 alpha, int backdrop)
         cx += dx * k;
         cy += dy * k;
     }
-    float x = cx - pw / 2, y = cy - ph / 2;
+    float x = cx - pw / 2, y = cy - ph / 2, o = fminf(fmaxf(S.cc.t, 0), 1) * (1 - g);
     if (k > 0.01f && !backdrop) r_shadow(x, y, pw, ph, ph / 2, 16, 6, 0.35f * k * alpha / 255.0f);
-    panel(backdrop, x, y, pw, ph, ph / 2, 1, k, alpha / 255.0f);
+    panel(backdrop, x, y, pw, ph, ph / 2, 1, k, alpha / 255.0f * (1 - o));
     if (g > 0.01f) /* focused: an opaque white platter with dark contents, like the sheet buttons */
         r_shape(x, y, pw, ph, ph / 2, 245, 245, 247, (Uint8)(alpha * g), 0, 1, 1);
     Uint8 tc = (Uint8)(255 - 227 * g); /* the time stays its own size, so it stays sharp */
     r_image(S.clock_tex, x + 24 * sc, cy - S.clock_h / 2.0f, S.clock_w, S.clock_h, tc, tc, (Uint8)(255 - 225 * g),
             (Uint8)(alpha * (TEXT_STATIC + (255 - TEXT_STATIC) * g) / 255), 0);
-    float d = TOP_DOT * sc, ox = x + pw - 5 * sc - d, oy = cy - d / 2;
-    float sel = fminf(fmaxf(S.cc.t, 0), 1) * (1 - g); /* the Control Center is open: its tab, selected, like tvOS's */
-    r_shape(ox, oy, d, d, d / 2, 255, 255, 255, (Uint8)(alpha * (0.16f * (1 - g) * (1 - sel) + 0.96f * sel)), 0, 1, 1);
+    float dc = x + pw - 5 * sc - TOP_DOT * sc / 2; /* the circle's centre: it grows around it */
+    float d = (TOP_DOT + (BAR + 2 - TOP_DOT) * o) * sc, ox = dc - d / 2, oy = cy - d / 2;
+    if (o > 0.01f && !backdrop) r_shadow(ox, oy, d, d, d / 2, 14, 5, 0.3f * o * alpha / 255.0f);
+    r_shape(ox, oy, d, d, d / 2, 255, 255, 255, (Uint8)(alpha * (0.16f * (1 - g) * (1 - o) + 0.97f * o)), 0, 1, 1);
     if (g > 0.01f) r_shape(ox, oy, d, d, d / 2, 0, 0, 0, (Uint8)(alpha * 0.07f * g), 0, 1, 1);
-    float is = S.top_w[TOP_SETTINGS] * sc, gk = fmaxf(g, sel);
+    float is = S.top_w[TOP_SETTINGS] * sc * (1 + 0.2f * o), gk = fmaxf(g, o);
     Uint8 gc = (Uint8)(255 - 227 * gk);
     r_image(S.top_tex[TOP_SETTINGS], ox + (d - is) / 2, oy + (d - is) / 2, is, is, gc, gc, (Uint8)(255 - 225 * gk),
             (Uint8)(alpha * (0.85f + 0.15f * gk)), 0);
@@ -3103,7 +3294,10 @@ static void draw_tile(int i, int backdrop)
     if (a && a->logo_tex) {
         float lw = a->logo_w * sc, lh = a->logo_h * sc;
         r_image(a->logo_tex, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh, 255, 255, 255, 255, a->logo_r * sc);
-    } else if (a) { /* its icon isn't in yet: its name, kept inside the tile */
+    } else if (a && a->icon_state == 1) { /* its icon is on its way: a placeholder */
+        float bw = w * 0.46f, bh = h * 0.15f;
+        draw_skeleton(x + (w - bw) / 2, y + (h - bh) / 2, bw, bh, bh / 2, 1);
+    } else if (a) { /* no icon: its name, kept inside the tile */
         ensure_label(a);
         if (a->label) {
             float k = fminf(1, (w - 32) / a->lw), lw = a->lw * k, lh = a->lh * k;
@@ -3172,6 +3366,8 @@ static void draw_scene(int backdrop)
     }
     int dimmed = !backdrop && S.dim > 0.004f, top = S.zone == ZONE_TOP;
     if (!(dimmed && top)) draw_clock((Uint8)(255 * (1 - S.scrolled)), backdrop);
+    if (apps_loading()) /* the apps are on their way: placeholders in the dock */
+        for (int c = 0; c < COLS; c++) draw_skeleton(LEFT + c * (TILE_W + GAP_X), GRID_TOP + S.scroll, TILE_W, TILE_H, TILE_R, 1);
     for (int i = 0; i < S.nitems; i++)
         if (i != S.focus) draw_tile(i, backdrop);
     if (dimmed) r_fill(0, 0, 0, (Uint8)(S.dim * 115)); /* OLED: idle dims all but what has focus */
@@ -3393,7 +3589,8 @@ static void draw_control_center(void)
             r_image(S.cc.title[i], cx - S.cc.tw[i] / 2.0f, ry + rh - 26 * sc - S.cc.th[i], S.cc.tw[i], S.cc.th[i], c, c, c, ca, 0);
         } else if (CC_TILE[i].w == 2) { /* the icon, then the name over its value */
             float is = 34 * sc, ix = rx + 22 * sc, tx = ix + is + 14 * sc;
-            r_image(S.cc.icon[i], ix, cy - is / 2, is, is, c, c, c, ca, 0);
+            Tex *ic = i == CC_NETWORK && S.cc.net == 1 ? S.cc.wired : S.cc.icon[i];
+            r_image(ic, ix, cy - is / 2, is, is, c, c, c, i == CC_NETWORK && S.cc.net == 2 ? (Uint8)(ca * 0.5f) : ca, 0);
             float vh = S.cc.value[i] ? S.cc.vh[i] : 0, ty = cy - (S.cc.th[i] + vh) / 2;
             r_image(S.cc.title[i], tx, ty, S.cc.tw[i], S.cc.th[i], c, c, c, ca, 0);
             if (S.cc.value[i]) r_image(S.cc.value[i], tx, ty + S.cc.th[i], S.cc.vw[i], S.cc.vh[i], c, c, c, (Uint8)(ca * 0.72f), 0);
@@ -3401,13 +3598,6 @@ static void draw_control_center(void)
             float is = 40 * sc;
             r_image(S.cc.icon[i], cx - is / 2, cy - is / 2, is, is, c, c, c, ca, 0);
         }
-    }
-    int f = S.cc.index;
-    if (S.cc.open && CC_TILE[f].w == 1) {
-        float x, y, w, h;
-        cc_rect(f, &x, &y, &w, &h);
-        draw_text(S.cc.title[f], S.cc.tw[f], S.cc.th[f], x + (w - S.cc.tw[f]) / 2, y + h + 14,
-                  (Uint8)(TEXT_STATIC * fminf(fmaxf(S.cc.s[f], 0), 1)));
     }
 }
 
@@ -3418,11 +3608,20 @@ static void draw_switcher(void)
     r_backdrop_image(1, (Uint8)(255 * t)); /* the home screen behind, blurred */
     r_fill(0, 0, 0, (Uint8)(110 * t));
     Uint8 ca = (Uint8)(255 * t);
+    if (!S.recents.n && S.recents.loading) { /* placeholders where the cards go */
+        for (int k = -1; k <= 1; k++) {
+            float sc = k ? 0.84f : 1, w = SW_W * sc, h = SW_H * sc, x = W / 2.0f + k * SW_PITCH - w / 2;
+            float y = SW_CY + 40 * (1 - t) - h / 2, a = t * (k ? 0.75f : 1);
+            draw_skeleton(x, y, w, h, TILE_R * w / TILE_W, a);
+            draw_skeleton(x + 4, y - 44, 170 * sc, 22, 11, a);
+        }
+        return;
+    }
     if (!S.recents.n) {
-        static Tex *cap[3];
-        static int cw[3], ch[3];
-        static const char *const text[3] = { "Loading\xE2\x80\xA6", "No apps running", "Couldn\xE2\x80\x99t load recent apps" };
-        int which = S.recents.loading ? 0 : S.recents.failed ? 2 : 1;
+        static Tex *cap[2];
+        static int cw[2], ch[2];
+        static const char *const text[2] = { "No apps running", "Couldn\xE2\x80\x99t load recent apps" };
+        int which = S.recents.failed;
         if (!cap[which]) cap[which] = text_render(S.f_medium, 30, text[which], 0, &cw[which], &ch[which]);
         draw_text(cap[which], cw[which], ch[which], (W - cw[which]) / 2.0f, SW_CY - ch[which] / 2.0f, (Uint8)(ca * 0.8f));
         return;
@@ -3534,6 +3733,7 @@ static int load_assets(void)
         S.cc.icon[i] = gfx_icon(CC_TILE[i].icon, i == CC_POWER ? 128 : 64);
         S.cc.title[i] = text_render(S.f_semi, i == CC_POWER ? 24 : 21, CC_TILE[i].title, 220, &S.cc.tw[i], &S.cc.th[i]);
     }
+    S.cc.wired = gfx_icon(ICON_ETHERNET, 64);
     S.chevron = gfx_icon(ICON_CHEVRON, 64);
     S.top_w[TOP_SETTINGS] = S.top_h[TOP_SETTINGS] = 30;
     return 1;
@@ -3618,12 +3818,14 @@ static int next_wake_ms(void)
     Uint32 dim_ms = S.idle_dim_ms ? S.idle_dim_ms : IDLE_DIM_MS, off_ms = S.idle_off_ms ? S.idle_off_ms : IDLE_OFF_MS;
     int visible = !S.offscreen && S.idle_stage < 2;
     Uint32 turn = visible && S.rail_next ? (S.rail_next - 2500 > now ? S.rail_next - 2500 : S.rail_next) : 0;
-    Uint32 due[10] = { S.setup_retry, S.next_retry, S.trakt_poll, S.media_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0, turn,
+    int waiting = visible && (S.want_app != S.page_app || S.want_rail != S.page_rail); /* the Top Shelf's next page */
+    Uint32 due[11] = { S.setup_retry, S.next_retry, S.trakt_poll, S.media_poll, S.ok_down && !S.ok_long ? S.ok_down + LONG_PRESS_MS : 0, turn,
                       S.toast_tex && S.toast_until > now ? S.toast_until : 0,
                       S.offscreen || S.idle_stage >= 2 ? 0 : idle_due(dim_ms, off_ms),
-                      snd_active() ? now + 1000 : 0, visible ? now + (60000 - now % 60000) : 0 };
+                      snd_active() ? now + 1000 : 0, visible ? now + (60000 - now % 60000) : 0,
+                      waiting ? S.want_at + (now - S.want_at < SKEL_MS ? SKEL_MS : PAGE_WAIT_MS) : 0 };
     int wait = -1;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 11; i++) {
         if (!due[i]) continue;
         int d = (Sint32)(due[i] - now) > 0 ? (int)(due[i] - now) : 0;
         if (wait < 0 || d < wait) wait = d;
@@ -3644,13 +3846,14 @@ static void release_images(void)
     App *keep = item_app(S.shelf_cur);
     for (int i = 0; i < S.napps; i++) {
         App *a = &S.apps[i];
-        if (a == keep || !a->art_tex) continue;
+        int shown = (S.pic_under.kind == PIC_ART && S.pic_under.i == i) || (S.pic_top.kind == PIC_ART && S.pic_top.i == i);
+        if (a == keep || shown || !a->art_tex) continue;
         tex_free(&a->art_tex);
         a->art_state = 0;
     }
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
-        if (i == S.rail_index) continue;
+        if (i == S.rail_index || i == S.page_rail || pic_rail(i)) continue;
         if (it->bg_tex) tex_free(&it->bg_tex), it->bg_state = 0;
         if (it->logo_tex) tex_free(&it->logo_tex), it->logo_state = 0;
     }
@@ -3739,7 +3942,8 @@ int main(int argc, char **argv)
         SDL_GetWindowSize(S.win, &ww, &wh);
         log_remote("native up: renderer=gles2 drawable=%dx%d window=%dx%d idle=%s", dw, dh, ww, wh, S.wl_fd >= 0 ? "poll" : "sdl");
     }
-    S.shelf_cur = S.shelf_prev = S.rail_art_cur = S.rail_art_prev = -1;
+    S.shelf_cur = S.page_app = S.prev_app = S.want_app = -1;
+    S.page_rail = S.prev_rail = S.want_rail = -2;
     S.feat_req = -1;
     S.last_input = SDL_GetTicks();
     S.orbit_k = -1;

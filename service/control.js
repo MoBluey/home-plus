@@ -46,7 +46,7 @@ module.exports = function createControl({ luna, log }) {
     const outputs = ['tv_speaker'].concat(inp.arc ? ['external_arc'] : []);
     if (output && !outputs.includes(output)) outputs.push(output);
     return {
-      network: wifi ? { kind: 'wifi', name: wifi } : { kind: wired ? 'wired' : 'none', name: wired ? 'Ethernet' : 'Not Connected' },
+      network: wifi ? { kind: 'wifi', name: wifi } : { kind: wired ? 'wired' : 'none', name: wired ? 'Connected' : 'Not Connected' },
       sound: { output: output || '', label: OUTPUT_NAMES[output] || output || '', outputs },
       sleepTimer: sleep || 'off',
       inputs: inp.list
@@ -55,32 +55,38 @@ module.exports = function createControl({ luna, log }) {
 
   const next = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
 
+  // webOS answers a refusal with returnValue false: that's an error, so the launcher says so
+  function ok(r) {
+    if (!r || r.returnValue === false) throw new Error((r && r.errorText) || "the TV didn't answer");
+    return r;
+  }
+
   // action: powerOff, screenOff, sound (an output, or "next"), sleepTimer (minutes, "off" or
   // "next"), input (an input's app id)
   async function act(action, value) {
     switch (action) {
       case 'powerOff':
-        return luna(`${POWER}/powerOff`, { reason: 'remoteKey' });
+        return ok(await luna(`${POWER}/powerOff`, { reason: 'remoteKey' }));
       case 'screenOff': /* "active": any key brings the picture back ("passive" can't) */
-        return luna(`${POWER}/turnOffScreen`, { standbyMode: 'active' });
+        return ok(await luna(`${POWER}/turnOffScreen`, { standbyMode: 'active' }));
       case 'sound': {
         const st = await state();
         const out = value === 'next' ? next(st.sound.outputs, st.sound.output) : String(value || '');
         if (!OUTPUT_NAMES[out]) throw new Error(`not a sound output: ${out}`);
-        await luna(`${SETTINGS}/setSystemSettings`, { category: 'sound', settings: { soundOutput: out } });
+        ok(await luna(`${SETTINGS}/setSystemSettings`, { category: 'sound', settings: { soundOutput: out } }));
         return { soundOutput: out };
       }
       case 'sleepTimer': {
         const cur = (await setting('time', 'sleepTimer')) || 'off';
         const v = value === 'next' ? next(SLEEP, cur) : String(value || '');
         if (!SLEEP.includes(v)) throw new Error(`the sleep timer is off or ${SLEEP.slice(1).join(', ')} minutes`);
-        await luna(`${SETTINGS}/setSystemSettings`, { category: 'time', settings: { sleepTimer: v } });
+        ok(await luna(`${SETTINGS}/setSystemSettings`, { category: 'time', settings: { sleepTimer: v } }));
         return { sleepTimer: v };
       }
       case 'input': {
         const inp = await inputs();
         if (!inp.list.some((d) => d.appId === value)) throw new Error(`not an input: ${value}`);
-        return luna('luna://com.webos.applicationManager/launch', { id: value });
+        return ok(await luna('luna://com.webos.applicationManager/launch', { id: value }));
       }
       default:
         throw new Error(`unknown action: ${action}`);

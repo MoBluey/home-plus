@@ -119,6 +119,20 @@ appears in your own SSH command line** — it kills the session. Use:
   tested, cold and warm). Its files are encrypted LG Store content; don't try to work around
   that. Continue Watching opens Stremio and the service shows a system toast
   (`com.webos.notification/createToast`) naming the title.
+- webOS runs apps nobody opened (preloaded, or started again in the background after a close), so
+  `applicationManager/running` isn't Recents. The service lists only running apps that have been in
+  front (`lastUsed`, kept in `/tmp/homeplus-recents.json`); closing or quitting forgets an app.
+- LG's Settings app (`com.palm.app.settings`) opens on Picture without params and has no network
+  page. Network is `com.webos.app.firstuse-overlay` with `{"target":"network"}` (what LG's Quick
+  Settings use); Settings pages are `{"target":"picture"|"sound"|"general"|...}`.
+- The remote's Settings key is lginputhook code 139. Its actions are pass, ignore, replace, exec
+  (`/bin/sh`, root) and launch; none is conditional and exec/launch swallow the key. LG's Quick
+  Settings open with `systemUIManager/launch {"appId":"com.webos.app.quicksettings"}`.
+- `listApps` gives `removable` and `systemApp`. LG's home deletes store apps with
+  `applicationManager/removeLaunchPoint {"launchPointId":"<id>_default"}`; dev apps use
+  `appInstallService/dev/remove`.
+- Picture mode is `settingsservice` `picture`/`pictureMode`, read and set without a `dimension` for
+  the current input and range; `getSystemSettingDesc` lists the modes (`active && visible`).
 
 ## Open items
 - Confirm the colour keys on a remote that has them.

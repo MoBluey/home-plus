@@ -16,7 +16,7 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with C
 - **Liquid Glass:** the dock, clock, buttons and menus bend the light at their edges and blur only what sits behind text. Focused tiles lift, sway and catch a moving light. The Magic Remote pointer steers that light.
 - **Motion and sound:** everything moves on springs, and menus grow out of the button that opened them. A soft tick plays when focus moves; **Settings → Sounds** turns it off.
 - **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. It turns to the next title every 10 seconds (or stays still: **Settings → Display & OLED → Top Shelf**); press **Up**, then **Left** and **Right**, to step through them. You sign in with a code or a QR code, so no password is typed on the TV.
-- **Recents:** an App Switcher for open apps, most recent first. Open them, close them one by one, or close them all. Press **Back** on the first app to open it.
+- **Recents:** an App Switcher for the apps you opened that are still running, most recent first. Apps webOS runs by itself (preloaded, or started again in the background) stay out. Open them, close them one by one, or close them all. Press **Back** on the first app to open it.
 - **Your layout:** hold **OK** on an app to move it, move it to the front or hide it. Hidden apps collect in a "Hidden" tile at the end.
 - **Home button:** optionally, the Home button opens Home+ instead of LG's home screen.
 - **OLED care:** the picture drifts by a pixel every minute, and an idle Home+ dims, then goes black.
@@ -68,9 +68,9 @@ From the top row, press **Up** to reach the clock at the top right, as on tvOS; 
 
 ![Settings](docs/screenshots/settings.jpg)
 
-![Control Center](preview/native-control-center.png)
+![Control Center](docs/screenshots/control-center.jpg)
 
-**Control Center**, like tvOS's, opens from the clock: glass tiles under it for **Power Off**, **Wi-Fi** (your network; OK opens LG's settings), **Screen Off** (sound keeps playing; any key brings the picture back), **Sound** (TV speakers or HDMI ARC; OK switches), **Sleep Timer** (OK steps through LG's 10 to 240 minutes), and round buttons for **Inputs** (Live TV and the HDMI ports by LG's names, with what's plugged in, like "Soundbar · PS5"), **Recents**, **Accessibility** and **Settings**. Each action is also a service method, so anything that can send a luna call (a script, a home automation, a key-mapping tool) can use it:
+**Control Center**, like tvOS's, opens from the clock: glass tiles under it for **Power Off**, **Wi-Fi** (your network; OK opens LG's network settings), **Screen Off** (sound keeps playing; any key brings the picture back), **Sound** (OK switches between TV speakers and HDMI ARC when the TV has an ARC device, plus the current output if it's another one: not a full picker), **Sleep Timer** (OK steps through LG's 10 to 240 minutes), and round buttons for **Inputs** (Live TV and the HDMI ports by LG's names, with what's plugged in, like "Soundbar · PS5"), **Recents**, **Accessibility** and **Settings**. Each action is also a service method, so anything that can send a luna call (a script, a home automation, a key-mapping tool) can use it:
 
 ```sh
 luna-send -n 1 luna://com.github.pmiraka.homeplus.service/control '{"action":"screenOff"}'
@@ -221,7 +221,7 @@ If you added the lginputhook keybind, delete it in the LG Input Hook app. If the
 
 - **What Home+ connects to:** only the services you sign in to: Stremio's and Trakt's APIs, `plex.tv` and your Plex server, your Jellyfin server, and TMDB (`api.themoviedb.org`, `image.tmdb.org`) if you add a key. Stremio artwork comes from `images.metahub.space`; Jellyfin and Plex artwork comes from your server. To find a Jellyfin server, Home+ sends one broadcast on your local network (UDP port 7359), only when you start a Jellyfin sign-in.
 - **Signing out:** Settings → Accounts signs out of Stremio and ends Home+'s session on your Jellyfin server. Plex lists Home+ under your account's **Authorized Devices**; remove it there to revoke its access.
-- **What's stored:** sign-ins, your layout and preferences, in `/var/lib/homeplus/config.json` (readable only by root).
+- **What's stored:** sign-ins, your layout and preferences, in `/var/lib/homeplus/config.json`, and the Top Shelf's pictures, so they show at once the next time, in `/var/lib/homeplus/images` (up to 64 MB). Both are readable only by root, and **Remove Home+** deletes them.
 - **The local API:** the service runs as root and answers only on `127.0.0.1`. Every request needs a token the service writes into Home+'s app folder, and requests from web pages and other hosts are refused.
 
 ## Building from source

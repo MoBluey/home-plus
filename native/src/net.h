@@ -45,6 +45,11 @@ void net_post(const char *path, const char *body, int tag);
 /* fit_w x fit_h: the largest the image is ever drawn (scaled to cover it). Bigger images are
  * shrunk to that when decoded, since GPU memory, not the file, is what they cost. 0 = as is. */
 void net_get_image(const char *path, int tag, int index, int generation, int sample, int fit_w, int fit_h);
+/* Forgets image requests that haven't started: tag's for index (any index when < 0) and
+ * generation. Returns how many were dropped (they never answer). */
+int net_drop(int tag, int index, int generation);
+/* Moves a picture that's still waiting ahead of the other pictures: it's wanted now. */
+void net_bump(int tag, int index, int generation);
 /* Starts the service via luna-send (the HTTP server only runs while it's alive). */
 void net_wake_service(void);
 /* One luna-send call; the result's body is luna-send's output and status is 200

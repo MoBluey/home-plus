@@ -98,11 +98,11 @@ static int icon_inside(int kind, float x, float y)
     }
     case ICON_CHEVRON: /* tvOS's: a wide, shallow caret with round ends */
         return sd_segment(x, y, -0.42f, 0.08f, 0.0f, -0.08f) < 0.04f || sd_segment(x, y, 0.0f, -0.08f, 0.42f, 0.08f) < 0.04f;
-    case ICON_CONTROLS: /* Control Center: two switches, one on (knob right), one off (knob left) */
-        if (in_ring_rrect(x, y, 0, -0.15f, 0.34f, 0.12f, 0.12f, T)) return 1;
-        if (in_ring_rrect(x, y, 0, 0.15f, 0.34f, 0.12f, 0.12f, T)) return 1;
-        return (x + 0.19f) * (x + 0.19f) + (y - 0.15f) * (y - 0.15f) < 0.075f * 0.075f ||
-               (x - 0.19f) * (x - 0.19f) + (y + 0.15f) * (y + 0.15f) < 0.075f * 0.075f;
+    case ICON_CONTROLS: { /* Apple's Control Center glyph: two filled switches, knobs cut out, left and right */
+        float py = y < 0 ? -0.15f : 0.15f, kx = y < 0 ? -0.2f : 0.2f;
+        if (!in_rrect(x, y, 0, py, 0.34f, 0.12f, 0.12f)) return 0;
+        return (x - kx) * (x - kx) + (y - py) * (y - py) > 0.085f * 0.085f;
+    }
     case ICON_POWER: { /* a ring open at the top, and a bar into the gap */
         float rr = sqrtf(x * x + y * y), up = atan2f(x, -y);
         return (fabsf(rr - 0.31f) < T / 2 && fabsf(up) > 0.62f) || sd_segment(x, y, 0, -0.42f, 0, -0.06f) < T / 2;
@@ -133,6 +133,11 @@ static int icon_inside(int kind, float x, float y)
         if (in_ring_rrect(x, y, 0.1f, 0, 0.3f, 0.24f, 0.06f, T) && !(x < -0.1f && fabsf(y) < 0.12f)) return 1;
         return sd_segment(x, y, -0.44f, 0, 0.1f, 0) < T / 2 || sd_segment(x, y, 0.1f, 0, -0.03f, -0.13f) < T / 2 ||
                sd_segment(x, y, 0.1f, 0, -0.03f, 0.13f) < T / 2;
+    case ICON_ETHERNET: /* a network socket: its outline, the latch on top, three pins */
+        if (in_ring_rrect(x, y, 0, 0.04f, 0.36f, 0.28f, 0.06f, T)) return 1;
+        if (x >= -0.13f && x <= 0.13f && y >= -0.24f && y <= -0.12f) return 1;
+        return sd_segment(x, y, -0.13f, 0.02f, -0.13f, 0.16f) < T / 2 || sd_segment(x, y, 0, 0.02f, 0, 0.16f) < T / 2 ||
+               sd_segment(x, y, 0.13f, 0.02f, 0.13f, 0.16f) < T / 2;
     case ICON_ACCESS: { /* the accessibility figure in a ring */
         float rr = sqrtf(x * x + y * y);
         if (fabsf(rr - 0.42f) < T / 2) return 1;

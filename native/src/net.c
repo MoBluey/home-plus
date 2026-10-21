@@ -264,11 +264,16 @@ static SDL_Thread *threads[WORKERS];
 static int running;
 Uint32 net_event = (Uint32)-1;
 
+/* Queues a job. Pictures wait behind everything else (a slow download shouldn't hold up
+ * the service's answers), in the order they were asked for. */
 static void push_job(Job *j)
 {
     SDL_LockMutex(lock);
-    if (jobs_tail) jobs_tail->next = j; else jobs_head = j;
-    jobs_tail = j;
+    Job **p = &jobs_head;
+    while (*p && (j->kind == JOB_IMAGE || (*p)->kind != JOB_IMAGE)) p = &(*p)->next;
+    j->next = *p;
+    *p = j;
+    if (!j->next) jobs_tail = j;
     SDL_CondSignal(wake);
     SDL_UnlockMutex(lock);
 }
@@ -437,6 +442,46 @@ void net_get_image(const char *path, int tag, int index, int generation, int sam
     j->fit_w = fit_w;
     j->fit_h = fit_h;
     push_job(j);
+}
+
+void net_bump(int tag, int index, int generation)
+{
+    SDL_LockMutex(lock);
+    Job **first = &jobs_head, *prev = NULL; /* first: where the pictures start */
+    while (*first && (*first)->kind != JOB_IMAGE) first = &(*first)->next;
+    for (Job **p = first; *p; prev = *p, p = &(*p)->next) {
+        Job *j = *p;
+        if (j->kind != JOB_IMAGE || j->tag != tag || j->index != index || j->generation != generation) continue;
+        if (p != first) {
+            *p = j->next;
+            if (jobs_tail == j) jobs_tail = prev;
+            j->next = *first;
+            *first = j;
+        }
+        break;
+    }
+    SDL_UnlockMutex(lock);
+}
+
+int net_drop(int tag, int index, int generation)
+{
+    int n = 0;
+    SDL_LockMutex(lock);
+    for (Job **p = &jobs_head, *prev = NULL; *p;) {
+        Job *j = *p;
+        if (j->kind == JOB_IMAGE && j->tag == tag && (index < 0 || j->index == index) && j->generation == generation) {
+            *p = j->next;
+            if (jobs_tail == j) jobs_tail = prev;
+            free(j->post);
+            free(j);
+            n++;
+        } else {
+            prev = j;
+            p = &j->next;
+        }
+    }
+    SDL_UnlockMutex(lock);
+    return n;
 }
 
 void net_luna(const char *uri, const char *payload, int tag)

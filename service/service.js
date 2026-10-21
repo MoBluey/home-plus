@@ -388,14 +388,25 @@ async function uninstall() {
   return steps;
 }
 
-// When each app was last in front: Recents lists the most recent first, like tvOS.
-const lastUsed = new Map();
+// When each app you opened was last in front. Recents lists only these, most recent first,
+// like tvOS: webOS also runs apps nobody opened (preloaded for a quick start, or started
+// again in the background after you closed them), and those stay out. Kept in /tmp, so a
+// restarted service (an update) still knows them, and a reboot, which closes them, doesn't.
+const RECENTS_FILE = '/tmp/homeplus-recents.json';
+const lastUsed = new Map((() => {
+  try { return Object.entries(JSON.parse(fs.readFileSync(RECENTS_FILE, 'utf8'))); } catch (e) { return []; }
+})());
+
+function saveRecents() {
+  try { fs.writeFileSync(RECENTS_FILE, JSON.stringify(Object.fromEntries(lastUsed)), { mode: 0o600 }); } catch (e) { /* only for restarts */ }
+}
 
 async function onForeground(appId) {
   if (!appId || appId === lastForeground) return;
   log('foreground', lastForeground || '-', '->', appId);
   lastForeground = appId;
   lastUsed.set(appId, Date.now());
+  saveRecents();
   const cfg = readConfig();
   const target = homeTarget(cfg);
   if (appId === target) takeoverLanded = true;
@@ -462,7 +473,72 @@ function proxied(url) {
   return `/img/${key}`;
 }
 
-function fetchRemote(url, res, depth = 0) {
+// The pictures are kept on disk, so a title's picture is there at once the next time it's
+// on show (the TV takes ~250 ms to download one). Up to 64 MB: the least recently shown go.
+const IMAGE_CACHE_MAX = 64 * 1024 * 1024;
+let imageDir = '', parts = 0, trimTimer = null;
+
+function imageCacheDir() {
+  if (!imageDir) {
+    imageDir = path.join(path.dirname(findConfigPath()), 'images');
+    fs.mkdirSync(imageDir, { recursive: true, mode: 0o700 }); /* what you watch: root's only */
+  }
+  return imageDir;
+}
+
+function sendImage(key, res) {
+  let file = '';
+  try { file = path.join(imageCacheDir(), key); } catch (e) { /* no cache: straight from the internet */ }
+  if (!file) return fetchRemote(remoteImages.get(key), res);
+  fs.readFile(file, (err, buf) => {
+    if (err || !buf.length) return fetchRemote(remoteImages.get(key), res, 0, file);
+    const now = new Date();
+    fs.utimes(file, now, now, () => {}); /* recently shown */
+    res.writeHead(200, { 'Content-Type': buf[0] === 0x89 ? 'image/png' : 'image/jpeg', 'Content-Length': buf.length, 'Cache-Control': 'max-age=86400' });
+    res.end(buf);
+  });
+}
+
+// a downloaded picture goes into the cache once it has arrived whole
+function keepImage(up, file) {
+  const part = `${file}.${++parts}.part`;
+  const out = fs.createWriteStream(part, { mode: 0o600 });
+  up.pipe(out);
+  out.on('error', () => fs.unlink(part, () => {}));
+  out.on('finish', () => {
+    if (!up.complete) return fs.unlink(part, () => {});
+    fs.rename(part, file, () => trimImages());
+  });
+}
+
+function trimImages() {
+  if (trimTimer) return;
+  trimTimer = setTimeout(() => {
+    trimTimer = null;
+    const files = [];
+    let total = 0;
+    try {
+      for (const f of fs.readdirSync(imageDir)) {
+        try {
+          const st = fs.statSync(path.join(imageDir, f));
+          files.push({ f, at: st.mtimeMs, size: st.size });
+          total += st.size;
+        } catch (e) { /* just went */ }
+      }
+      if (total <= IMAGE_CACHE_MAX) return;
+      files.sort((a, b) => a.at - b.at);
+      for (const x of files) {
+        if (total <= IMAGE_CACHE_MAX * 0.8) break;
+        fs.rmSync(path.join(imageDir, x.f), { force: true });
+        total -= x.size;
+      }
+    } catch (e) {
+      log('image cache:', e.message);
+    }
+  }, 10000);
+}
+
+function fetchRemote(url, res, depth = 0, file = '') {
   let u;
   try { u = new URL(url); } catch (e) { u = null; }
   const mod = u && u.protocol === 'https:' ? https : u && u.protocol === 'http:' ? http : null;
@@ -470,11 +546,12 @@ function fetchRemote(url, res, depth = 0) {
   mod.get(u, { timeout: 15000 }, (up) => {
     if (up.statusCode >= 300 && up.statusCode < 400 && up.headers.location && depth < 4) {
       up.resume();
-      return fetchRemote(new URL(up.headers.location, url).toString(), res, depth + 1);
+      return fetchRemote(new URL(up.headers.location, url).toString(), res, depth + 1, file);
     }
     if (up.statusCode !== 200) { up.resume(); res.writeHead(404); return res.end(); }
     res.writeHead(200, { 'Content-Type': up.headers['content-type'] || 'image/jpeg', 'Cache-Control': 'max-age=86400' });
     up.pipe(res);
+    if (file) keepImage(up, file);
   }).on('error', () => { res.writeHead(502); res.end(); });
 }
 
@@ -628,14 +705,20 @@ async function apiSystem() {
   return { settings };
 }
 
-// Recent apps: what's running, minus system/background pieces (only apps that
-// are on the home screen) and Home+ itself, most recently used first.
+// Recent apps: the apps you opened that are still running (only apps on the home screen,
+// not Home+ itself), most recently used first. One that stopped is forgotten, so webOS
+// starting it again in the background doesn't bring it back.
 async function apiRunning() {
   const [r, apps] = await Promise.all([luna(APPMGR + '/running', {}), apiApps()]);
   const byId = new Map(apps.map((a) => [a.id, a]));
-  const running = [...new Set(((r && r.running) || []).map((x) => x.id).filter((id) => byId.has(id)))];
-  running.sort((a, b) => (lastUsed.get(b) || 0) - (lastUsed.get(a) || 0)); // stable: unseen keep webOS's order
-  return { apps: running.map((id) => byId.get(id)) };
+  const running = new Set(((r && r.running) || []).map((x) => x.id));
+  if (r && r.returnValue !== false) {
+    for (const id of [...lastUsed.keys()]) if (!running.has(id)) lastUsed.delete(id);
+    saveRecents();
+  }
+  const opened = [...running].filter((id) => byId.has(id) && lastUsed.has(id));
+  opened.sort((a, b) => lastUsed.get(b) - lastUsed.get(a));
+  return { apps: opened.map((id) => byId.get(id)) };
 }
 
 async function handleApi(req, res) {
@@ -670,7 +753,11 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/close' && req.method === 'POST') {
       const b = await readBody(req);
       const ids = b.all ? (await apiRunning()).apps.map((a) => a.id) : [String(b.id || '')].filter(Boolean);
-      for (const id of ids) await luna(APPMGR + '/closeByAppId', { id });
+      for (const id of ids) {
+        await luna(APPMGR + '/closeByAppId', { id });
+        lastUsed.delete(id); /* out of Recents until you open it again */
+      }
+      saveRecents();
       log('closed', ids);
       return sendJSON(res, 200, { returnValue: true, closed: ids });
     }
@@ -726,7 +813,7 @@ async function handleApi(req, res) {
       return sendJSON(res, 200, { returnValue: true });
     }
     const img = /^\/img\/([0-9a-f]{16})$/.exec(url.pathname);
-    if (img && remoteImages.has(img[1])) return fetchRemote(remoteImages.get(img[1]), res);
+    if (img && remoteImages.has(img[1])) return sendImage(img[1], res);
     sendJSON(res, 404, { returnValue: false, errorText: 'not found' });
   } catch (e) {
     log('api error', url.pathname, e.message);

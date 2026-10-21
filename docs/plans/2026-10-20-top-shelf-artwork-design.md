@@ -98,3 +98,28 @@ list rather than emptying the shelf.
    counted as art.
 2. Launcher: the featured state, its requests and pictures, rotation, drawing and wake-ups.
 3. Settings → Accounts row, README (setup, privacy) and the harness mock and shots.
+
+## Change: pages wait for their pictures (2026-10-21)
+
+The owner reported that loading "doesn't look right". On the TV a picture takes about 250 ms to
+download, plus its decode. Three things showed while one loaded:
+
+- a new title over the previous title's picture;
+- a title that dimmed and faded in again when its picture came late;
+- the previous app's own glow flashing in when focus moved between apps.
+
+The fix:
+
+- **Pages:** the Top Shelf shows a page, either an app's own (its name) or one of its carousel's
+  titles. The next page shows once its picture and logo are in, or after 1.2 s at most, so a title
+  never sits on another's picture. Meanwhile the text on show leaves; when stepping through a
+  carousel, only the title leaves and the dots move at once.
+- **Pictures:** the one on show stays underneath until the next one has faded in over it. A picture
+  whose owner frees it (a carousel or the app list replaced) is held until it's covered.
+- **Loading skeleton:** a wait longer than 250 ms shows placeholders that shimmer where the heading
+  and title go. Tiles show one while their icon loads, so do the dock before the app list arrives,
+  and so does Recents while it loads.
+- **Requests:** the service's answers go ahead of picture downloads, the selected title's pictures
+  go ahead of its neighbours', and pictures nobody needs any more are dropped before they start.
+- **Cache:** the service keeps the pictures in `/var/lib/homeplus/images` (64 MB; the least recently
+  shown go first), so a title seen before shows at once.

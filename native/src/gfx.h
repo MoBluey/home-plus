@@ -17,7 +17,7 @@ Tex *gfx_gradient(int vertical, float a0, float a1);
  * into the Top Shelf), and the Control Center's: its own glyph (two switches, on
  * the clock) and its controls'. */
 enum { ICON_RECENTS, ICON_SETTINGS, ICON_CHEVRON, ICON_CONTROLS, ICON_POWER, ICON_WIFI, ICON_SCREEN_OFF,
-       ICON_SOUND, ICON_TIMER, ICON_INPUT, ICON_ACCESS };
+       ICON_SOUND, ICON_TIMER, ICON_INPUT, ICON_ACCESS, ICON_ETHERNET };
 Tex *gfx_icon(int kind, int size);
 
 /* ---- text ---- */

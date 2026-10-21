@@ -47,12 +47,14 @@ https.request = (url, opts, cb) => {
   req.destroy = () => {};
   return req;
 };
+// HOMEPLUS_PREVIEW_IMG_MS: pictures take this long to arrive (on the TV: ~250 ms)
+const IMG_MS = Number(process.env.HOMEPLUS_PREVIEW_IMG_MS) || 0;
 https.get = (url, opts, cb) => {
   const m = /tt000000(\d)/.exec(String(url));
   const res = fs.createReadStream(path.join(assets, `show${m ? m[1] : 0}.jpg`));
   res.statusCode = /\/logo\//.test(url) ? 404 : 200;
   res.headers = { 'content-type': 'image/jpeg' };
-  setImmediate(() => cb(res));
+  setTimeout(() => cb(res), IMG_MS);
   return new EventEmitter();
 };
 
@@ -129,7 +131,10 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
   const http = require('http');
   const PORT = 47901, BASE = `http://127.0.0.1:${PORT}`;
   const json = (res, o) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
-  const image = (res, file, type) => { res.writeHead(200, { 'Content-Type': type }); fs.createReadStream(path.join(assets, file)).pipe(res); };
+  const image = (res, file, type) => setTimeout(() => {
+    res.writeHead(200, { 'Content-Type': type });
+    fs.createReadStream(path.join(assets, file)).pipe(res);
+  }, IMG_MS);
   const PROVIDERS = [{ provider_id: 8, provider_name: 'Netflix' }, { provider_id: 9, provider_name: 'Amazon Prime Video' },
     { provider_id: 337, provider_name: 'Disney Plus' }, { provider_id: 2, provider_name: 'Apple TV' }];
   const NAMES = ['Northern Lights', 'The Long Orbit', 'Paper Moon', 'Severed Signals', 'Glass City', 'Midnight Kitchen', 'Harbor Lights'];
@@ -163,6 +168,7 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
 
 // A stand-in TV for the Control Center: inputs (a soundbar with a PS5 behind it), sound output,
 // sleep timer and Wi-Fi, as webOS 23's services answer them; settings changes are kept.
+// HOMEPLUS_PREVIEW_NET=wired|none: another connection; HOMEPLUS_PREVIEW_REFUSE=1: the TV refuses changes.
 const tv = { soundOutput: 'external_arc', sleepTimer: 'off' };
 global.__stubLuna = (uri, params) => {
   if (uri.endsWith('/getAllInputStatus')) {
@@ -172,11 +178,23 @@ global.__stubLuna = (uri, params) => {
       { id: 'HDMI_3', appId: 'com.webos.app.hdmi3', label: 'HDMI 3', hdmiPlugIn: false }] };
   }
   if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: Object.fromEntries((params.keys || []).map((k) => [k, tv[k]])) };
-  if (uri.endsWith('/setSystemSettings')) { Object.assign(tv, params.settings); return { returnValue: true }; }
-  if (uri.endsWith('connectionmanager/getStatus')) return { returnValue: true, wifi: { state: 'connected', ssid: 'Home Wi-Fi' } };
+  if (uri.endsWith('/setSystemSettings')) {
+    if (process.env.HOMEPLUS_PREVIEW_REFUSE) return { returnValue: false, errorText: 'refused' };
+    Object.assign(tv, params.settings);
+    return { returnValue: true };
+  }
+  if (uri.endsWith('connectionmanager/getStatus')) {
+    const net = process.env.HOMEPLUS_PREVIEW_NET;
+    if (net === 'wired') return { returnValue: true, wired: { state: 'connected' }, wifi: { state: 'disconnected' } };
+    if (net === 'none') return { returnValue: true, wired: { state: 'disconnected' }, wifi: { state: 'disconnected' } };
+    return { returnValue: true, wifi: { state: 'connected', ssid: 'Home Wi-Fi' } };
+  }
   if (/\/power\/(powerOff|turnOffScreen)$/.test(uri)) return { returnValue: true };
+  // Recents: Netflix, YouTube and Spotify were opened; webOS also runs Disney+ in the background
+  if (uri.endsWith('/running')) return { returnValue: true, running: ['netflix', 'youtube', 'spotify', 'disney'].map((id) => ({ id })) };
   return null;
 };
+fs.writeFileSync('/tmp/homeplus-recents.json', JSON.stringify({ youtube: Date.now() - 60000, netflix: Date.now() - 120000, spotify: Date.now() - 600000 }));
 
 global.__stubApps = APPS.map(([id, title]) => ({
   id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || ''
