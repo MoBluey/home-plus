@@ -160,3 +160,19 @@ The gallery groups them as below. ★ marks the new ones. Sizes: Small is one ro
    - `picture`/`hdrDynamicToneMapping`.
 2. **HyperHDR:** the JSON-RPC port (8090 by default), whether requests from 127.0.0.1 need a token, and `LEDDEVICE` in `serverinfo`'s components. It wasn't running during the brainstorm.
 3. **PicCap:** the fields in `status`'s reply, and what `start` and `stop` reply. Its `config.json` has `autostart: true`, so capture comes back after a reboot; that's fine for an on/off switch.
+
+## Changes while building it (2026-10-21)
+
+- **Lists open in the Control Center:** the owner disliked the picture modes as a sheet, so a list
+  control (Picture, Inputs) turns the Control Center into its list, like tvOS's: a picture mode
+  applies at once and the tick moves; Back goes back to the controls.
+- **Checked on the C3:** `sound`/`soundMode` (AI Sound Pro, AI Sound, Standard, Cinema, Clear Voice,
+  Sports, Music, Game), `picture`/`backlight` (a range, 0 to 100), `picture`/`energySaving` (auto,
+  off, min, med, max: no screen-off level), `other`/`gameOptimization` (on, off; LG marks it inactive
+  outside game inputs) and `picture`/`hdrDynamicToneMapping` (on, off, HGIG; inactive while SDR
+  plays). A setting LG marks inactive shows Not Available.
+- **HyperHDR** answers `serverinfo` and `componentstate` on 127.0.0.1:8090 with no token; its loader
+  service (`org.webosbrew.hyperhdr.loader.service`) has `start`, `stop` and `status`. **PicCap's**
+  `status` says `isRunning`.
+- **Editing:** the home screen dims while editing, and the grid holds six rows; the + slot takes the
+  first free unit after the last control.

@@ -90,21 +90,34 @@ enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, 
 enum { SRC_NONE, SRC_STREMIO, SRC_JELLYFIN, SRC_PLEX, SRC_COUNT };
 #define SRC_FEATURED (SRC_COUNT + 1)   /* a streaming app's popular titles (TMDB); not an index */
 
-/* Control Center, like tvOS's: opened from the clock, its tiles float under it on the
- * right, on Apple's grid of four round-button-sized units (91 px, 20 px apart). */
-enum { CC_POWER, CC_NETWORK, CC_SCREEN, CC_SOUND, CC_SLEEP, CC_PICTURE, CC_COMFORT, CC_INPUTS, CC_RECENTS, CC_ACCESS, CC_SETTINGS,
-       CC_COUNT };
-static const struct { int col, row, w, h, icon; const char *title; } CC_TILE[CC_COUNT] = {
-    { 0, 0, 2, 2, ICON_POWER, "Power Off" },   { 2, 0, 2, 1, ICON_WIFI, "Wi-Fi" },
-    { 2, 1, 2, 1, ICON_SCREEN_OFF, "Screen Off" }, { 0, 2, 2, 1, ICON_SOUND, "Sound" },
-    { 2, 2, 2, 1, ICON_TIMER, "Sleep Timer" }, { 0, 3, 2, 1, ICON_PICTURE, "Picture" },
-    { 2, 3, 2, 1, ICON_EYE, "Eye Comfort" },   { 0, 4, 1, 1, ICON_INPUT, "Inputs" },
-    { 1, 4, 1, 1, ICON_RECENTS, "Recents" },   { 2, 4, 1, 1, ICON_ACCESS, "Accessibility" },
-    { 3, 4, 1, 1, ICON_SETTINGS, "Settings" },
-};
-#define CC_TITLE_PX 19 /* a pill's name: "Sleep Timer" and "Eye Comfort" fit, with room either side */
+/* Control Center, like tvOS's: opened from the clock, its controls float under it on the
+ * right, on Apple's grid of four round-button-sized units (91 px, 20 px apart). Which
+ * controls, in what order and size, comes from the service, and is yours to change (like
+ * iOS 18's): each takes the first space it fits, in order. */
 #define CC_U 91
 #define CC_G 20
+#define CC_ROWS 6       /* the rows that fit under the clock, above the edit hint */
+#define MAX_CC 28       /* the service caps the list at 28 units */
+#define MAX_CAT 32      /* the catalogue */
+#define CC_TITLE_PX 19  /* a pill's name: "Sleep Timer" and "Eye Comfort" fit, with room either side */
+static const struct { const char *name; int icon; } CC_ICONS[] = { /* the service names a control's glyph */
+    { "power", ICON_POWER }, { "wifi", ICON_WIFI }, { "ethernet", ICON_ETHERNET }, { "screenOff", ICON_SCREEN_OFF },
+    { "sound", ICON_SOUND }, { "timer", ICON_TIMER }, { "input", ICON_INPUT }, { "recents", ICON_RECENTS },
+    { "access", ICON_ACCESS }, { "settings", ICON_SETTINGS }, { "picture", ICON_PICTURE }, { "eye", ICON_EYE },
+    { "soundMode", ICON_SOUND_MODE }, { "brightness", ICON_BRIGHTNESS }, { "energy", ICON_ENERGY }, { "game", ICON_GAME },
+    { "hdr", ICON_HDR }, { "ambient", ICON_AMBIENT }, { "capture", ICON_CAPTURE },
+};
+
+/* A control on show: what the service says it is, and where it's placed (cc_pack) */
+typedef struct {
+    char id[24], kind[8], title_s[48], value_s[72];
+    int icon, units, on, available;  /* units: 1 Small, 2 Wide, 4 Large */
+    int col, row, w, h;              /* on the grid; row -1: no room for it */
+    Tex *title, *value;
+    int tw, th, vw, vh;
+    float s, sv;                     /* focus */
+    Uint32 flash, shake;             /* a Small stepper's new value shows for a moment; a refusal shakes it */
+} CCItem;
 
 /* Settings pages (a sheet's page; 0 = not a Settings page) */
 enum { PAGE_MAIN = 1, PAGE_HOME, PAGE_DISPLAY, PAGE_ACCESS, PAGE_ACCOUNTS, PAGE_TV, PAGE_ABOUT, PAGE_CONFIRM, PAGE_SIGNIN };
@@ -153,7 +166,8 @@ typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_DELETE_ASK, ACT_DELE
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY,
-               ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN, ACT_PICTURE_MODE, ACT_SETTINGS_KEY } Action;
+               ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN, ACT_SETTINGS_KEY,
+               ACT_CC_EDIT, ACT_CC_ADD, ACT_CC_SIZE, ACT_CC_REMOVE, ACT_CC_RESET } Action;
 
 /* First run: the service has to be running and elevated (root, via Homebrew
  * Channel) before Home+ can list apps. Each step that can fail has a screen. */
@@ -334,14 +348,29 @@ static struct {
     Tex *sheet_qr; /* sign-in: the service's QR code, scanned with a phone */
     Tex *chevron;  /* above the dock: Up leads into Continue Watching */
     struct { /* the Control Center */
-        int open, index, ninputs;
-        float t, tv, s[CC_COUNT], sv[CC_COUNT];
-        Tex *icon[CC_COUNT], *title[CC_COUNT], *value[CC_COUNT], *wired;
-        int tw[CC_COUNT], th[CC_COUNT], vw[CC_COUNT], vh[CC_COUNT], net; /* net: 0 Wi-Fi, 1 Ethernet, 2 none */
+        int open, index, ninputs;    /* index: the focused control (n: the + slot, n + 1: Reset, while editing) */
+        float t, tv;
+        CCItem it[MAX_CC];
+        int n, plus_col, plus_row;   /* the + slot's place (row -1: no room) */
+        Tex *glyph[ICON_COUNT], *glyph_big[ICON_COUNT]; /* glyphs, at 64 px, and at 128 for Large */
+        float plus_s, plus_v, reset_s, reset_v; /* while editing: the + slot's and Reset's focus */
+        struct { char id[24], title[48], group[24], sizes[4]; int available, placed, pinned; } cat[MAX_CAT];
+        int ncat;
         struct { char app[ID_LEN], name[120]; int plugged; } inputs[12];
         struct { char id[32], name[48]; } modes[24]; /* the picture modes this input offers now */
         int nmodes, mode, marquee;   /* mode: the one on (-1 unknown); marquee: a long value is scrolling */
-        Uint32 focus_at;             /* when the focused tile got focus: its long value scrolls from then */
+        Uint32 focus_at;             /* when the focused control got focus: its long value scrolls from then */
+        int ran;                     /* the control whose `run` is on its way (-1 none) */
+        int to_network;              /* just opened: the focus goes to Wi-Fi once the list is in */
+        /* editing, like iOS 18's: picked is the control being moved (-1 none) */
+        int editing, picked;
+        Tex *edit_hint, *move_hint, *no_room, *reset;
+        int ehw, ehh, mhw, mhh, nrw, nrh, rsw, rsh;
+        /* a list control (Picture, Inputs) opens its list in the Control Center's place */
+        int list, list_index, list_n, list_first;
+        float list_t, list_v;
+        Tex *list_title, *list_row[24], *list_val[24];
+        int ltw, lth, lrw[24], lrh[24], lvw[24], lvh[24];
     } cc;
     float chevron_a;
     int sheet_qr_s, qr_gen;
@@ -876,35 +905,94 @@ static void parse_continue(const char *json, int src)
     cJSON_Delete(o);
 }
 
-/* a Control Center tile's second line: the network, the sound output, the sleep timer, the
- * picture mode (whole: a long one scrolls when its tile has focus) */
-static void cc_value(int i, const char *text)
+static void cc_pack(void);
+static void cc_list_texts(void);
+static int cc_find(const char *id);
+
+/* a control's name and value (whole: a long one scrolls while it has focus) */
+static void cc_texts(CCItem *c, const char *title, const char *value)
 {
-    tex_free(&S.cc.value[i]);
-    if (text && text[0]) S.cc.value[i] = text_render(S.f_medium, 18, text, 0, &S.cc.vw[i], &S.cc.vh[i]);
+    if (!c->title || strcmp(c->title_s, title)) {
+        snprintf(c->title_s, sizeof c->title_s, "%s", title);
+        tex_free(&c->title);
+        c->title = text_render(S.f_semi, c->units == 4 ? 24 : CC_TITLE_PX, title, 0, &c->tw, &c->th);
+    }
+    if (strcmp(c->value_s, value)) {
+        snprintf(c->value_s, sizeof c->value_s, "%s", value);
+        tex_free(&c->value);
+        if (value[0]) c->value = text_render(S.f_medium, 18, value, 0, &c->vw, &c->vh);
+    }
 }
 
-/* the Control Center's state, from the service (also its answer to every action) */
+static int cc_icon(const char *name)
+{
+    for (size_t k = 0; k < sizeof CC_ICONS / sizeof CC_ICONS[0]; k++)
+        if (!strcmp(CC_ICONS[k].name, name)) return CC_ICONS[k].icon;
+    return ICON_CONTROLS; /* one the launcher doesn't know: the Control Center's own */
+}
+
+/* the Control Center's state, from the service (also its answer to every action): the
+ * controls on show, the catalogue, the picture modes and the inputs */
 static void parse_control(const char *json)
 {
     cJSON *o = cJSON_Parse(json), *v;
     if (!o) return;
-    cJSON *net = cJSON_GetObjectItem(o, "network");
-    const char *kind = jstr(net, "kind");
-    int k = !strcmp(kind, "wired") ? 1 : !strcmp(kind, "wifi") ? 0 : 2;
-    if (k != S.cc.net) { /* its name, and its icon (drawn from the choice), follow the connection */
-        S.cc.net = k;
-        tex_free(&S.cc.title[CC_NETWORK]);
-        S.cc.title[CC_NETWORK] = text_render(S.f_semi, CC_TITLE_PX, k == 1 ? "Ethernet" : k == 0 ? "Wi-Fi" : "Network", 220,
-                                             &S.cc.tw[CC_NETWORK], &S.cc.th[CC_NETWORK]);
+    if (S.cc.picked < 0) { /* (while one is being moved, the list on screen is the one that counts) */
+        static CCItem old[MAX_CC];
+        int nold = S.cc.n;
+        memcpy(old, S.cc.it, sizeof old);
+        memset(S.cc.it, 0, sizeof S.cc.it);
+        S.cc.n = 0;
+        cJSON_ArrayForEach(v, cJSON_GetObjectItem(o, "controls")) {
+            if (S.cc.n >= MAX_CC) break;
+            CCItem *c = &S.cc.it[S.cc.n++];
+            snprintf(c->id, sizeof c->id, "%s", jstr(v, "id"));
+            snprintf(c->kind, sizeof c->kind, "%s", jstr(v, "kind"));
+            const char *size = jstr(v, "size");
+            c->units = !strcmp(size, "large") ? 4 : !strcmp(size, "wide") ? 2 : 1;
+            c->icon = cc_icon(jstr(v, "icon"));
+            c->on = cJSON_IsTrue(cJSON_GetObjectItem(v, "on"));
+            c->available = cJSON_IsTrue(cJSON_GetObjectItem(v, "available"));
+            for (int k = 0; k < nold; k++) { /* the same control: its texts and motion stay */
+                CCItem *p = &old[k];
+                if (strcmp(p->id, c->id) || p->units != c->units) continue;
+                memcpy(c->title_s, p->title_s, sizeof c->title_s);
+                memcpy(c->value_s, p->value_s, sizeof c->value_s);
+                c->title = p->title, c->tw = p->tw, c->th = p->th, p->title = NULL;
+                c->value = p->value, c->vw = p->vw, c->vh = p->vh, p->value = NULL;
+                c->s = p->s, c->sv = p->sv, c->flash = p->flash, c->shake = p->shake;
+                break;
+            }
+            cc_texts(c, jstr(v, "title"), jstr(v, "value"));
+        }
+        for (int k = 0; k < nold; k++) {
+            tex_free(&old[k].title);
+            tex_free(&old[k].value);
+        }
+        cc_pack();
+        int last = S.cc.n + (S.cc.editing ? 2 : 0) - 1, net = cc_find("network");
+        if (S.cc.to_network && net >= 0) S.cc.index = net;
+        S.cc.to_network = 0;
+        if (S.cc.index > last) S.cc.index = last < 0 ? 0 : last;
     }
-    cc_value(CC_NETWORK, jstr(net, "name"));
-    cc_value(CC_SOUND, jstr(cJSON_GetObjectItem(o, "sound"), "label"));
-    const char *sl = jstr(o, "sleepTimer");
-    char t[32];
-    if (!sl[0] || !strcmp(sl, "off")) snprintf(t, sizeof t, "Off");
-    else snprintf(t, sizeof t, "%s min", sl);
-    cc_value(CC_SLEEP, t);
+    S.cc.ncat = 0;
+    cJSON_ArrayForEach(v, cJSON_GetObjectItem(o, "catalog")) {
+        if (S.cc.ncat >= MAX_CAT) break;
+        __typeof__(S.cc.cat[0]) *e = &S.cc.cat[S.cc.ncat++];
+        snprintf(e->id, sizeof e->id, "%s", jstr(v, "id"));
+        snprintf(e->title, sizeof e->title, "%s", jstr(v, "title"));
+        snprintf(e->group, sizeof e->group, "%s", jstr(v, "group"));
+        int ns = 0;
+        cJSON *sz;
+        cJSON_ArrayForEach(sz, cJSON_GetObjectItem(v, "sizes")) {
+            const char *t = cJSON_IsString(sz) ? sz->valuestring : "";
+            if (ns < 3) e->sizes[ns++] = !strcmp(t, "large") ? 4 : !strcmp(t, "wide") ? 2 : 1;
+        }
+        e->sizes[ns] = 0;
+        e->available = cJSON_IsTrue(cJSON_GetObjectItem(v, "available"));
+        e->placed = cJSON_IsTrue(cJSON_GetObjectItem(v, "placed"));
+        e->pinned = cJSON_IsTrue(cJSON_GetObjectItem(v, "pinned"));
+    }
     cJSON *pic = cJSON_GetObjectItem(o, "picture");
     const char *mode = jstr(pic, "mode");
     S.cc.nmodes = 0;
@@ -916,9 +1004,6 @@ static void parse_control(const char *json)
         if (!strcmp(S.cc.modes[S.cc.nmodes].id, mode)) S.cc.mode = S.cc.nmodes;
         S.cc.nmodes++;
     }
-    cc_value(CC_PICTURE, jstr(pic, "label"));
-    const char *ec = jstr(o, "eyeComfort");
-    cc_value(CC_COMFORT, !strcmp(ec, "on") ? "On" : !strcmp(ec, "off") ? "Off" : "");
     S.cc.ninputs = 0;
     cJSON_ArrayForEach(v, cJSON_GetObjectItem(o, "inputs")) {
         if (S.cc.ninputs >= 12) break;
@@ -929,6 +1014,7 @@ static void parse_control(const char *json)
         else snprintf(in->name, sizeof in->name, "%s", jstr(v, "label"));
         in->plugged = cJSON_IsTrue(cJSON_GetObjectItem(v, "plugged"));
     }
+    if (S.cc.list) cc_list_texts(); /* the tick follows the picture mode */
     cJSON_Delete(o);
 }
 
@@ -985,6 +1071,7 @@ static void on_elevate(Result *r);
 static void sw_fill(const char *json);
 static void sw_reset(void);
 static void settings_key(void);
+static void cc_save(void);
 static void sheet_close(void);
 static void sheet_dismiss(void);
 static void sheet_add(const char *label, Action act, int arg, int destructive);
@@ -1244,8 +1331,15 @@ static void handle_result(Result *r)
         else if (r->index == S.rail_req) S.rail_req = SRC_NONE;
         break;
     case TAG_CONTROL:
-        if (r->status == 200) parse_control(r->body);
-        else if (r->status) toast("The TV didn\xE2\x80\x99t do that.", 3000);
+        if (r->status == 200) {
+            parse_control(r->body);
+        } else if (S.cc.ran >= 0 && S.cc.ran < S.cc.n) { /* a control the TV refused shakes, and shows how things are */
+            S.cc.it[S.cc.ran].shake = SDL_GetTicks();
+            net_get_json("/api/control", TAG_CONTROL, 0, 0);
+        } else if (r->status) {
+            toast("The TV didn\xE2\x80\x99t do that.", 3000);
+        }
+        S.cc.ran = -1;
         break;
     case TAG_FEATURED:
         S.feat_req = -1;
@@ -2058,12 +2152,51 @@ static void run_action(Action act, int arg)
 {
     App *a = item_app(S.focus);
     switch (act) {
-    case ACT_PICTURE_MODE:
-        if (arg >= 0 && arg < S.cc.nmodes) {
-            char body[96];
-            snprintf(body, sizeof body, "{\"action\":\"pictureMode\",\"value\":\"%s\"}", S.cc.modes[arg].id);
-            net_post("/api/control", body, TAG_CONTROL);
+    case ACT_CC_EDIT: /* the controls wobble; OK moves one, holding OK sizes or removes it */
+        S.cc.editing = 1;
+        S.cc.picked = -1;
+        cc_pack();
+        break;
+    case ACT_CC_ADD: /* at the end, in its first size, with the focus */
+        if (arg >= 0 && arg < S.cc.ncat && S.cc.n < MAX_CC) {
+            CCItem *c = &S.cc.it[S.cc.n++];
+            memset(c, 0, sizeof *c);
+            memcpy(c->id, S.cc.cat[arg].id, sizeof c->id); /* the same size, and ended */
+            c->units = S.cc.cat[arg].sizes[0] ? S.cc.cat[arg].sizes[0] : 1;
+            c->icon = ICON_CONTROLS;
+            c->available = 1;
+            cc_texts(c, S.cc.cat[arg].title, ""); /* its glyph and value come with the service's answer */
+            cc_pack();
+            S.cc.index = S.cc.n - 1;
+            cc_save();
         }
+        break;
+    case ACT_CC_SIZE:
+        if (S.cc.index < S.cc.n && (arg == 1 || arg == 2 || arg == 4)) {
+            CCItem *c = &S.cc.it[S.cc.index];
+            char title[48];
+            snprintf(title, sizeof title, "%s", c->title_s);
+            c->units = arg;
+            c->title_s[0] = 0; /* Large has a bigger name */
+            cc_texts(c, title, "");
+            cc_pack();
+            cc_save();
+        }
+        break;
+    case ACT_CC_REMOVE:
+        if (S.cc.index < S.cc.n) {
+            CCItem *c = &S.cc.it[S.cc.index];
+            tex_free(&c->title);
+            tex_free(&c->value);
+            memmove(c, c + 1, (size_t)(S.cc.n - S.cc.index - 1) * sizeof *c);
+            S.cc.n--;
+            cc_pack();
+            if (S.cc.index >= S.cc.n) S.cc.index = S.cc.n ? S.cc.n - 1 : 0;
+            cc_save();
+        }
+        break;
+    case ACT_CC_RESET:
+        net_post("/api/control", "{\"action\":\"reset\"}", TAG_CONTROL);
         break;
     case ACT_MOVE: S.moving = 1; break;
     case ACT_FRONT: move_item_to(0); save_layout(); break;
@@ -2299,86 +2432,336 @@ static void run_action(Action act, int arg)
 
 /* ---- Control Center */
 
-static void cc_rect(int i, float *x, float *y, float *w, float *h)
+static float cc_grid_x(void) { return RIGHT - 4 * CC_U - 3 * CC_G; } /* its right edge: the clock's */
+static float cc_grid_y(void) { return TOP_Y + BAR + 26; }
+
+/* Places the controls in order on the four-unit grid, each in the first space it fits (reading
+ * order), in the rows that fit under the clock; the + slot (while editing) takes the first free
+ * unit after the last of them. */
+static void cc_pack(void)
 {
-    *x = RIGHT - 4 * CC_U - 3 * CC_G + CC_TILE[i].col * (CC_U + CC_G); /* its right edge: the clock's */
-    *y = TOP_Y + BAR + 26 + CC_TILE[i].row * (CC_U + CC_G);
-    *w = CC_TILE[i].w * CC_U + (CC_TILE[i].w - 1) * CC_G;
-    *h = CC_TILE[i].h * CC_U + (CC_TILE[i].h - 1) * CC_G;
+    unsigned char used[CC_ROWS][4];
+    memset(used, 0, sizeof used);
+    int last = -1;
+    for (int i = 0; i < S.cc.n; i++) {
+        CCItem *c = &S.cc.it[i];
+        c->w = c->units == 1 ? 1 : 2;
+        c->h = c->units == 4 ? 2 : 1;
+        c->row = -1;
+        for (int r = 0; r + c->h <= CC_ROWS && c->row < 0; r++)
+            for (int col = 0; col + c->w <= 4 && c->row < 0; col++) {
+                int fits = 1;
+                for (int y = r; y < r + c->h; y++)
+                    for (int x = col; x < col + c->w; x++) fits &= !used[y][x];
+                if (!fits) continue;
+                for (int y = r; y < r + c->h; y++)
+                    for (int x = col; x < col + c->w; x++) used[y][x] = 1;
+                c->row = r, c->col = col;
+                if (r * 4 + col > last) last = r * 4 + col;
+            }
+    }
+    S.cc.plus_row = -1;
+    for (int u = last + 1; u < CC_ROWS * 4; u++)
+        if (!used[u / 4][u % 4]) {
+            S.cc.plus_row = u / 4, S.cc.plus_col = u % 4;
+            break;
+        }
+}
+
+/* the rows in use (with the + slot while editing) */
+static int cc_rows(void)
+{
+    int rows = 0;
+    for (int i = 0; i < S.cc.n; i++)
+        if (S.cc.it[i].row >= 0 && S.cc.it[i].row + S.cc.it[i].h > rows) rows = S.cc.it[i].row + S.cc.it[i].h;
+    if (S.cc.editing && S.cc.plus_row + 1 > rows) rows = S.cc.plus_row + 1;
+    return rows;
+}
+
+/* Where focusable thing i is: a control (0..n-1); while editing, the + slot (n) and Reset
+ * (n + 1). 0: it isn't on screen (no room for it). */
+static int cc_rect(int i, float *x, float *y, float *w, float *h)
+{
+    int col, row, cw = 1, ch = 1;
+    if (i >= 0 && i < S.cc.n) {
+        const CCItem *c = &S.cc.it[i];
+        if (c->row < 0) return 0;
+        col = c->col, row = c->row, cw = c->w, ch = c->h;
+    } else if (i == S.cc.n && S.cc.editing && S.cc.plus_row >= 0) {
+        col = S.cc.plus_col, row = S.cc.plus_row;
+    } else if (i == S.cc.n + 1 && S.cc.editing) { /* under the grid and its hint */
+        *x = cc_grid_x(), *y = cc_grid_y() + cc_rows() * (CC_U + CC_G) + 44;
+        *w = 4 * CC_U + 3 * CC_G, *h = 64;
+        return 1;
+    } else {
+        return 0;
+    }
+    *x = cc_grid_x() + col * (CC_U + CC_G);
+    *y = cc_grid_y() + row * (CC_U + CC_G);
+    *w = cw * CC_U + (cw - 1) * CC_G;
+    *h = ch * CC_U + (ch - 1) * CC_G;
+    return 1;
+}
+
+static int cc_find(const char *id)
+{
+    for (int i = 0; i < S.cc.n; i++)
+        if (!strcmp(S.cc.it[i].id, id)) return i;
+    return -1;
 }
 
 static void cc_open(void)
 {
     S.cc.open = 1;
-    S.cc.index = CC_NETWORK; /* nearest the clock, and harmless (unlike Power Off) */
+    S.cc.editing = S.cc.list = 0;
+    S.cc.picked = S.cc.ran = -1;
+    int net = cc_find("network"); /* nearest the clock, and harmless (unlike Power Off) */
+    S.cc.index = net >= 0 ? net : 0;
+    S.cc.to_network = net < 0; /* the first time, the list is on its way */
     S.cc.focus_at = SDL_GetTicks();
     net_get_json("/api/control", TAG_CONTROL, 0, 0);
 }
 
-static void cc_close(void) { S.cc.open = 0; }
+static void cc_save(void);
+static void cc_close(void)
+{
+    if (S.cc.picked >= 0) { /* one being moved stays where it is now */
+        S.cc.picked = -1;
+        cc_save();
+    }
+    S.cc.open = S.cc.editing = S.cc.list = 0;
+}
 
-/* the nearest tile that way (the tiles come in three sizes); up past the top row: the clock */
+/* saves the list as it is on screen (the service answers with the whole state) */
+static void cc_save(void)
+{
+    cJSON *o = cJSON_CreateObject(), *arr;
+    cJSON_AddStringToObject(o, "action", "layout");
+    arr = cJSON_AddArrayToObject(o, "controls");
+    for (int i = 0; i < S.cc.n; i++) {
+        cJSON *c = cJSON_CreateObject();
+        cJSON_AddStringToObject(c, "id", S.cc.it[i].id);
+        cJSON_AddStringToObject(c, "size", S.cc.it[i].units == 4 ? "large" : S.cc.it[i].units == 2 ? "wide" : "small");
+        cJSON_AddItemToArray(arr, c);
+    }
+    char *body = cJSON_PrintUnformatted(o);
+    net_post("/api/control", body, TAG_CONTROL);
+    free(body);
+    cJSON_Delete(o);
+}
+
+/* the picked control moves one place earlier or later in the order (Left, Right), or to the row
+ * above or below (Up, Down), and the others reflow around it */
+static void cc_move_picked(int dx, int dy)
+{
+    int i = S.cc.picked, to = i + dx;
+    if (dy) {
+        const CCItem *c = &S.cc.it[i];
+        int row = dy > 0 ? c->row + c->h : c->row - 1, best = -1;
+        float bd = 1e9f, cx = c->col + c->w / 2.0f;
+        for (int k = 0; k < S.cc.n; k++) {
+            const CCItem *o = &S.cc.it[k];
+            if (k == i || o->row < 0 || row < o->row || row >= o->row + o->h) continue;
+            float d = fabsf(o->col + o->w / 2.0f - cx);
+            if (d < bd) bd = d, best = k;
+        }
+        if (best < 0 && dy > 0) best = S.cc.n - 1; /* below the last row: the end */
+        if (best < 0) return;
+        to = best;
+    }
+    if (to < 0 || to >= S.cc.n || to == i) return;
+    CCItem t = S.cc.it[i];
+    if (to > i) memmove(&S.cc.it[i], &S.cc.it[i + 1], (size_t)(to - i) * sizeof t);
+    else memmove(&S.cc.it[to + 1], &S.cc.it[to], (size_t)(i - to) * sizeof t);
+    S.cc.it[to] = t;
+    S.cc.picked = S.cc.index = to;
+    cc_pack();
+}
+
+/* the nearest control that way (they come in three sizes); up past the top row: the clock */
 static void cc_move(int dx, int dy)
 {
+    if (S.cc.picked >= 0) {
+        cc_move_picked(dx, dy);
+        return;
+    }
     float x, y, w, h, best_d = 1e9f;
-    int best = -1;
-    cc_rect(S.cc.index, &x, &y, &w, &h);
+    int best = -1, n = S.cc.n + (S.cc.editing ? 2 : 0);
+    if (!cc_rect(S.cc.index, &x, &y, &w, &h)) x = cc_grid_x(), y = cc_grid_y(), w = h = 0;
     float cx = x + w / 2, cy = y + h / 2;
-    for (int i = 0; i < CC_COUNT; i++) {
+    for (int i = 0; i < n; i++) {
         float ix, iy, iw, ih;
-        if (i == S.cc.index) continue;
-        cc_rect(i, &ix, &iy, &iw, &ih);
+        if (i == S.cc.index || !cc_rect(i, &ix, &iy, &iw, &ih)) continue;
         float ax = ix + iw / 2 - cx, ay = iy + ih / 2 - cy;
         if ((dx && ax * dx <= 1) || (dy && ay * dy <= 1)) continue;
         float d = dx ? fabsf(ax) + 2.5f * fabsf(ay) : fabsf(ay) + 2.5f * fabsf(ax);
         if (d < best_d) best_d = d, best = i;
     }
     if (best >= 0) S.cc.index = best, S.cc.focus_at = SDL_GetTicks();
-    else if (dy < 0) cc_close();
+    else if (dy < 0 && !S.cc.editing) cc_close();
 }
 
-/* the TV's inputs, by LG's names (a device's: "Soundbar · PS5") */
-static void open_inputs_sheet(void)
+/* A list control's list (Picture's modes, the inputs) opens in the Control Center's place, like
+ * tvOS's: a picture mode applies there and then (and the tick moves); Back goes back. */
+#define CC_LIST_ROWS 8
+static int is_back(SDL_Keycode k);
+static void cc_list_texts(void)
 {
-    sheet_open("Inputs");
-    for (int i = 0; i < S.cc.ninputs && S.sheet.n < MAX_SHEET - 1; i++) {
-        settings_row(S.cc.inputs[i].name, S.cc.inputs[i].plugged ? "" : "Nothing Connected", ACT_LAUNCH_ID, 0, 0, 0);
-        copy_id(S.sheet.it[S.sheet.n - 1].id, S.cc.inputs[i].app);
+    tex_free(&S.cc.list_title);
+    S.cc.list_title = text_render(S.f_semi, 24, S.cc.list == 1 ? "Picture Mode" : "Inputs", 0, &S.cc.ltw, &S.cc.lth);
+    S.cc.list_n = S.cc.list == 1 ? S.cc.nmodes : S.cc.ninputs;
+    if (S.cc.list_n > 24) S.cc.list_n = 24;
+    for (int i = 0; i < 24; i++) {
+        tex_free(&S.cc.list_row[i]);
+        tex_free(&S.cc.list_val[i]);
+        if (i >= S.cc.list_n) continue;
+        const char *name = S.cc.list == 1 ? S.cc.modes[i].name : S.cc.inputs[i].name;
+        const char *val = S.cc.list == 1 ? (i == S.cc.mode ? "\xE2\x9C\x93" : "") : S.cc.inputs[i].plugged ? "" : "Nothing Connected";
+        S.cc.list_row[i] = text_render(S.f_medium, 24, name, 300, &S.cc.lrw[i], &S.cc.lrh[i]);
+        if (val[0]) S.cc.list_val[i] = text_render(S.f_medium, val[0] == '\xE2' ? 24 : 18, val, 0, &S.cc.lvw[i], &S.cc.lvh[i]);
     }
-    if (!S.cc.ninputs) sheet_body("The TV didn\xE2\x80\x99t list its inputs.");
-    sheet_add("Done", ACT_CANCEL, 0, 0);
+}
+
+static void cc_list_open(int which)
+{
+    S.cc.list = which;
+    cc_list_texts();
+    S.cc.list_index = which == 1 && S.cc.mode >= 0 ? S.cc.mode : 0;
+    S.cc.list_first = S.cc.list_index >= CC_LIST_ROWS ? S.cc.list_index - CC_LIST_ROWS + 1 : 0;
+}
+
+static void cc_list_key(SDL_Keycode k)
+{
+    if (k == SDLK_UP && S.cc.list_index > 0) S.cc.list_index--;
+    else if (k == SDLK_DOWN && S.cc.list_index < S.cc.list_n - 1) S.cc.list_index++;
+    else if (is_back(k)) S.cc.list = 0;
+    if (S.cc.list_index < S.cc.list_first) S.cc.list_first = S.cc.list_index;
+    if (S.cc.list_index >= S.cc.list_first + CC_LIST_ROWS) S.cc.list_first = S.cc.list_index - CC_LIST_ROWS + 1;
+}
+
+static void cc_list_ok(void)
+{
+    int i = S.cc.list_index;
+    if (i < 0 || i >= S.cc.list_n) return;
+    if (S.cc.list == 1) {
+        char body[96];
+        snprintf(body, sizeof body, "{\"action\":\"pictureMode\",\"value\":\"%s\"}", S.cc.modes[i].id);
+        net_post("/api/control", body, TAG_CONTROL);
+    } else {
+        cc_close();
+        launch(S.cc.inputs[i].app, NULL);
+    }
+}
+
+/* editing: OK picks a control up (and puts it down), the + slot adds one, Reset asks */
+static void open_cc_gallery(void);
+static void cc_edit_ok(void)
+{
+    if (S.cc.picked >= 0) {
+        S.cc.picked = -1;
+        cc_save();
+    } else if (S.cc.index < S.cc.n) {
+        S.cc.picked = S.cc.index;
+    } else if (S.cc.index == S.cc.n) {
+        open_cc_gallery();
+    } else {
+        sheet_open("Reset Control Center?");
+        sheet_body("The controls go back to how they were at first.");
+        sheet_add("Reset", ACT_CC_RESET, 0, 1);
+        sheet_add("Cancel", ACT_CANCEL, 0, 0);
+        S.sheet.index = 1;
+    }
+}
+
+/* the catalogue's entry for a control */
+static int cc_cat(const char *id)
+{
+    for (int i = 0; i < S.cc.ncat; i++)
+        if (!strcmp(S.cc.cat[i].id, id)) return i;
+    return -1;
+}
+
+/* the controls that work on this TV and aren't placed yet, by group */
+static void open_cc_gallery(void)
+{
+    if (S.cc.plus_row < 0) return;
+    sheet_open("Add a Control");
+    for (int i = 0; i < S.cc.ncat && S.sheet.n < MAX_SHEET - 1; i++) { /* the catalogue is in its groups' order */
+        const __typeof__(S.cc.cat[0]) *e = &S.cc.cat[i];
+        if (e->available && cc_find(e->id) < 0) settings_row(e->title, e->group, ACT_CC_ADD, i, 0, 0);
+    }
+    if (!S.sheet.n) sheet_body("Every control this TV has is in the Control Center.");
+    sheet_add("Cancel", ACT_CANCEL, 0, 0);
     S.sheet.wide = 1;
 }
 
-/* the picture modes LG offers for what's on now (they differ for HDR and Dolby Vision) */
-static void open_picture_sheet(void)
+/* holding OK: Edit Controls; while editing, the focused control's sizes and Remove */
+static void cc_long_press(void)
 {
-    sheet_open("Picture Mode");
-    for (int i = 0; i < S.cc.nmodes && S.sheet.n < MAX_SHEET - 1; i++)
-        settings_row(S.cc.modes[i].name, i == S.cc.mode ? "\xE2\x9C\x93" : "", ACT_PICTURE_MODE, i, 0, 0);
-    if (!S.cc.nmodes) sheet_body("The TV didn\xE2\x80\x99t list its picture modes.");
-    sheet_add("Done", ACT_CANCEL, 0, 0);
-    S.sheet.wide = 1;
-    if (S.cc.mode > 0) S.sheet.index = S.cc.mode;
+    if (S.cc.list || S.cc.picked >= 0) return;
+    if (!S.cc.editing) {
+        sheet_open("Control Center");
+        sheet_add("Edit Controls", ACT_CC_EDIT, 0, 0);
+        sheet_add("Cancel", ACT_CANCEL, 0, 0);
+        return;
+    }
+    if (S.cc.index >= S.cc.n) return;
+    const CCItem *c = &S.cc.it[S.cc.index];
+    int e = cc_cat(c->id);
+    sheet_open(c->title_s);
+    static const char *const NAME[5] = { "", "Small", "Wide", "", "Large" };
+    for (int k = 0; e >= 0 && S.cc.cat[e].sizes[k]; k++) {
+        int u = S.cc.cat[e].sizes[k];
+        settings_row(NAME[u], u == c->units ? "\xE2\x9C\x93" : "", ACT_CC_SIZE, u, 0, 0);
+    }
+    if (e < 0 || !S.cc.cat[e].pinned) sheet_add("Remove", ACT_CC_REMOVE, 0, 1); /* not Settings: the only way in */
+    sheet_add("Cancel", ACT_CANCEL, 0, 0);
 }
 
 static void cc_activate(void)
 {
-    switch (S.cc.index) {
-    case CC_POWER: net_post("/api/control", "{\"action\":\"powerOff\"}", TAG_CONTROL); cc_close(); break;
-    case CC_NETWORK: /* LG's network settings: what its own Quick Settings open (its Settings app has no such page) */
+    if (S.cc.list) {
+        cc_list_ok();
+        return;
+    }
+    if (S.cc.editing) {
+        cc_edit_ok();
+        return;
+    }
+    if (S.cc.index >= S.cc.n) return;
+    CCItem *c = &S.cc.it[S.cc.index];
+    if (!c->available) { /* Not Available: nothing happens, which it shows */
+        c->shake = SDL_GetTicks();
+        return;
+    }
+    if (!strcmp(c->id, "power")) {
+        net_post("/api/control", "{\"action\":\"powerOff\"}", TAG_CONTROL);
+        cc_close();
+    } else if (!strcmp(c->id, "screenOff")) {
+        net_post("/api/control", "{\"action\":\"screenOff\"}", TAG_CONTROL);
+        cc_close();
+    } else if (!strcmp(c->id, "network")) { /* LG's network settings, as its own Quick Settings open them */
         cc_close();
         launch_app("com.webos.app.firstuse-overlay", "{\"target\":\"network\"}", NULL);
-        break;
-    case CC_SCREEN: net_post("/api/control", "{\"action\":\"screenOff\"}", TAG_CONTROL); cc_close(); break;
-    case CC_SOUND: net_post("/api/control", "{\"action\":\"sound\",\"value\":\"next\"}", TAG_CONTROL); break;
-    case CC_SLEEP: net_post("/api/control", "{\"action\":\"sleepTimer\",\"value\":\"next\"}", TAG_CONTROL); break;
-    case CC_PICTURE: cc_close(); open_picture_sheet(); break;
-    case CC_COMFORT: net_post("/api/control", "{\"action\":\"eyeComfort\",\"value\":\"next\"}", TAG_CONTROL); break;
-    case CC_INPUTS: cc_close(); open_inputs_sheet(); break;
-    case CC_RECENTS: cc_close(); sw_open(); break;
-    case CC_ACCESS: cc_close(); settings_page(PAGE_ACCESS, 0); break;
-    case CC_SETTINGS: cc_close(); open_settings_sheet(); break;
+    } else if (!strcmp(c->id, "pictureMode")) {
+        cc_list_open(1);
+    } else if (!strcmp(c->id, "inputs")) {
+        cc_list_open(2);
+    } else if (!strcmp(c->id, "recents")) {
+        cc_close();
+        sw_open();
+    } else if (!strcmp(c->id, "accessibility")) {
+        cc_close();
+        settings_page(PAGE_ACCESS, 0);
+    } else if (!strcmp(c->id, "settings")) {
+        cc_close();
+        open_settings_sheet();
+    } else if (!strcmp(c->kind, "stepper") || !strcmp(c->kind, "switch")) { /* the service steps or switches it */
+        char body[96];
+        snprintf(body, sizeof body, "{\"action\":\"run\",\"value\":\"%s\"}", c->id);
+        net_post("/api/control", body, TAG_CONTROL);
+        S.cc.ran = S.cc.index;
+        if (c->units == 1 && !strcmp(c->kind, "stepper")) c->flash = SDL_GetTicks(); /* its new value shows under it */
     }
 }
 
@@ -2644,11 +3027,23 @@ static void on_key_down(SDL_KeyboardEvent *e)
         return;
     }
     if (S.cc.open) {
-        if (k == SDLK_LEFT) cc_move(-1, 0);
+        if (S.cc.list) cc_list_key(k);
+        else if (k == SDLK_LEFT) cc_move(-1, 0);
         else if (k == SDLK_RIGHT) cc_move(1, 0);
         else if (k == SDLK_UP) cc_move(0, -1);
         else if (k == SDLK_DOWN) cc_move(0, 1);
-        else if (is_back(k)) cc_close();
+        else if (is_back(k)) {
+            if (S.cc.picked >= 0) { /* put it down */
+                S.cc.picked = -1;
+                cc_save();
+            } else if (S.cc.editing) { /* done (every change is already saved) */
+                S.cc.editing = 0;
+                cc_pack();
+                if (S.cc.index >= S.cc.n) S.cc.index = S.cc.n ? S.cc.n - 1 : 0;
+            } else {
+                cc_close();
+            }
+        }
         return;
     }
     switch (k) {
@@ -2765,9 +3160,9 @@ static int pointer_at(int mx, int my, int apply)
         return i >= 0;
     }
     if (S.cc.open) {
-        for (int i = 0; i < CC_COUNT; i++) {
+        for (int i = 0; i < S.cc.n + (S.cc.editing ? 2 : 0) && !S.cc.list && S.cc.picked < 0; i++) {
             float x, y, w, h;
-            cc_rect(i, &x, &y, &w, &h);
+            if (!cc_rect(i, &x, &y, &w, &h)) continue;
             if (mx >= x && mx < x + w && my >= y && my < y + h) {
                 if (apply) S.cc.index = i;
                 return 1;
@@ -3000,10 +3395,17 @@ static int update(float dt)
     }
     spring(&S.cc.t, &S.cc.tv, S.cc.open ? 1.0f : 0.0f, S.reduce_motion ? 0.15f : 0.32f, 0.9f, dt, &anim);
     if (S.cc.marquee && S.cc.open) anim = 1; /* a long name is scrolling */
-    for (int i = 0; i < CC_COUNT; i++) {
-        int f = S.cc.open && S.cc.index == i;
-        spring(&S.cc.s[i], &S.cc.sv[i], f ? on : 0.0f, f ? resp : 0.35f, f ? damp : 0.7f, dt, &anim);
+    Uint32 tick = SDL_GetTicks();
+    for (int i = 0; i < S.cc.n; i++) {
+        CCItem *c = &S.cc.it[i];
+        int f = S.cc.open && S.cc.index == i && !S.cc.list;
+        spring(&c->s, &c->sv, f ? on : 0.0f, f ? resp : 0.35f, f ? damp : 0.7f, dt, &anim);
+        if ((c->shake && tick - c->shake < 450) || (c->flash && tick - c->flash < 1800)) anim = 1; /* a shake; a value showing */
     }
+    spring(&S.cc.plus_s, &S.cc.plus_v, S.cc.editing && S.cc.index == S.cc.n ? on : 0.0f, 0.35f, 0.7f, dt, &anim);
+    spring(&S.cc.reset_s, &S.cc.reset_v, S.cc.editing && S.cc.index == S.cc.n + 1 ? on : 0.0f, 0.35f, 0.7f, dt, &anim);
+    spring(&S.cc.list_t, &S.cc.list_v, S.cc.list ? 1.0f : 0.0f, S.reduce_motion ? 0.15f : 0.3f, 0.9f, dt, &anim);
+    if (S.cc.open && S.cc.editing && !S.reduce_motion) anim = 1; /* they wobble */
     if (pressed) anim = 1; /* the hold bar fills */
     if (S.launching) {
         Uint32 held = SDL_GetTicks() - S.launch_at;
@@ -3695,19 +4097,58 @@ static void draw_marquee(Tex *t, int tw, int th, float x, float y, float room, U
     }
 }
 
+static Tex *cc_glyph(int icon, int big)
+{
+    if (icon < 0 || icon >= ICON_COUNT) icon = ICON_CONTROLS;
+    Tex **t = big ? &S.cc.glyph_big[icon] : &S.cc.glyph[icon];
+    if (!*t) *t = gfx_icon(icon, big ? 128 : 64);
+    return *t;
+}
+
+/* A list control's list, in the Control Center's place: its name, then the choices (the one on
+ * ticked; inputs with nothing behind them say so) */
+static void draw_cc_list(float a)
+{
+    float x = cc_grid_x(), y = cc_grid_y(), w = 4 * CC_U + 3 * CC_G;
+    int rows = S.cc.list_n < CC_LIST_ROWS ? S.cc.list_n : CC_LIST_ROWS;
+    const float rh = 56, gap = 6, head = 66;
+    float h = head + (rows ? rows * (rh + gap) - gap : 40) + 14;
+    if (!S.reduce_motion) y -= 12 * (1 - a); /* it settles in */
+    r_shadow(x, y, w, h, 34, 30, 12, 0.35f * a);
+    panel(0, x, y, w, h, 34, 1, 0, a);
+    Uint8 al = (Uint8)(255 * a);
+    draw_text(S.cc.list_title, S.cc.ltw, S.cc.lth, x + (w - S.cc.ltw) / 2, y + (head - S.cc.lth) / 2 + 3, al);
+    for (int r = 0; r < rows; r++) {
+        int i = S.cc.list_first + r;
+        if (i >= S.cc.list_n) break;
+        float ry = y + head + r * (rh + gap), rx = x + 14, rw = w - 28;
+        int f = i == S.cc.list_index;
+        if (f) r_shape(rx, ry, rw, rh, rh / 2, 245, 245, 247, al, 0, 1, 1);
+        Uint8 c = f ? 28 : 255;
+        r_image(S.cc.list_row[i], rx + 24, ry + (rh - S.cc.lrh[i]) / 2, S.cc.lrw[i], S.cc.lrh[i], c, c, c, (Uint8)(al * (f ? 1 : 0.92f)), 0);
+        if (S.cc.list_val[i])
+            r_image(S.cc.list_val[i], rx + rw - 24 - S.cc.lvw[i], ry + (rh - S.cc.lvh[i]) / 2, S.cc.lvw[i], S.cc.lvh[i], c, c, c, (Uint8)(al * 0.8f), 0);
+    }
+}
+
 static void draw_control_center(void)
 {
     S.cc.marquee = 0;
     if (S.cc.t < 0.004f) return;
-    float open = fminf(fmaxf(S.cc.t, 0), 1), span = 1 - 0.04f * (CC_COUNT - 1);
-    for (int i = 0; i < CC_COUNT; i++) {
+    float open = fminf(fmaxf(S.cc.t, 0), 1), lt = fminf(fmaxf(S.cc.list_t, 0), 1);
+    float stagger = S.cc.n > 1 ? fminf(0.04f, 0.45f / (S.cc.n - 1)) : 0, span = 1 - stagger * (S.cc.n > 1 ? S.cc.n - 1 : 0);
+    Uint32 now = SDL_GetTicks();
+    float ed = S.cc.editing ? open * (1 - lt) : 0;
+    if (ed > 0.004f) r_fill(0, 0, 0, (Uint8)(150 * ed)); /* editing: the home screen steps back, as iOS's does */
+    for (int i = 0; i < S.cc.n; i++) {
+        CCItem *c = &S.cc.it[i];
         float x, y, w, h;
-        cc_rect(i, &x, &y, &w, &h);
-        float ti = (open - 0.04f * i) / span;
-        ti = ti < 0 ? 0 : ti > 1 ? 1 : ti;
+        if (!cc_rect(i, &x, &y, &w, &h)) continue; /* no room for it */
+        float ti = (open - stagger * i) / span;
+        ti = (ti < 0 ? 0 : ti > 1 ? 1 : ti) * (1 - lt); /* out of the clock one after another; a list takes their place */
         if (ti <= 0.004f) continue;
-        float k = S.cc.s[i], g = fminf(fmaxf(k, 0), 1);
-        float sc = (S.reduce_motion ? 1 : 0.86f + 0.14f * ti) * (1 + 0.06f * k);
+        float k = c->s, g = fminf(fmaxf(k, 0), 1);
+        float sc = (S.reduce_motion ? 1 : 0.86f + 0.14f * ti) * (1 + 0.06f * k) * (i == S.cc.picked ? 1.08f : 1);
         float cx = x + w / 2, cy = y + h / 2;
         if (!S.reduce_motion) { /* out of the clock: up and to the right while they grow */
             cx += (1 - ti) * (RIGHT - 60 - cx) * 0.25f;
@@ -3719,28 +4160,73 @@ static void draw_control_center(void)
             cx += dx * k;
             cy += dy * k;
         }
-        float rw = w * sc, rh = h * sc, rx = cx - rw / 2, ry = cy - rh / 2, rad = CC_TILE[i].h == 2 ? 40 * sc : rh / 2;
-        if (k > 0.01f) r_shadow(rx, ry, rw, rh, rad, 18, 8, 0.4f * k * ti);
+        if (S.cc.editing && !S.reduce_motion && i != S.cc.picked) { /* editing: each wobbles a little, out of step */
+            float ph = now / 1000.0f * 7.0f + i * 1.7f;
+            cx += sinf(ph) * 1.4f;
+            cy += cosf(ph * 1.3f) * 1.1f;
+        }
+        if (c->shake && now - c->shake < 450) { /* the TV said no */
+            float p = (now - c->shake) / 450.0f;
+            cx += sinf(p * 28) * 9 * (1 - p);
+        }
+        float rw = w * sc, rh = h * sc, rx = cx - rw / 2, ry = cy - rh / 2, rad = c->h == 2 ? 40 * sc : rh / 2;
+        float lift = i == S.cc.picked ? 1 : k;
+        if (lift > 0.01f) r_shadow(rx, ry, rw, rh, rad, 18, 8, 0.4f * lift * ti);
         panel(0, rx, ry, rw, rh, rad, 1, k, ti);
+        if (c->on && c->available && g < 0.99f) /* a switch that's on lights up, as iOS's do */
+            r_shape(rx, ry, rw, rh, rad, 255, 255, 255, (Uint8)(255 * ti * 0.3f * (1 - g)), 0, 1, 1);
         if (g > 0.01f) r_shape(rx, ry, rw, rh, rad, 245, 245, 247, (Uint8)(255 * ti * g), 0, 1, 1);
-        Uint8 c = (Uint8)(255 - 227 * g), ca = (Uint8)(255 * ti);
-        if (CC_TILE[i].h == 2) { /* Power Off: its icon large, its name under it */
+        if (S.cc.editing && (S.reduce_motion || i == S.cc.picked)) /* still: an outline says it's editing */
+            r_shape(rx, ry, rw, rh, rad, 255, 255, 255, (Uint8)(150 * ti), 2.0f, 1, 1);
+        Uint8 col = (Uint8)(255 - 227 * g), ca = (Uint8)(255 * ti * (c->available ? 1 : 0.45f)); /* Not Available: dimmed */
+        if (c->h == 2) { /* Large: its glyph large, its name under it */
             float is = 76 * sc;
-            r_image(S.cc.icon[i], cx - is / 2, ry + rh * 0.42f - is / 2, is, is, c, c, c, ca, 0);
-            r_image(S.cc.title[i], cx - S.cc.tw[i] / 2.0f, ry + rh - 26 * sc - S.cc.th[i], S.cc.tw[i], S.cc.th[i], c, c, c, ca, 0);
-        } else if (CC_TILE[i].w == 2) { /* the icon, then the name over its value, clear of the round end */
+            r_image(cc_glyph(c->icon, 1), cx - is / 2, ry + rh * 0.42f - is / 2, is, is, col, col, col, ca, 0);
+            r_image(c->title, cx - c->tw / 2.0f, ry + rh - 26 * sc - c->th, c->tw, c->th, col, col, col, ca, 0);
+        } else if (c->w == 2) { /* Wide: the glyph, then the name over its value, clear of the round end */
             float is = 30 * sc, ix = rx + 18 * sc, tx = ix + is + 12 * sc, room = rx + rw - 22 * sc - tx;
-            Tex *ic = i == CC_NETWORK && S.cc.net == 1 ? S.cc.wired : S.cc.icon[i];
-            r_image(ic, ix, cy - is / 2, is, is, c, c, c, i == CC_NETWORK && S.cc.net == 2 ? (Uint8)(ca * 0.5f) : ca, 0);
-            float vh = S.cc.value[i] ? S.cc.vh[i] : 0, ty = cy - (S.cc.th[i] + vh) / 2;
-            Uint32 since = i == S.cc.index && S.cc.open ? S.cc.focus_at : 0; /* only the focused one scrolls */
-            draw_marquee(S.cc.title[i], S.cc.tw[i], S.cc.th[i], tx, ty, room, c, ca, since);
-            draw_marquee(S.cc.value[i], S.cc.vw[i], S.cc.vh[i], tx, ty + S.cc.th[i], room, c, (Uint8)(ca * 0.72f), since);
-        } else {
+            r_image(cc_glyph(c->icon, 0), ix, cy - is / 2, is, is, col, col, col, ca, 0);
+            float vh = c->value ? c->vh : 0, ty = cy - (c->th + vh) / 2;
+            Uint32 since = i == S.cc.index && S.cc.open && !S.cc.editing ? S.cc.focus_at : 0; /* only the focused one scrolls */
+            draw_marquee(c->title, c->tw, c->th, tx, ty, room, col, ca, since);
+            draw_marquee(c->value, c->vw, c->vh, tx, ty + c->th, room, col, (Uint8)(ca * 0.72f), since);
+        } else { /* Small: the glyph; a stepper's new value shows under it for a moment */
             float is = 40 * sc;
-            r_image(S.cc.icon[i], cx - is / 2, cy - is / 2, is, is, c, c, c, ca, 0);
+            r_image(cc_glyph(c->icon, 0), cx - is / 2, cy - is / 2, is, is, col, col, col, ca, 0);
+            if (c->flash && now - c->flash < 1800 && c->value) {
+                float f = 1 - smooth01(1200, 1800, (float)(now - c->flash));
+                draw_text(c->value, c->vw, c->vh, cx - c->vw / 2.0f, ry + rh + 8, (Uint8)(TEXT_STATIC * ti * f));
+            }
         }
     }
+    if (S.cc.editing && lt < 0.99f) {
+        float x, y, w, h, a = open * (1 - lt);
+        if (cc_rect(S.cc.n, &x, &y, &w, &h)) { /* the + slot: a ring with a plus */
+            float g = fminf(fmaxf(S.cc.plus_s, 0), 1);
+            r_shape(x, y, w, h, h / 2, 255, 255, 255, (Uint8)(110 * a * (1 - g)), 2.0f, 1, 1);
+            if (g > 0.01f) r_shape(x, y, w, h, h / 2, 245, 245, 247, (Uint8)(255 * a * g), 0, 1, 1);
+            Uint8 col = (Uint8)(255 - 227 * g);
+            r_image(cc_glyph(ICON_PLUS, 0), x + (w - 34) / 2, y + (h - 34) / 2, 34, 34, col, col, col, (Uint8)(255 * a), 0);
+        }
+        if (!S.cc.edit_hint) { /* what OK does, under the grid */
+            S.cc.edit_hint = text_render(S.f_medium, 22, "OK to move  \xC2\xB7  Hold for options", 0, &S.cc.ehw, &S.cc.ehh);
+            S.cc.move_hint = text_render(S.f_medium, 22, "Arrows move it  \xC2\xB7  OK puts it down", 0, &S.cc.mhw, &S.cc.mhh);
+            S.cc.no_room = text_render(S.f_medium, 22, "No Room  \xC2\xB7  Hold OK on one for options", 0, &S.cc.nrw, &S.cc.nrh);
+            S.cc.reset = text_render(S.f_semi, 24, "Reset", 0, &S.cc.rsw, &S.cc.rsh);
+        }
+        Tex *ht = S.cc.picked >= 0 ? S.cc.move_hint : S.cc.plus_row < 0 ? S.cc.no_room : S.cc.edit_hint;
+        int hw = ht == S.cc.move_hint ? S.cc.mhw : ht == S.cc.no_room ? S.cc.nrw : S.cc.ehw;
+        int hh = ht == S.cc.move_hint ? S.cc.mhh : ht == S.cc.no_room ? S.cc.nrh : S.cc.ehh;
+        draw_text(ht, hw, hh, RIGHT - hw, cc_grid_y() + cc_rows() * (CC_U + CC_G) + 4, (Uint8)(TEXT_STATIC * a));
+        if (cc_rect(S.cc.n + 1, &x, &y, &w, &h)) { /* Reset: red, like sheets' destructive buttons */
+            float g = fminf(fmaxf(S.cc.reset_s, 0), 1);
+            panel(0, x, y, w, h, h / 2, 1, g, a);
+            if (g > 0.01f) r_shape(x, y, w, h, h / 2, 245, 245, 247, (Uint8)(255 * a * g), 0, 1, 1);
+            r_image(S.cc.reset, x + (w - S.cc.rsw) / 2, y + (h - S.cc.rsh) / 2, S.cc.rsw, S.cc.rsh, 255, (Uint8)(90 - 40 * g), (Uint8)(80 - 40 * g),
+                    (Uint8)(255 * a), 0);
+        }
+    }
+    if (lt > 0.004f) draw_cc_list(lt * open);
 }
 
 static void draw_switcher(void)
@@ -3871,11 +4357,7 @@ static int load_assets(void)
     S.sub_first_tex = text_render(S.f_medium, 28, "Press OK to open \xC2\xB7 Hold for options \xC2\xB7 Back for Recents", 0,
                                   &S.sfw, &S.sfh); /* Back on the first app opens Recents */
     S.top_tex[TOP_SETTINGS] = gfx_icon(ICON_CONTROLS, 64); /* the Control Center's glyph: drawn at 30 px, 64 stays sharp */
-    for (int i = 0; i < CC_COUNT; i++) {
-        S.cc.icon[i] = gfx_icon(CC_TILE[i].icon, i == CC_POWER ? 128 : 64);
-        S.cc.title[i] = text_render(S.f_semi, i == CC_POWER ? 24 : CC_TITLE_PX, CC_TILE[i].title, 220, &S.cc.tw[i], &S.cc.th[i]);
-    }
-    S.cc.wired = gfx_icon(ICON_ETHERNET, 64);
+    S.cc.picked = S.cc.ran = -1; /* the controls come from the service (their glyphs are made when first drawn) */
     S.chevron = gfx_icon(ICON_CHEVRON, 64);
     S.top_w[TOP_SETTINGS] = S.top_h[TOP_SETTINGS] = 30;
     return 1;
@@ -4224,6 +4706,9 @@ int main(int argc, char **argv)
             if (!S.sheet.open && !S.recents.open && !S.moving && S.zone == 0) {
                 snd_play(SND_SELECT);
                 open_app_sheet();
+            } else if (S.cc.open && !S.sheet.open) {
+                snd_play(SND_SELECT);
+                cc_long_press();
             }
             dirty = 1;
         }

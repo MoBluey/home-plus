@@ -40,18 +40,24 @@ shot scrolled "DR" 3000
 shot sheet "H" 3500
 shot topbar "U" 3000
 shot control-center "UO" 3600
-shot settings "UODDDRO" 4400
+shot cc-picture "UODDLDO" 4400
+shot cc-editing "UOHO" 4800
+shot cc-options "UOHOH" 5400
+shot cc-gallery "UOHOLDDDDO" 5800
+shot settings "UODDDDRO" 4400
 shot recents "B" 3800
-shot settings-display "UODDDRODO" 4600
-shot settings-remove "UODDDRODDDDDDDDO" 5400
+shot settings-display "UODDDDRODO" 4600
+shot settings-remove "UODDDDRODDDDDDDDO" 5800
 shot last-row "DD" 3500
 shot move-hint "H.O" 3800
 shot pointer-settings "MCM" 4200 "1790,80 960,600"
 shot crossfade "R" 1590
 shot pointer-then-keys "MUC" 4200 "1660,850"
 service HOMEPLUS_PREVIEW_PREFS='{"reduceTransparency":true}'
-shot reduce-transparency "UODDDRO" 4400
+shot reduce-transparency "UODDDDRO" 4400
 # media servers: Jellyfin's and Plex's Continue Watching, and a sign-in with a QR code
+service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_AMBIENT=1 HOMEPLUS_PREVIEW_CC='[{"id":"power","size":"small"},{"id":"ambientLight","size":"wide"},{"id":"screenCapture","size":"wide"},{"id":"soundMode","size":"wide"},{"id":"brightness","size":"wide"},{"id":"pictureMode","size":"wide"},{"id":"toneMapping","size":"wide"},{"id":"sleepTimer","size":"small"},{"id":"recents","size":"small"},{"id":"settings","size":"small"}]'
+shot cc-custom "UO" 3600
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=1
 shot jellyfin "" 4500
 shot plex "R" 4500
@@ -60,7 +66,7 @@ service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_TMDB=1
 shot popular "" 5200
 shot popular-browse "URR" 5600
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=signin
-shot signin-plex "UODDDRODDDDDODDDO" 6400
+shot signin-plex "UODDDDRODDDDDODDDO" 6400
 service HOMEPLUS_PREVIEW=1
 # first run: a fresh install asks about the Home button; an unelevated service
 # with no Homebrew Channel (no luna-send here) shows that screen

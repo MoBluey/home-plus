@@ -149,6 +149,45 @@ static int icon_inside(int kind, float x, float y)
         if (x * x + y * y < 0.11f * 0.11f) return 1;
         return a < R && b < R && (a > R - T || b > R - T);
     }
+    case ICON_SOUND_MODE: /* an equaliser: four bars of different heights */
+        for (int k = 0; k < 4; k++) {
+            static const float hgt[4] = { 0.18f, 0.36f, 0.26f, 0.12f };
+            float bx = -0.27f + k * 0.18f;
+            if (sd_segment(x, y, bx, 0.3f, bx, 0.3f - 2 * hgt[k]) < T / 2 + 0.01f) return 1;
+        }
+        return 0;
+    case ICON_BRIGHTNESS: { /* the sun: a disc and eight rays */
+        float rr = sqrtf(x * x + y * y), a = atan2f(y, x);
+        if (rr < 0.17f) return 1;
+        float ray = fmodf(a + 2 * (float)M_PI + (float)M_PI / 8, (float)M_PI / 4) - (float)M_PI / 8;
+        return rr > 0.27f && rr < 0.42f && fabsf(ray) * rr < T / 2;
+    }
+    case ICON_ENERGY: { /* a leaf: two arcs meeting at its tip, and its vein */
+        float a = sqrtf((x + 0.17f) * (x + 0.17f) + (y + 0.17f) * (y + 0.17f)), b = sqrtf((x - 0.17f) * (x - 0.17f) + (y - 0.17f) * (y - 0.17f));
+        if (a < 0.42f && b < 0.42f) return a > 0.42f - T || b > 0.42f - T || fabsf(x + y) < T / 2;
+        return sd_segment(x, y, -0.3f, 0.3f, -0.18f, 0.18f) < T / 2;
+    }
+    case ICON_GAME: /* a gamepad: its body, a cross on the left, two buttons on the right */
+        if (!in_rrect(x, y, 0, 0.02f, 0.42f, 0.2f, 0.18f)) return 0;
+        if ((fabsf(x + 0.2f) < 0.03f && fabsf(y - 0.02f) < 0.1f) || (fabsf(y - 0.02f) < 0.03f && fabsf(x + 0.2f) < 0.1f)) return 0;
+        return (x - 0.17f) * (x - 0.17f) + (y + 0.03f) * (y + 0.03f) > 0.045f * 0.045f &&
+               (x - 0.27f) * (x - 0.27f) + (y - 0.07f) * (y - 0.07f) > 0.045f * 0.045f;
+    case ICON_HDR: { /* contrast: a ring, its right half filled */
+        float rr = sqrtf(x * x + y * y);
+        return fabsf(rr - 0.34f) < T / 2 || (rr < 0.34f && x > 0);
+    }
+    case ICON_AMBIENT: /* a screen glowing at its edges: the screen, and short rays around it */
+        if (in_ring_rrect(x, y, 0, 0, 0.24f, 0.16f, 0.04f, T)) return 1;
+        return sd_segment(x, y, -0.36f, -0.28f, -0.3f, -0.22f) < T / 2 || sd_segment(x, y, 0.36f, -0.28f, 0.3f, -0.22f) < T / 2 ||
+               sd_segment(x, y, -0.36f, 0.28f, -0.3f, 0.22f) < T / 2 || sd_segment(x, y, 0.36f, 0.28f, 0.3f, 0.22f) < T / 2 ||
+               sd_segment(x, y, -0.44f, 0, -0.34f, 0) < T / 2 || sd_segment(x, y, 0.44f, 0, 0.34f, 0) < T / 2 ||
+               sd_segment(x, y, 0, -0.36f, 0, -0.26f) < T / 2 || sd_segment(x, y, 0, 0.36f, 0, 0.26f) < T / 2;
+    case ICON_CAPTURE: /* a screen recording: the screen and a dot in it */
+        if (in_ring_rrect(x, y, 0, -0.03f, 0.38f, 0.26f, 0.06f, T)) return 1;
+        if (sd_segment(x, y, -0.13f, 0.34f, 0.13f, 0.34f) < T / 2) return 1;
+        return x * x + (y + 0.03f) * (y + 0.03f) < 0.1f * 0.1f;
+    case ICON_PLUS:
+        return (fabsf(x) < T / 2 && fabsf(y) < 0.3f) || (fabsf(y) < T / 2 && fabsf(x) < 0.3f);
     case ICON_ACCESS: { /* the accessibility figure in a ring */
         float rr = sqrtf(x * x + y * y);
         if (fabsf(rr - 0.42f) < T / 2) return 1;

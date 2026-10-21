@@ -211,3 +211,18 @@ test('api: an app can be deleted from the TV, but not Home+ itself or what roots
   assert.match(self.json.errorText, /can't be deleted/);
   assert.ok((await call('POST', '/api/remove', { body: { id: 'not.installed' } })).status >= 400);
 });
+
+test('api: the Control Center\'s list and gallery, saved, stepped and reset', async () => {
+  const st = (await call('GET', '/api/control')).json;
+  assert.equal(st.controls.length, 11, 'the default list');
+  assert.equal(st.controls[0].id, 'power');
+  assert.ok(st.catalog.find((e) => e.id === 'soundMode').available);
+  assert.equal(st.catalog.find((e) => e.id === 'ambientLight').available, false, 'no HyperHDR on the stand-in TV');
+  const saved = await call('POST', '/api/control', { body: { action: 'layout', controls: [{ id: 'soundMode', size: 'wide' }, { id: 'power', size: 'small' }] } });
+  assert.deepEqual(saved.json.controls.map((c) => `${c.id}:${c.size}:${c.value}`), ['soundMode:wide:Cinema', 'power:small:', 'settings:small:']);
+  const ran = await call('POST', '/api/control', { body: { action: 'run', value: 'soundMode' } });
+  assert.equal(ran.json.controls[0].value, 'Clear Voice', 'the next sound mode');
+  const reset = await call('POST', '/api/control', { body: { action: 'reset' } });
+  assert.equal(reset.json.controls.length, 11);
+  assert.ok((await call('POST', '/api/control', { body: { action: 'run', value: 'nothing' } })).status >= 400);
+});

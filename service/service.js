@@ -711,7 +711,8 @@ async function tvRegion() {
   return tvCountry;
 }
 const tmdb = require('./tmdb')({ readConfig, writeConfig, log, region: tvRegion });
-const control = require('./control')({ luna, log, readConfig, writeConfig }); /* the Control Center's TV controls */
+const control = require('./control')({ luna, log, readConfig, writeConfig,
+  extra: require('./ambient')({ luna, log }) }); /* the Control Center's TV controls, and ambient light (HyperHDR, PicCap) */
 
 // What's popular on the service a streaming app is, or trending for an app with no picture,
 // for its Top Shelf (pictures through us).
@@ -821,7 +822,7 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/control') { /* the Control Center: GET its state, POST {action, value} */
       if (req.method === 'POST') {
         const b = await readBody(req);
-        await control.act(String(b.action || ''), b.value);
+        await control.act(String(b.action || ''), b.value, b);
         log('control:', b.action, b.value === undefined ? '' : b.value);
       }
       return sendJSON(res, 200, await control.state());
@@ -963,7 +964,7 @@ imageServer.listen(IMAGE_PORT, '127.0.0.1', () => log('image server listening on
 service.register('control', async (msg) => {
   const p = msg.payload || {};
   try {
-    await control.act(String(p.action || ''), p.value);
+    await control.act(String(p.action || ''), p.value, p);
     msg.respond(Object.assign({ returnValue: true }, await control.state()));
   } catch (e) {
     fail(msg, e.message);

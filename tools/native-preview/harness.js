@@ -26,6 +26,12 @@ if (process.env.HOMEPLUS_PREVIEW_PREFS) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
 }
 // The service as it runs on the TV: elevated (root), whoever runs the preview.
+// HOMEPLUS_PREVIEW_CC: a Control Center list to start with, as JSON ([{"id":...,"size":...}])
+if (process.env.HOMEPLUS_PREVIEW_CC) {
+  const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  cfg.controlCenter = JSON.parse(process.env.HOMEPLUS_PREVIEW_CC);
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
+}
 // HOMEPLUS_PREVIEW_UNROOTED: as Homebrew Channel installs it, before elevation.
 process.getuid = () => (process.env.HOMEPLUS_PREVIEW_UNROOTED ? 1000 : 0);
 const SHOWS = ['Severed Signals', 'The Long Orbit', 'Northbound', 'Glass City', 'Midnight Kitchen'];
@@ -166,12 +172,43 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
 }
 
+// HOMEPLUS_PREVIEW_AMBIENT: HyperHDR and PicCap are installed (ambient light): a stand-in HyperHDR
+// (its JSON-RPC) and PicCap's service (below), LEDs on and capture running
+const ambient = { leds: true, capture: true };
+if (process.env.HOMEPLUS_PREVIEW_AMBIENT) {
+  const http = require('http');
+  const PORT = 47902;
+  for (const d of ['hyperhdr', 'piccap']) fs.mkdirSync(path.join(CONFIG_DIR, 'ambient', d), { recursive: true });
+  process.env.HOMEPLUS_HYPERHDR_DIR = path.join(CONFIG_DIR, 'ambient', 'hyperhdr');
+  process.env.HOMEPLUS_PICCAP_DIR = path.join(CONFIG_DIR, 'ambient', 'piccap');
+  process.env.HOMEPLUS_HYPERHDR = `http://127.0.0.1:${PORT}/json-rpc`;
+  http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const cmd = JSON.parse(body || '{}');
+      if (cmd.command === 'componentstate') ambient.leds = !!cmd.componentstate.state;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, tan: cmd.tan, info: { components: [{ name: 'LEDDEVICE', enabled: ambient.leds }] } }));
+    });
+  }).listen(PORT, '127.0.0.1');
+}
+
 // A stand-in TV for the Control Center: inputs (a soundbar with a PS5 behind it), sound output,
 // sleep timer and Wi-Fi, as webOS 23's services answer them; settings changes are kept.
 // HOMEPLUS_PREVIEW_NET=wired|none: another connection; HOMEPLUS_PREVIEW_SSID: the Wi-Fi's name;
 // HOMEPLUS_PREVIEW_REFUSE=1: the TV refuses changes.
-const tv = { soundOutput: 'external_arc', eArcSupport: 'on', sleepMinutes: 0, pictureMode: 'filmMaker', eyeComfortMode: 'off' };
-const PICTURE_MODES = ['personalized', 'vivid', 'normal', 'eco', 'cinema', 'sports', 'game', 'filmMaker', 'expert1', 'expert2'];
+const tv = { soundOutput: 'external_arc', eArcSupport: 'on', sleepMinutes: 0, pictureMode: 'filmMaker', eyeComfortMode: 'off',
+  soundMode: 'movie', backlight: 80, energySaving: 'off', gameOptimization: 'off', hdrDynamicToneMapping: 'on' };
+// the settings as the C3 describes them (getSystemSettingDesc), playing SDR (so HDR's are inactive)
+const DESC = {
+  pictureMode: ['personalized', 'vivid', 'normal', 'eco', 'cinema', 'sports', 'game', 'filmMaker', 'expert1', 'expert2'],
+  soundMode: ['aiSoundPlus', 'aiSound', 'standard', 'movie', 'news', 'sports', 'music', 'game'],
+  backlight: { range: { min: 0, max: 100, interval: 1 } },
+  energySaving: ['auto', 'off', 'min', 'med', 'max'],
+  gameOptimization: ['on', 'off'],
+  hdrDynamicToneMapping: ['on', 'off', 'HGIG']
+};
 global.__stubLuna = (uri, params) => {
   if (uri.endsWith('/getAllInputStatus')) {
     return { returnValue: true, arcDevice: true, devices: [
@@ -180,7 +217,10 @@ global.__stubLuna = (uri, params) => {
       { id: 'HDMI_3', appId: 'com.webos.app.hdmi3', label: 'HDMI 3', hdmiPlugIn: false }] };
   }
   if (uri.endsWith('/getSystemSettingDesc')) {
-    return { returnValue: true, results: [{ key: 'pictureMode', values: { arrayExt: PICTURE_MODES.map((value) => ({ value, visible: true, active: true })) } }] };
+    const key = params.keys[0], d = DESC[key];
+    if (!d) return { returnValue: false, errorText: 'no such key' };
+    return { returnValue: true, results: [{ key, ui: { active: key !== 'hdrDynamicToneMapping' && key !== 'gameOptimization' },
+      values: d.range ? { range: d.range } : { arrayExt: d.map((value) => ({ value, visible: true, active: true })) } }] };
   }
   if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: Object.fromEntries((params.keys || []).map((k) => [k, tv[k]])) };
   if (uri.endsWith('/timer/sleep/getRemainTime')) return Object.assign({ returnValue: true, sleepTimeSecond: 0 }, tv.sleepMinutes ? { sleepTimeMinute: tv.sleepMinutes } : {});
@@ -201,6 +241,11 @@ global.__stubLuna = (uri, params) => {
     return { returnValue: true, wifi: { state: 'connected', ssid: process.env.HOMEPLUS_PREVIEW_SSID || 'Home Wi-Fi' } };
   }
   if (/\/power\/(powerOff|turnOffScreen)$/.test(uri)) return { returnValue: true };
+  if (process.env.HOMEPLUS_PREVIEW_AMBIENT) { /* PicCap's service */
+    if (uri === 'luna://org.webosbrew.piccap.service/status') return { returnValue: true, isRunning: ambient.capture };
+    const m = /^luna:\/\/org\.webosbrew\.piccap\.service\/(start|stop)$/.exec(uri);
+    if (m) { ambient.capture = m[1] === 'start'; return { returnValue: true }; }
+  }
   // Recents: Netflix, YouTube and Spotify were opened; webOS also runs Disney+ in the background
   if (uri.endsWith('/running')) return { returnValue: true, running: ['netflix', 'youtube', 'spotify', 'disney'].map((id) => ({ id })) };
   return null;
