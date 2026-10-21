@@ -354,7 +354,7 @@ static struct {
         int n, plus_col, plus_row;   /* the + slot's place (row -1: no room) */
         Tex *glyph[ICON_COUNT], *glyph_big[ICON_COUNT]; /* glyphs, at 64 px, and at 128 for Large */
         float plus_s, plus_v, reset_s, reset_v; /* while editing: the + slot's and Reset's focus */
-        struct { char id[24], title[48], group[24], sizes[4]; int available, placed, pinned; } cat[MAX_CAT];
+        struct { char id[24], title[48], group[24], sizes[4]; int available, placed, pinned, icon; } cat[MAX_CAT];
         int ncat;
         struct { char app[ID_LEN], name[120]; int plugged; } inputs[12];
         struct { char id[32], name[48]; } modes[24]; /* the picture modes this input offers now */
@@ -367,9 +367,15 @@ static struct {
         Tex *edit_hint, *move_hint, *no_room, *reset;
         int ehw, ehh, mhw, mhh, nrw, nrh, rsw, rsh;
         /* a list control (Picture, Inputs) opens its list in the Control Center's place */
-        int list, list_index, list_n, list_first;
+        int list, list_kind, list_index, list_n, list_first; /* kind: the one on show (or fading out) */
         float list_t, list_v;
         Tex *list_title, *list_row[24], *list_val[24];
+        /* list 3, the gallery (iOS 18's Add a Control): what this TV has that isn't placed, as round
+         * buttons with their names, in groups */
+        int gal_cat[MAX_CAT], gal_n, gal_nhead;
+        float gal_x[MAX_CAT], gal_y[MAX_CAT], gal_hy[6], gal_h;
+        Tex *gal_label[MAX_CAT][2], *gal_head[6]; /* a name too long for one line takes two, as iOS's */
+        int gal_lw[MAX_CAT][2], gal_lh[MAX_CAT][2], gal_hw[6], gal_hh[6];
         int ltw, lth, lrw[24], lrh[24], lvw[24], lvh[24];
     } cc;
     float chevron_a;
@@ -992,6 +998,7 @@ static void parse_control(const char *json)
         e->available = cJSON_IsTrue(cJSON_GetObjectItem(v, "available"));
         e->placed = cJSON_IsTrue(cJSON_GetObjectItem(v, "placed"));
         e->pinned = cJSON_IsTrue(cJSON_GetObjectItem(v, "pinned"));
+        e->icon = cc_icon(jstr(v, "icon"));
     }
     cJSON *pic = cJSON_GetObjectItem(o, "picture");
     const char *mode = jstr(pic, "mode");
@@ -1014,7 +1021,7 @@ static void parse_control(const char *json)
         else snprintf(in->name, sizeof in->name, "%s", jstr(v, "label"));
         in->plugged = cJSON_IsTrue(cJSON_GetObjectItem(v, "plugged"));
     }
-    if (S.cc.list) cc_list_texts(); /* the tick follows the picture mode */
+    if (S.cc.list == 1) cc_list_texts(); /* the tick follows the picture mode */
     cJSON_Delete(o);
 }
 
@@ -1072,6 +1079,7 @@ static void sw_fill(const char *json);
 static void sw_reset(void);
 static void settings_key(void);
 static void cc_save(void);
+static void cc_add(int cat);
 static void sheet_close(void);
 static void sheet_dismiss(void);
 static void sheet_add(const char *label, Action act, int arg, int destructive);
@@ -2157,19 +2165,8 @@ static void run_action(Action act, int arg)
         S.cc.picked = -1;
         cc_pack();
         break;
-    case ACT_CC_ADD: /* at the end, in its first size, with the focus */
-        if (arg >= 0 && arg < S.cc.ncat && S.cc.n < MAX_CC) {
-            CCItem *c = &S.cc.it[S.cc.n++];
-            memset(c, 0, sizeof *c);
-            memcpy(c->id, S.cc.cat[arg].id, sizeof c->id); /* the same size, and ended */
-            c->units = S.cc.cat[arg].sizes[0] ? S.cc.cat[arg].sizes[0] : 1;
-            c->icon = ICON_CONTROLS;
-            c->available = 1;
-            cc_texts(c, S.cc.cat[arg].title, ""); /* its glyph and value come with the service's answer */
-            cc_pack();
-            S.cc.index = S.cc.n - 1;
-            cc_save();
-        }
+    case ACT_CC_ADD:
+        cc_add(arg);
         break;
     case ACT_CC_SIZE:
         if (S.cc.index < S.cc.n && (arg == 1 || arg == 2 || arg == 4)) {
@@ -2622,9 +2619,88 @@ static void cc_list_texts(void)
     }
 }
 
+/* The gallery's layout: each group's name, then its controls four to a row, buttons with their names
+ * under them (as iOS 18's Add a Control shows them) */
+#define GAL_PAD 16
+#define GAL_HEAD 66
+#define GAL_GROUP 34
+#define GAL_BTN 72
+#define GAL_ROW 126
+static void cc_gallery_build(void)
+{
+    for (int i = 0; i < MAX_CAT; i++) tex_free(&S.cc.gal_label[i][0]), tex_free(&S.cc.gal_label[i][1]);
+    for (int i = 0; i < 6; i++) tex_free(&S.cc.gal_head[i]);
+    tex_free(&S.cc.list_title);
+    S.cc.list_title = text_render(S.f_semi, 24, "Add a Control", 0, &S.cc.ltw, &S.cc.lth);
+    float cw = (4 * CC_U + 3 * CC_G - 2 * GAL_PAD) / 4.0f, y = GAL_HEAD;
+    const char *group = "";
+    int col = 4;
+    S.cc.gal_n = S.cc.gal_nhead = 0;
+    for (int i = 0; i < S.cc.ncat; i++) { /* the catalogue is in its groups' order */
+        const __typeof__(S.cc.cat[0]) *e = &S.cc.cat[i];
+        if (!e->available || cc_find(e->id) >= 0) continue;
+        if (strcmp(e->group, group) && S.cc.gal_nhead < 6) { /* a new group: its name */
+            if (col < 4) y += GAL_ROW;
+            group = e->group;
+            S.cc.gal_head[S.cc.gal_nhead] = text_render(S.f_semi, 18, group, 0, &S.cc.gal_hw[S.cc.gal_nhead], &S.cc.gal_hh[S.cc.gal_nhead]);
+            S.cc.gal_hy[S.cc.gal_nhead++] = y;
+            y += GAL_GROUP;
+            col = 0;
+        } else if (col == 4) {
+            y += GAL_ROW;
+            col = 0;
+        }
+        int k = S.cc.gal_n++;
+        S.cc.gal_cat[k] = i;
+        S.cc.gal_x[k] = GAL_PAD + col * cw + (cw - GAL_BTN) / 2;
+        S.cc.gal_y[k] = y;
+        int room = (int)cw + 6, w0, h0, split = -1, best = 1 << 30; /* (a name may reach into the gap) */
+        Tex *t = text_render(S.f_medium, 15, e->title, 0, &w0, &h0);
+        tex_free(&t);
+        for (const char *sp = e->title; w0 > room && (sp = strchr(sp, ' ')); sp++) { /* two lines: the split whose longer line is shortest */
+            char first[48];
+            int w1, w2, h;
+            snprintf(first, sizeof first, "%.*s", (int)(sp - e->title), e->title);
+            t = text_render(S.f_medium, 15, first, 0, &w1, &h), tex_free(&t);
+            t = text_render(S.f_medium, 15, sp + 1, 0, &w2, &h), tex_free(&t);
+            if ((w1 > w2 ? w1 : w2) < best) best = w1 > w2 ? w1 : w2, split = (int)(sp - e->title);
+        }
+        if (split >= 0) { /* "Dynamic" / "Tone Mapping" */
+            char first[48];
+            snprintf(first, sizeof first, "%.*s", split, e->title);
+            S.cc.gal_label[k][0] = text_render(S.f_medium, 15, first, room, &S.cc.gal_lw[k][0], &S.cc.gal_lh[k][0]);
+            S.cc.gal_label[k][1] = text_render(S.f_medium, 15, e->title + split + 1, room, &S.cc.gal_lw[k][1], &S.cc.gal_lh[k][1]);
+        } else {
+            S.cc.gal_label[k][0] = text_render(S.f_medium, 15, e->title, room, &S.cc.gal_lw[k][0], &S.cc.gal_lh[k][0]);
+        }
+        col++;
+    }
+    S.cc.gal_h = (S.cc.gal_n ? y + GAL_ROW : GAL_HEAD + 60) + 4;
+}
+
+/* the gallery's control in direction (dx, dy) from the focused one: the nearest that way */
+static void cc_gallery_move(int dx, int dy)
+{
+    int cur = S.cc.list_index, best = -1;
+    float bd = 1e9f;
+    for (int k = 0; k < S.cc.gal_n; k++) {
+        float ax = S.cc.gal_x[k] - S.cc.gal_x[cur], ay = S.cc.gal_y[k] - S.cc.gal_y[cur];
+        if (k == cur || (dx && ax * dx <= 1) || (dy && ay * dy <= 1)) continue;
+        float d = dx ? fabsf(ax) + 2.5f * fabsf(ay) : fabsf(ay) + 2.5f * fabsf(ax);
+        if (d < bd) bd = d, best = k;
+    }
+    if (best >= 0) S.cc.list_index = best;
+}
+
+static void cc_add(int cat);
 static void cc_list_open(int which)
 {
-    S.cc.list = which;
+    S.cc.list = S.cc.list_kind = which;
+    S.cc.list_index = S.cc.list_first = 0;
+    if (which == 3) {
+        cc_gallery_build();
+        return;
+    }
     cc_list_texts();
     S.cc.list_index = which == 1 && S.cc.mode >= 0 ? S.cc.mode : 0;
     S.cc.list_first = S.cc.list_index >= CC_LIST_ROWS ? S.cc.list_index - CC_LIST_ROWS + 1 : 0;
@@ -2632,6 +2708,14 @@ static void cc_list_open(int which)
 
 static void cc_list_key(SDL_Keycode k)
 {
+    if (S.cc.list == 3) { /* the gallery's buttons, in their grid */
+        if (k == SDLK_LEFT) cc_gallery_move(-1, 0);
+        else if (k == SDLK_RIGHT) cc_gallery_move(1, 0);
+        else if (k == SDLK_UP) cc_gallery_move(0, -1);
+        else if (k == SDLK_DOWN) cc_gallery_move(0, 1);
+        else if (is_back(k)) S.cc.list = 0;
+        return;
+    }
     if (k == SDLK_UP && S.cc.list_index > 0) S.cc.list_index--;
     else if (k == SDLK_DOWN && S.cc.list_index < S.cc.list_n - 1) S.cc.list_index++;
     else if (is_back(k)) S.cc.list = 0;
@@ -2642,6 +2726,13 @@ static void cc_list_key(SDL_Keycode k)
 static void cc_list_ok(void)
 {
     int i = S.cc.list_index;
+    if (S.cc.list == 3) { /* add it: the gallery closes, and it has the focus */
+        if (i < S.cc.gal_n) {
+            S.cc.list = 0;
+            cc_add(S.cc.gal_cat[i]);
+        }
+        return;
+    }
     if (i < 0 || i >= S.cc.list_n) return;
     if (S.cc.list == 1) {
         char body[96];
@@ -2654,7 +2745,6 @@ static void cc_list_ok(void)
 }
 
 /* editing: OK picks a control up (and puts it down), the + slot adds one, Reset asks */
-static void open_cc_gallery(void);
 static void cc_edit_ok(void)
 {
     if (S.cc.picked >= 0) {
@@ -2663,7 +2753,7 @@ static void cc_edit_ok(void)
     } else if (S.cc.index < S.cc.n) {
         S.cc.picked = S.cc.index;
     } else if (S.cc.index == S.cc.n) {
-        open_cc_gallery();
+        if (S.cc.plus_row >= 0) cc_list_open(3);
     } else {
         sheet_open("Reset Control Center?");
         sheet_body("The controls go back to how they were at first.");
@@ -2679,20 +2769,6 @@ static int cc_cat(const char *id)
     for (int i = 0; i < S.cc.ncat; i++)
         if (!strcmp(S.cc.cat[i].id, id)) return i;
     return -1;
-}
-
-/* the controls that work on this TV and aren't placed yet, by group */
-static void open_cc_gallery(void)
-{
-    if (S.cc.plus_row < 0) return;
-    sheet_open("Add a Control");
-    for (int i = 0; i < S.cc.ncat && S.sheet.n < MAX_SHEET - 1; i++) { /* the catalogue is in its groups' order */
-        const __typeof__(S.cc.cat[0]) *e = &S.cc.cat[i];
-        if (e->available && cc_find(e->id) < 0) settings_row(e->title, e->group, ACT_CC_ADD, i, 0, 0);
-    }
-    if (!S.sheet.n) sheet_body("Every control this TV has is in the Control Center.");
-    sheet_add("Cancel", ACT_CANCEL, 0, 0);
-    S.sheet.wide = 1;
 }
 
 /* holding OK: Edit Controls; while editing, the focused control's sizes and Remove */
@@ -2716,6 +2792,22 @@ static void cc_long_press(void)
     }
     if (e < 0 || !S.cc.cat[e].pinned) sheet_add("Remove", ACT_CC_REMOVE, 0, 1); /* not Settings: the only way in */
     sheet_add("Cancel", ACT_CANCEL, 0, 0);
+}
+
+/* a control from the catalogue, at the end in its first size, with the focus */
+static void cc_add(int cat)
+{
+    if (cat < 0 || cat >= S.cc.ncat || S.cc.n >= MAX_CC) return;
+    CCItem *c = &S.cc.it[S.cc.n++];
+    memset(c, 0, sizeof *c);
+    memcpy(c->id, S.cc.cat[cat].id, sizeof c->id); /* the same size, and ended */
+    c->units = S.cc.cat[cat].sizes[0] ? S.cc.cat[cat].sizes[0] : 1;
+    c->icon = S.cc.cat[cat].icon;
+    c->available = 1;
+    cc_texts(c, S.cc.cat[cat].title, ""); /* its value comes with the service's answer */
+    cc_pack();
+    S.cc.index = S.cc.n - 1;
+    cc_save();
 }
 
 static void cc_activate(void)
@@ -4131,6 +4223,44 @@ static void draw_cc_list(float a)
     }
 }
 
+/* The gallery, in the Control Center's place: its name, each group's name, and the controls on offer
+ * as round buttons with their names under them; the focused one white, like the controls themselves */
+static void draw_cc_gallery(float a)
+{
+    float x = cc_grid_x(), y = cc_grid_y(), w = 4 * CC_U + 3 * CC_G, h = S.cc.gal_h;
+    if (!S.reduce_motion) y -= 12 * (1 - a); /* it settles in */
+    r_shadow(x, y, w, h, 34, 30, 12, 0.35f * a);
+    panel(0, x, y, w, h, 34, 1, 0, a);
+    Uint8 al = (Uint8)(255 * a);
+    draw_text(S.cc.list_title, S.cc.ltw, S.cc.lth, x + (w - S.cc.ltw) / 2, y + (GAL_HEAD - S.cc.lth) / 2 + 3, al);
+    for (int g = 0; g < S.cc.gal_nhead; g++) /* the group's name, small, on the left like iOS's */
+        draw_text(S.cc.gal_head[g], S.cc.gal_hw[g], S.cc.gal_hh[g], x + GAL_PAD + 8, y + S.cc.gal_hy[g] + (GAL_GROUP - S.cc.gal_hh[g]) / 2,
+                  (Uint8)(al * 0.6f));
+    if (!S.cc.gal_n) { /* nothing left to add */
+        static Tex *none;
+        static int nw, nh;
+        if (!none) none = text_render(S.f_medium, 20, "Every control this TV has is placed.", 0, &nw, &nh);
+        draw_text(none, nw, nh, x + (w - nw) / 2, y + GAL_HEAD + 14, (Uint8)(al * 0.7f));
+    }
+    for (int k = 0; k < S.cc.gal_n; k++) {
+        const __typeof__(S.cc.cat[0]) *e = &S.cc.cat[S.cc.gal_cat[k]];
+        int f = k == S.cc.list_index;
+        float bx = x + S.cc.gal_x[k], by = y + S.cc.gal_y[k], d = GAL_BTN * (f ? 1.08f : 1), ox = bx - (d - GAL_BTN) / 2, oy = by - (d - GAL_BTN) / 2;
+        if (f) r_shadow(ox, oy, d, d, d / 2, 14, 6, 0.4f * a);
+        panel(0, ox, oy, d, d, d / 2, 1, f, a);
+        if (f) r_shape(ox, oy, d, d, d / 2, 245, 245, 247, al, 0, 1, 1);
+        Uint8 c = f ? 28 : 255;
+        float is = 32 * d / GAL_BTN;
+        r_image(cc_glyph(e->icon, 0), ox + (d - is) / 2, oy + (d - is) / 2, is, is, c, c, c, al, 0);
+        float ly = by + GAL_BTN + 8;
+        for (int l = 0; l < 2 && S.cc.gal_label[k][l]; l++) {
+            draw_text(S.cc.gal_label[k][l], S.cc.gal_lw[k][l], S.cc.gal_lh[k][l], bx + GAL_BTN / 2.0f - S.cc.gal_lw[k][l] / 2.0f, ly,
+                      (Uint8)(al * (f ? 1 : 0.75f)));
+            ly += S.cc.gal_lh[k][l] - 2;
+        }
+    }
+}
+
 static void draw_control_center(void)
 {
     S.cc.marquee = 0;
@@ -4138,7 +4268,7 @@ static void draw_control_center(void)
     float open = fminf(fmaxf(S.cc.t, 0), 1), lt = fminf(fmaxf(S.cc.list_t, 0), 1);
     float stagger = S.cc.n > 1 ? fminf(0.04f, 0.45f / (S.cc.n - 1)) : 0, span = 1 - stagger * (S.cc.n > 1 ? S.cc.n - 1 : 0);
     Uint32 now = SDL_GetTicks();
-    float ed = S.cc.editing ? open * (1 - lt) : 0;
+    float ed = S.cc.editing ? open : 0; /* (also behind the gallery: still editing) */
     if (ed > 0.004f) r_fill(0, 0, 0, (Uint8)(150 * ed)); /* editing: the home screen steps back, as iOS's does */
     for (int i = 0; i < S.cc.n; i++) {
         CCItem *c = &S.cc.it[i];
@@ -4226,7 +4356,10 @@ static void draw_control_center(void)
                     (Uint8)(255 * a), 0);
         }
     }
-    if (lt > 0.004f) draw_cc_list(lt * open);
+    if (lt > 0.004f) {
+        if (S.cc.list_kind == 3) draw_cc_gallery(lt * open);
+        else draw_cc_list(lt * open);
+    }
 }
 
 static void draw_switcher(void)
