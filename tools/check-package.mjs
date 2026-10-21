@@ -37,7 +37,7 @@ function tarEntries(gz) {
     if (h.every((b) => b === 0)) break;
     const field = (from, to) => h.toString('latin1', from, to).split('\0')[0].trim();
     const size = parseInt(field(124, 136), 8) || 0;
-    entries.set(field(0, 100).replace(/^\.\//, '').replace(/\/$/, ''),
+    entries.set(field(0, 100).replace(/\/$/, ''),
       { type: field(156, 157) || '0', mode: parseInt(field(100, 108), 8), data: buf.subarray(at + 512, at + 512 + size) });
     at += 512 + Math.ceil(size / 512) * 512;
   }
@@ -88,7 +88,13 @@ if (!problems.length) {
   check(readJSON('service/package.json').version === version,
     `versions differ: native/appinfo.json ${version}, service/package.json ${readJSON('service/package.json').version}`);
   check(path.basename(ipk) === `${id}_${version}_all.ipk`, `${path.basename(ipk)} should be named ${id}_${version}_all.ipk`);
-  const control = tarEntries(ar.get('control.tar.gz')).get('control');
+  const controlTar = tarEntries(ar.get('control.tar.gz')), control = controlTar.get('control');
+  // names as ares-package writes them (the Homebrew Channel's repository reads control and appinfo.json
+  // by them, and finds no ./control)
+  for (const [m, entries] of [['control.tar.gz', controlTar], ['data.tar.gz', data]]) {
+    const odd = [...entries.keys()].filter((p) => p === '.' || p.startsWith('./') || p.startsWith('/'));
+    check(!odd.length, `${m} has names that aren't plain paths (control, usr/...): ${odd.slice(0, 3).join(', ')}`);
+  }
   const fields = Object.fromEntries((control ? control.data.toString() : '').split('\n').map((l) => l.split(': ')));
   check(fields.Package === id && fields.Version === version, `control says ${fields.Package} ${fields.Version}, not ${id} ${version}`);
   check(file(`${APP}/appinfo.json`) && file(`${APP}/appinfo.json`).data.equals(fs.readFileSync(path.join(root, 'native/appinfo.json'))),
