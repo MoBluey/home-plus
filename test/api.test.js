@@ -201,3 +201,13 @@ test('api: the Settings key, with Home+ in front, reaches the launcher as an eve
   assert.deepEqual((await waiting).json, { events: ['controlCenter'] });
   assert.ok((await call('POST', '/api/key', { body: { key: 'volumeUp' } })).status >= 400, 'only keys Home+ handles');
 });
+
+test('api: an app can be deleted from the TV, but not Home+ itself or what roots the TV', async () => {
+  const apps = (await call('GET', '/api/apps')).json.apps;
+  assert.equal(apps.find((a) => a.id === 'youtube').removable, true);
+  assert.deepEqual((await call('POST', '/api/remove', { body: { id: 'youtube' } })).json, { returnValue: true, deleted: 'youtube' });
+  const self = await call('POST', '/api/remove', { body: { id: 'com.github.pmiraka.homeplus' } });
+  assert.ok(self.status >= 400);
+  assert.match(self.json.errorText, /can't be deleted/);
+  assert.ok((await call('POST', '/api/remove', { body: { id: 'not.installed' } })).status >= 400);
+});

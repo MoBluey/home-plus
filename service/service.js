@@ -661,6 +661,27 @@ function readBody(req) {
   });
 }
 
+// Apps you can delete from the TV (like tvOS's Delete App): those webOS says can be removed, but
+// not what roots the TV (Homebrew Channel, and LG Input Hook) or Home+ itself (Remove Home+ first
+// undoes what it set up).
+const KEEP_APPS = ['org.webosbrew.hbchannel', 'org.webosbrew.inputhook', NATIVE_ID];
+const deletable = (a) => a.removable === true && !a.systemApp && !KEEP_APPS.includes(a.id);
+
+// Deletes an app as LG's home does: a store app by removing its launch point (webOS then uninstalls
+// it), a developer one with appInstallService's dev/remove. It leaves Recents too.
+async function deleteApp(id) {
+  const a = (((await listApps()) || {}).apps || []).find((x) => x.id === id);
+  if (!a || !deletable(a)) throw new Error(`${a ? a.title || id : id} can't be deleted`);
+  const dev = String(a.folderPath || '').startsWith('/media/developer/');
+  const r = dev ? await luna('luna://com.webos.appInstallService/dev/remove', { id })
+    : await luna(APPMGR + '/removeLaunchPoint', { launchPointId: `${id}_default` });
+  if (!r || r.returnValue === false) throw new Error((r && r.errorText) || 'the TV didn\'t delete it');
+  log('deleted', id, dev ? '(developer app)' : '');
+  lastUsed.delete(id);
+  saveRecents();
+  return { returnValue: true, deleted: id };
+}
+
 async function apiApps() {
   const r = await listApps();
   return ((r && r.apps) || [])
@@ -672,7 +693,8 @@ async function apiApps() {
         title: a.title || a.id,
         icon: e.icon && e.icon.length ? `/icon/${encodeURIComponent(a.id)}` : '',
         art: e.art && e.art.length ? `/art/${encodeURIComponent(a.id)}` : '',
-        color: hexColor(a.iconColor) || hexColor(a.bgColor)
+        color: hexColor(a.iconColor) || hexColor(a.bgColor),
+        removable: deletable(a)
       };
     });
 }
@@ -827,6 +849,7 @@ async function handleApi(req, res) {
       log('closed', ids);
       return sendJSON(res, 200, { returnValue: true, closed: ids });
     }
+    if (url.pathname === '/api/remove' && req.method === 'POST') return sendJSON(res, 200, await deleteApp(String((await readBody(req)).id || '')));
     if (url.pathname === '/api/uninstall' && req.method === 'POST') {
       return sendJSON(res, 200, Object.assign({ returnValue: true }, await uninstall()));
     }

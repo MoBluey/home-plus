@@ -17,7 +17,7 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with C
 - **Motion and sound:** everything moves on springs, and menus grow out of the button that opened them. A soft tick plays when focus moves; **Settings → Sounds** turns it off.
 - **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. It turns to the next title every 10 seconds (or stays still: **Settings → Display & OLED → Top Shelf**); press **Up**, then **Left** and **Right**, to step through them. You sign in with a code or a QR code, so no password is typed on the TV.
 - **Recents:** an App Switcher for the apps you opened that are still running, most recent first. Apps webOS runs by itself (preloaded, or started again in the background) stay out. Open them, close them one by one, or close them all. Press **Back** on the first app to open it.
-- **Your layout:** hold **OK** on an app to move it, move it to the front or hide it. Hidden apps collect in a "Hidden" tile at the end.
+- **Your layout:** hold **OK** on an app to move it, move it to the front, hide it, or delete it from the TV (like tvOS's Delete App; LG's built-in apps, the Homebrew Channel, LG Input Hook and Home+ itself can't be deleted). Hidden apps collect in a "Hidden" tile at the end.
 - **Home button:** optionally, the Home button opens Home+ instead of LG's home screen.
 - **OLED care:** the picture drifts by a pixel every minute, and an idle Home+ dims, then goes black.
 - **Light on the TV:** a native app (C, SDL2, OpenGL ES 2) that draws nothing while nothing moves. It shares the GPU happily with PicCap and HyperHDR.
@@ -261,6 +261,7 @@ The launcher talks to the service over a local HTTP API on `127.0.0.1:47823`. It
 | `POST /api/jellyfin/server` | A Jellyfin server's address, for one Home+ can't find |
 | `GET /api/system` | LG's settings apps |
 | `GET /api/running`, `POST /api/close` | Recents, and closing apps |
+| `POST /api/remove` | Deletes an app from the TV (`{"id": ...}`) |
 | `GET` / `POST /api/home` | Home button mode |
 | `GET` / `POST /api/prefs` | `sounds`, `dimMinutes`, `offMinutes`, `pixelShift`, `calmColours`, `clock24`, `reduceMotion`, `reduceTransparency` |
 | `POST /api/uninstall` | Remove Home+ |

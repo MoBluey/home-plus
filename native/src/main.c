@@ -84,7 +84,7 @@
 enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, TAG_QR, TAG_ICON, TAG_ART, TAG_RAIL_LOGO, TAG_RAIL_BG, TAG_FEATURED, TAG_CONTROL, TAG_LAUNCH, TAG_WAKE,
        TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET,
        TAG_STATUS, TAG_ELEVATE, TAG_RESTART, TAG_UNINSTALL,
-       TAG_PREFS, TAG_EVENTS };
+       TAG_PREFS, TAG_EVENTS, TAG_DELETED };
 
 /* Media sources: each one's Continue Watching is the Top Shelf of its own app */
 enum { SRC_NONE, SRC_STREMIO, SRC_JELLYFIN, SRC_PLEX, SRC_COUNT };
@@ -127,6 +127,7 @@ typedef struct {
     float logo_w, logo_h, logo_r; /* its size on a tile, and corner radius for picture icons */
     int icon_state, art_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
     int feat; /* a streaming service with popular titles (TMDB): 0 not asked, 1 asking, 2 yes, 3 no */
+    int removable, deleted; /* it can be deleted from the TV; it was, and the app list hasn't caught up */
     int lw, lh, bw, bh;
     float s, sv; /* focus animation 0..1, and its spring velocity */
 } App;
@@ -147,7 +148,7 @@ typedef struct {
 enum { PIC_NONE, PIC_ART, PIC_GLOW, PIC_COVER, PIC_RAIL, PIC_HELD };
 typedef struct { int kind, i; } Pic;
 
-typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
+typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_DELETE_ASK, ACT_DELETE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
                ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_TMDB, ACT_SHELF,
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
@@ -517,11 +518,11 @@ static void rebuild_items(void)
         for (int i = 0; i < S.napps; i++) {
             if (!used[i] && !strcmp(S.apps[i].id, S.order[o])) {
                 used[i] = 1;
-                if (!is_hidden(S.apps[i].id)) S.items[S.nitems++] = i;
+                if (!is_hidden(S.apps[i].id) && !S.apps[i].deleted) S.items[S.nitems++] = i;
             }
         }
     }
-    for (int i = 0; i < S.napps; i++) if (!used[i] && !is_hidden(S.apps[i].id)) S.items[S.nitems++] = i;
+    for (int i = 0; i < S.napps; i++) if (!used[i] && !is_hidden(S.apps[i].id) && !S.apps[i].deleted) S.items[S.nitems++] = i;
     int any_hidden = 0;
     for (int i = 0; i < S.napps; i++) if (is_hidden(S.apps[i].id)) any_hidden = 1;
     if (any_hidden) S.items[S.nitems++] = -1;
@@ -644,6 +645,7 @@ static void parse_apps(const char *json)
         snprintf(a->icon, sizeof a->icon, "%s", jstr(v, "icon"));
         snprintf(a->art, sizeof a->art, "%s", jstr(v, "art"));
         a->has_col = parse_hex(jstr(v, "color"), a->col);
+        a->removable = cJSON_IsTrue(cJSON_GetObjectItem(v, "removable"));
     }
     cJSON_Delete(o);
 
@@ -1258,6 +1260,19 @@ static void handle_result(Result *r)
     case TAG_RUNNING:
         if (r->status == 200) sw_fill(r->body);
         else if (S.recents.loading) S.recents.loading = 0, S.recents.failed = 1;
+        break;
+    case TAG_DELETED: /* its tile went when you chose Delete: if the TV said no, it comes back */
+        if (r->status != 200) {
+            cJSON *o = r->body ? cJSON_Parse(r->body) : NULL;
+            char msg[300];
+            snprintf(msg, sizeof msg, "Couldn\xE2\x80\x99t delete it: %s", o && jstr(o, "errorText")[0] ? jstr(o, "errorText") : "the TV didn\xE2\x80\x99t answer");
+            cJSON_Delete(o);
+            for (int i = 0; i < S.napps; i++) S.apps[i].deleted = 0;
+            rebuild_items();
+            toast(msg, 4000);
+        } else {
+            net_get_json("/api/apps", TAG_APPS, 0, 0); /* the list without it, once webOS has caught up */
+        }
         break;
     case TAG_CLOSED:
         if (r->status != 200) toast("Couldn\xE2\x80\x99t close that app", 2500);
@@ -2007,6 +2022,7 @@ static void open_app_sheet(void)
         sheet_add(t, ACT_MEDIA_LINK, src, 0);
     }
     sheet_add("Hide App", ACT_HIDE, 0, 1);
+    if (a->removable) sheet_add("Delete App", ACT_DELETE_ASK, (int)(a - S.apps), 1); /* from the TV, like tvOS's */
     sheet_add("Cancel", ACT_CANCEL, 0, 0);
 }
 
@@ -2051,6 +2067,33 @@ static void run_action(Action act, int arg)
         break;
     case ACT_MOVE: S.moving = 1; break;
     case ACT_FRONT: move_item_to(0); save_layout(); break;
+    case ACT_DELETE_ASK: /* tvOS's question */
+        if (arg >= 0 && arg < S.napps) {
+            char t[ID_LEN + 32];
+            snprintf(t, sizeof t, "Delete \xE2\x80\x9C%s\xE2\x80\x9D?", S.apps[arg].title);
+            sheet_open(t);
+            sheet_body("Deleting this app also deletes its data.");
+            sheet_add("Delete", ACT_DELETE, arg, 1);
+            sheet_add("Cancel", ACT_CANCEL, 0, 0);
+            S.sheet.index = 1; /* Cancel first, so a stray OK keeps the app */
+        }
+        break;
+    case ACT_DELETE:
+        if (arg >= 0 && arg < S.napps) {
+            App *d = &S.apps[arg];
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "id", d->id);
+            char *body = cJSON_PrintUnformatted(o);
+            net_post("/api/remove", body, TAG_DELETED);
+            free(body);
+            cJSON_Delete(o);
+            d->deleted = 1; /* its tile goes now; the app list catches up once the TV has deleted it */
+            rebuild_items();
+            char msg[ID_LEN + 32];
+            snprintf(msg, sizeof msg, "Deleting %s\xE2\x80\xA6", d->title);
+            toast(msg, 3000);
+        }
+        break;
     case ACT_HIDE:
         if (a && S.nhidden < MAX_APPS) {
             char msg[200];

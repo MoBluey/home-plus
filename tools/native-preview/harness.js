@@ -208,7 +208,9 @@ global.__stubLuna = (uri, params) => {
 process.env.HOMEPLUS_RECENTS_FILE = path.join(CONFIG_DIR, 'recents.json');
 fs.writeFileSync(process.env.HOMEPLUS_RECENTS_FILE, JSON.stringify({ youtube: Date.now() - 60000, netflix: Date.now() - 120000, spotify: Date.now() - 600000 }));
 
+const BUILT_IN = ['com.webos.app.hdmi1', 'com.palm.app.settings', 'browser']; /* LG's own: they can't be deleted */
 global.__stubApps = APPS.map(([id, title]) => ({
-  id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || ''
+  id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || '',
+  removable: !BUILT_IN.includes(id), systemApp: BUILT_IN.includes(id)
 }));
 require(path.join(serviceDir, 'service.js'));
