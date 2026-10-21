@@ -49,6 +49,7 @@ function call(method, p, { body, headers = {}, auth = true } = {}) {
 test.before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-api-'));
   fs.writeFileSync(path.join(dir, 'apps.txt'), 'netflix|Netflix,youtube|YouTube,stremio|Stremio');
+  for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(dir, `show${i}.jpg`), `a picture of show ${i}`); /* the mock Stremio's */
   port = await freePort();
   child = spawn(NODE, [path.join(ROOT, 'tools/native-preview/harness.js'), dir, path.join(ROOT, 'service')], {
     env: Object.assign({}, process.env, {
@@ -120,6 +121,33 @@ test('api: what\'s popular on a streaming app, and what\'s trending for an app w
   assert.ok(netflix.json.items.every((it) => it.background.startsWith('/img/')));
   assert.equal((await call('GET', '/api/featured?app=youtube')).json.kind, 'trending');
   assert.equal((await call('GET', '/api/featured?app=nothing.installed')).json.items.length, 0);
+});
+
+test('api: a title\'s picture comes through the service, and is kept for next time', async () => {
+  const pic = (await call('GET', '/api/continue')).json.items.find((it) => it.background).background;
+  const get = () => new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: pic, headers: { 'X-Homeplus-Token': token } }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject);
+  });
+  const first = await get();
+  assert.equal(first.status, 200);
+  assert.match(first.body, /^a picture of show \d$/);
+  const kept = path.join(dir, 'config', 'images', pic.slice('/img/'.length));
+  await until(() => fs.existsSync(kept), 5000, 'the picture to be kept');
+  assert.equal(fs.readFileSync(kept, 'utf8'), first.body);
+  assert.deepEqual(await get(), first);
+});
+
+test('api: Recents lists the apps you opened that still run, and a closed one stays out', async () => {
+  /* the stand-in TV runs Netflix, YouTube, Spotify and Disney+; YouTube, then Netflix, then
+   * Spotify were opened (Spotify isn't on this home screen); Disney+ never was */
+  const ids = async () => (await call('GET', '/api/running')).json.apps.map((a) => a.id);
+  assert.deepEqual(await ids(), ['youtube', 'netflix']);
+  assert.equal((await call('POST', '/api/close', { body: { id: 'youtube' } })).status, 200);
+  assert.deepEqual(await ids(), ['netflix'], 'webOS still runs YouTube (it may start it again), but you closed it');
 });
 
 test('api: the Control Center reads the TV and changes it', async () => {

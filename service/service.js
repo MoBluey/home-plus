@@ -392,7 +392,7 @@ async function uninstall() {
 // like tvOS: webOS also runs apps nobody opened (preloaded for a quick start, or started
 // again in the background after you closed them), and those stay out. Kept in /tmp, so a
 // restarted service (an update) still knows them, and a reboot, which closes them, doesn't.
-const RECENTS_FILE = '/tmp/homeplus-recents.json';
+const RECENTS_FILE = process.env.HOMEPLUS_RECENTS_FILE || '/tmp/homeplus-recents.json';
 const lastUsed = new Map((() => {
   try { return Object.entries(JSON.parse(fs.readFileSync(RECENTS_FILE, 'utf8'))); } catch (e) { return []; }
 })());
@@ -503,12 +503,20 @@ function sendImage(key, res) {
 function keepImage(up, file) {
   const part = `${file}.${++parts}.part`;
   const out = fs.createWriteStream(part, { mode: 0o600 });
-  up.pipe(out);
-  out.on('error', () => fs.unlink(part, () => {}));
+  let ended = false;
+  const drop = () => {
+    out.destroy();
+    fs.unlink(part, () => {});
+  };
+  up.on('end', () => { ended = true; });
+  up.on('aborted', drop);
+  up.on('error', drop);
+  out.on('error', drop);
   out.on('finish', () => {
-    if (!up.complete) return fs.unlink(part, () => {});
+    if (!ended || up.complete === false) return fs.unlink(part, () => {});
     fs.rename(part, file, () => trimImages());
   });
+  up.pipe(out);
 }
 
 function trimImages() {

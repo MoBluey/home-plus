@@ -194,7 +194,8 @@ global.__stubLuna = (uri, params) => {
   if (uri.endsWith('/running')) return { returnValue: true, running: ['netflix', 'youtube', 'spotify', 'disney'].map((id) => ({ id })) };
   return null;
 };
-fs.writeFileSync('/tmp/homeplus-recents.json', JSON.stringify({ youtube: Date.now() - 60000, netflix: Date.now() - 120000, spotify: Date.now() - 600000 }));
+process.env.HOMEPLUS_RECENTS_FILE = path.join(CONFIG_DIR, 'recents.json');
+fs.writeFileSync(process.env.HOMEPLUS_RECENTS_FILE, JSON.stringify({ youtube: Date.now() - 60000, netflix: Date.now() - 120000, spotify: Date.now() - 600000 }));
 
 global.__stubApps = APPS.map(([id, title]) => ({
   id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || ''

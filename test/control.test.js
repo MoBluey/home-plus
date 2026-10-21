@@ -38,8 +38,8 @@ test('control: what the panel shows: network, sound output, sleep timer and inpu
     { appId: 'com.webos.app.hdmi2', label: 'HW-Q990F', device: 'PS5', plugged: true }]);
 });
 
-test('control: no Wi-Fi: Ethernet, or not connected', async () => {
-  assert.deepEqual((await fakeTv({ wifi: '', wired: true }).control.state()).network, { kind: 'wired', name: 'Ethernet' });
+test('control: no Wi-Fi: Ethernet (the tile says so; its line says "Connected"), or not connected', async () => {
+  assert.deepEqual((await fakeTv({ wifi: '', wired: true }).control.state()).network, { kind: 'wired', name: 'Connected' });
   assert.deepEqual((await fakeTv({ wifi: '' }).control.state()).network, { kind: 'none', name: 'Not Connected' });
 });
 
