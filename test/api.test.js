@@ -50,6 +50,8 @@ test.before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-api-'));
   fs.writeFileSync(path.join(dir, 'apps.txt'), 'netflix|Netflix,youtube|YouTube,stremio|Stremio');
   for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(dir, `show${i}.jpg`), `a picture of show ${i}`); /* the mock Stremio's */
+  fs.mkdirSync(path.join(dir, 'lginputhook')); /* LG Input Hook, with the Home key bound to Home+ */
+  fs.writeFileSync(path.join(dir, 'lginputhook', 'keybinds.json'), JSON.stringify({ 773: { action: 'launch', id: 'com.github.pmiraka.homeplus' } }));
   port = await freePort();
   child = spawn(NODE, [path.join(ROOT, 'tools/native-preview/harness.js'), dir, path.join(ROOT, 'service')], {
     env: Object.assign({}, process.env, {
@@ -58,7 +60,9 @@ test.before(async () => {
       HOMEPLUS_TOKEN_FILE: path.join(dir, 'api-token'),
       HOMEPLUS_PORT: String(port),
       HOMEPLUS_PREVIEW: '1',
-      HOMEPLUS_PREVIEW_TMDB: '1'
+      HOMEPLUS_PREVIEW_TMDB: '1',
+      HOMEPLUS_PREVIEW_FOREGROUND: 'com.github.pmiraka.homeplus', /* Home+ is in front */
+      HOMEPLUS_INPUTHOOK_BINDS: path.join(dir, 'lginputhook', 'keybinds.json')
     }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -175,4 +179,25 @@ test('api: preferences are kept in the config file', async () => {
 test('api: sign-ins change things, so they take POST only', async () => {
   assert.equal((await call('GET', '/api/stremio/link')).status, 405);
   assert.equal((await call('GET', '/api/stremio/status')).status, 200);
+});
+
+test('api: the Settings key binds through LG Input Hook, and only Home+\'s bind comes and goes', async () => {
+  const binds = () => JSON.parse(fs.readFileSync(path.join(dir, 'lginputhook', 'keybinds.json'), 'utf8'));
+  assert.deepEqual((await call('GET', '/api/home')).json.settingsKey, { available: true, on: false });
+  const on = await call('POST', '/api/home', { body: { settingsKey: true } });
+  assert.deepEqual(on.json.settingsKey, { available: true, on: true });
+  assert.equal(binds()[139].action, 'exec');
+  assert.match(binds()[139].command, /settings-key\.sh$/);
+  assert.equal(binds()[773].id, 'com.github.pmiraka.homeplus', 'the Home key\'s bind stays');
+  await call('POST', '/api/home', { body: { settingsKey: false } });
+  assert.equal(binds()[139], undefined);
+  assert.equal(binds()[773].id, 'com.github.pmiraka.homeplus');
+});
+
+test('api: the Settings key, with Home+ in front, reaches the launcher as an event', async () => {
+  const waiting = call('GET', '/api/events'); /* the launcher's request, answered when something happens */
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual((await call('POST', '/api/key', { body: { key: 'settings' } })).json, { opened: 'controlCenter' });
+  assert.deepEqual((await waiting).json, { events: ['controlCenter'] });
+  assert.ok((await call('POST', '/api/key', { body: { key: 'volumeUp' } })).status >= 400, 'only keys Home+ handles');
 });

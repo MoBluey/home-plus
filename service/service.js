@@ -340,19 +340,77 @@ setTimeout(installBootScript, 2000);
 
 // ---- Remove Home+: undo everything Home+ set up on the TV, then uninstall the package.
 
-const INPUTHOOK_BINDS = '/home/root/.config/lginputhook/keybinds.json';
+const INPUTHOOK_BINDS = process.env.HOMEPLUS_INPUTHOOK_BINDS || '/home/root/.config/lginputhook/keybinds.json'; /* tests: elsewhere */
 const OUR_IDS = [NATIVE_ID, 'com.atvlauncher.native', 'com.atvlauncher.app'];
 
+// a bind that's Home+'s: it launches Home+ (the Home key), or runs our script (the Settings key)
+const ourBind = (b) => !!b && (OUR_IDS.includes(b.id) || [NATIVE_ID, SETTINGS_KEY_SCRIPT].some((s) => String(b.command || '').includes(s)));
+
 function dropInputhookBinds() {
-  // lginputhook keybinds that launch Home+ (e.g. the Home key) are removed; other binds stay
+  // lginputhook keybinds that are Home+'s are removed; other binds stay
   let binds;
   try { binds = JSON.parse(fs.readFileSync(INPUTHOOK_BINDS, 'utf8')); } catch (e) { return 0; }
   let n = 0;
   for (const [key, b] of Object.entries(binds || {})) {
-    if (b && OUR_IDS.includes(b.id)) { delete binds[key]; n++; }
+    if (ourBind(b)) { delete binds[key]; n++; }
   }
   if (n) fs.writeFileSync(INPUTHOOK_BINDS, JSON.stringify(binds, null, 2));
   return n;
+}
+
+// ---- The remote's Settings key (LG Input Hook's code 139): Home+'s Control Center while Home+
+// is in front, else LG's Quick Settings. The hook runs settings-key.sh, which asks us.
+
+const SETTINGS_KEY = '139';
+const SETTINGS_KEY_SCRIPT = path.join(__dirname, 'settings-key.sh');
+
+function readBinds() {
+  try { return JSON.parse(fs.readFileSync(INPUTHOOK_BINDS, 'utf8')) || {}; } catch (e) { return null; }
+}
+
+function settingsKeyState() {
+  const binds = readBinds();
+  return { available: binds !== null || fs.existsSync(path.dirname(INPUTHOOK_BINDS)), on: !!binds && ourBind(binds[SETTINGS_KEY]) };
+}
+
+function setSettingsKey(on) {
+  if (!settingsKeyState().available) throw new Error('LG Input Hook isn\'t installed');
+  const binds = readBinds() || {};
+  if (on) binds[SETTINGS_KEY] = { action: 'exec', command: `sh ${SETTINGS_KEY_SCRIPT}` };
+  else if (ourBind(binds[SETTINGS_KEY])) delete binds[SETTINGS_KEY]; /* someone else's bind stays */
+  fs.writeFileSync(INPUTHOOK_BINDS, JSON.stringify(binds, null, 2));
+  log('settings key:', on ? 'Control Center' : 'LG Quick Settings');
+}
+
+async function remoteKey(key) {
+  if (key !== 'settings') throw new Error(`not a key Home+ handles: ${key}`);
+  if (lastForeground === NATIVE_ID) {
+    emit('controlCenter');
+    return { opened: 'controlCenter' };
+  }
+  await luna('luna://com.webos.service.systemUIManager/launch', { appId: 'com.webos.app.quicksettings' });
+  return { opened: 'quickSettings' };
+}
+
+// ---- Events for the launcher: webOS gives a native app no way to hear from a service, so the
+// launcher keeps a request open (GET /api/events), answered when something happens or after 15 s.
+
+const listeners = new Set();
+let unheard = []; /* events while the launcher had no request open (it sends the next at once) */
+
+function emit(name) {
+  if (!listeners.size) return unheard.push({ name, at: Date.now() });
+  for (const res of listeners) sendJSON(res, 200, { events: [name] });
+  listeners.clear();
+}
+
+function listen(req, res) {
+  const recent = unheard.filter((e) => Date.now() - e.at < 3000).map((e) => e.name);
+  unheard = [];
+  if (recent.length) return sendJSON(res, 200, { events: recent });
+  listeners.add(res);
+  const t = setTimeout(() => { if (listeners.delete(res)) sendJSON(res, 200, { events: [] }); }, 15000);
+  res.on('close', () => { clearTimeout(t); listeners.delete(res); });
 }
 
 function dropElevation() {
@@ -776,15 +834,20 @@ async function handleApi(req, res) {
       const cfg = readConfig();
       if (req.method === 'POST') {
         const b = await readBody(req);
-        if (['redirect', 'watch'].includes(b.mode)) { cfg.homeMode = b.mode; cfg.homeOverride = true; }
-        if (b.mode === 'off') cfg.homeOverride = false;
-        if (b.asked) cfg.homeAsked = true;
-        writeConfig(cfg);
-        await unmountRedirect();
-        await applyHomeMode();
+        if (typeof b.settingsKey === 'boolean') setSettingsKey(b.settingsKey); /* the Settings key's bind */
+        if (b.mode !== undefined || b.asked) {
+          if (['redirect', 'watch'].includes(b.mode)) { cfg.homeMode = b.mode; cfg.homeOverride = true; }
+          if (b.mode === 'off') cfg.homeOverride = false;
+          if (b.asked) cfg.homeAsked = true;
+          writeConfig(cfg);
+          await unmountRedirect();
+          await applyHomeMode();
+        }
       }
-      return sendJSON(res, 200, { mode: homeMode(cfg), noFlashActive: !!redirectTarget, noFlashAvailable: await noFlashAvailable() });
+      return sendJSON(res, 200, { mode: homeMode(cfg), noFlashActive: !!redirectTarget, noFlashAvailable: await noFlashAvailable(), settingsKey: settingsKeyState() });
     }
+    if (url.pathname === '/api/events') return listen(req, res);
+    if (url.pathname === '/api/key' && req.method === 'POST') return sendJSON(res, 200, await remoteKey(String((await readBody(req)).key || '')));
     if (url.pathname === '/api/trakt/status') return sendJSON(res, 200, trakt.status());
     if (url.pathname === '/api/trakt/link' && req.method === 'POST') return sendJSON(res, 200, await trakt.startDevice());
     if (url.pathname === '/api/trakt/disconnect' && req.method === 'POST') return sendJSON(res, 200, trakt.disconnect());

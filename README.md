@@ -64,7 +64,7 @@ Updates install the same way. An update resets the service's root access, and Ho
 
 **Magic Remote pointer:** point at anything and click. Pressing an arrow hands control back to the keys: then OK presses what the keys focused, wherever the cursor happens to be. Moving the pointer clearly takes over again.
 
-From the top row, press **Up** to reach the clock at the top right, as on tvOS; **OK** on it opens the Control Center. On Stremio, Jellyfin or Plex, Up goes into Continue Watching first, as the chevron above the dock shows. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them.
+From the top row, press **Up** to reach the clock at the top right, as on tvOS; **OK** on it opens the Control Center. On Stremio, Jellyfin or Plex, Up goes into Continue Watching first, as the chevron above the dock shows. The remote's own **Settings** and **Input** keys open LG's menus; apps never receive them. With LG Input Hook installed (see [Home button](#home-button)), **Settings → Remote → Settings Button** makes the Settings key open the Control Center while Home+ is in front; in other apps it still opens LG's Quick Settings.
 
 ![Settings](docs/screenshots/settings.jpg)
 
@@ -82,7 +82,7 @@ luna-send -n 1 luna://com.github.pmiraka.homeplus.service/control '{"action":"sc
 
 | Row | What's there |
 |---|---|
-| **Home Button** | Whether the Home button opens Home+ or LG's home screen, and No Flash on TVs that support it |
+| **Remote** | Whether the Home button opens Home+ or LG's home screen, No Flash on TVs that support it, and with LG Input Hook, whether the Settings button opens the Control Center |
 | **Display & OLED** | Dim After, Turn Off After, Pixel Shift, Calm Colours (dark app backgrounds, so ambient lights don't flood the room), and whether the Top Shelf turns pages by itself |
 | **Sounds** | Focus sounds on or off |
 | **Clock** | 12-hour or 24-hour |
@@ -193,7 +193,7 @@ Change the timings, or turn any of these off, in **Settings → Display & OLED**
 - it turns off the Home button takeover;
 - it deletes its boot script and settings;
 - it deletes its sign-ins and keys (Stremio, Trakt, Jellyfin, Plex, TMDB);
-- it removes its lginputhook keybinds (your others stay);
+- it removes its lginputhook keybinds, the Home key's and the Settings key's (your others stay);
 - it deletes the root access files the Homebrew Channel created.
 
 **If Home+ won't open,** do the same by hand over SSH:

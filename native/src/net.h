@@ -56,6 +56,9 @@ void net_wake_service(void);
  * when it reported returnValue true. uri and payload must not contain single quotes. */
 void net_luna(const char *uri, const char *payload, int tag);
 
+/* Listens for the service's events from now on: each arrives as a JSON result with this tag. */
+void net_events(int tag);
+
 /* Pops one finished result; returns 0 when none are waiting. */
 int net_poll(Result *out);
 void net_result_free(Result *r);

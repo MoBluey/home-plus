@@ -542,7 +542,9 @@ void r_rim(float x, float y, float w, float h, float radius, float width, Uint8 
 
 void r_fill(Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
-    r_shape(0, 0, (float)R.lw, (float)R.lh, 0, r, g, b, a, 0, 1, 1);
+    /* past the edges by more than the pixel orbit moves things: shifted with everything else, an
+     * exact fill left a strip at one edge where the next row of tiles showed through the black */
+    r_shape(-16, -16, (float)R.lw + 32, (float)R.lh + 32, 0, r, g, b, a, 0, 1, 1);
 }
 
 /* ------------------------------------------------------------------ backdrop + glass */

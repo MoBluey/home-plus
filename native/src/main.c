@@ -84,7 +84,7 @@
 enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, TAG_QR, TAG_ICON, TAG_ART, TAG_RAIL_LOGO, TAG_RAIL_BG, TAG_FEATURED, TAG_CONTROL, TAG_LAUNCH, TAG_WAKE,
        TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET,
        TAG_STATUS, TAG_ELEVATE, TAG_RESTART, TAG_UNINSTALL,
-       TAG_PREFS };
+       TAG_PREFS, TAG_EVENTS };
 
 /* Media sources: each one's Continue Watching is the Top Shelf of its own app */
 enum { SRC_NONE, SRC_STREMIO, SRC_JELLYFIN, SRC_PLEX, SRC_COUNT };
@@ -152,7 +152,7 @@ typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_A
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY,
-               ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN, ACT_PICTURE_MODE } Action;
+               ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN, ACT_PICTURE_MODE, ACT_SETTINGS_KEY } Action;
 
 /* First run: the service has to be running and elevated (root, via Homebrew
  * Channel) before Home+ can list apps. Each step that can fail has a screen. */
@@ -230,6 +230,7 @@ static struct {
     int sounds_off; /* focus sounds switched off in Settings (saved by the service) */
     Uint32 idle_dim_ms, idle_off_ms; /* OLED idle stages (0 = default) */
     int noflash_active, noflash_available; /* available: LG's home is a web app we can replace */
+    int settings_key, settings_key_available; /* the remote's Settings key opens the Control Center (LG Input Hook) */
     Uint32 trakt_poll; /* while showing a Trakt code: next status check */
     int moving;
     float scroll, scroll_v, scroll_target; /* grid y offset */
@@ -970,6 +971,7 @@ static void request_data(void)
     if (want_source() > SRC_STREMIO) rail_request(want_source());
     net_get_json("/api/system", TAG_SYSTEM, 0, 0);
     net_get_json("/api/home", TAG_HOME, 0, 0);
+    net_events(TAG_EVENTS); /* the Settings key, through the service (once) */
     net_get_json("/api/prefs", TAG_PREFS, 0, 0);
 }
 
@@ -980,6 +982,7 @@ static void settings_page(int page, int index);
 static void on_elevate(Result *r);
 static void sw_fill(const char *json);
 static void sw_reset(void);
+static void settings_key(void);
 static void sheet_close(void);
 static void sheet_dismiss(void);
 static void sheet_add(const char *label, Action act, int arg, int destructive);
@@ -1259,6 +1262,9 @@ static void handle_result(Result *r)
     case TAG_CLOSED:
         if (r->status != 200) toast("Couldn\xE2\x80\x99t close that app", 2500);
         break;
+    case TAG_EVENTS:
+        if (r->body && strstr(r->body, "\"controlCenter\"")) settings_key();
+        break;
     case TAG_HOME:
     case TAG_HOME_SET:
         if (r->status == 200) {
@@ -1267,6 +1273,9 @@ static void handle_result(Result *r)
                 snprintf(S.home_mode, sizeof S.home_mode, "%s", jstr(o, "mode"));
                 S.noflash_active = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashActive"));
                 S.noflash_available = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashAvailable"));
+                cJSON *sk = cJSON_GetObjectItem(o, "settingsKey");
+                S.settings_key = cJSON_IsTrue(cJSON_GetObjectItem(sk, "on"));
+                S.settings_key_available = cJSON_IsTrue(cJSON_GetObjectItem(sk, "available"));
                 if (!strcmp(S.home_mode, "redirect") && !S.noflash_active && r->tag == TAG_HOME_SET)
                     toast("No-flash mode isn\xE2\x80\x99t available on this TV; using standard mode.", 5000);
                 cJSON_Delete(o);
@@ -1870,12 +1879,16 @@ static void settings_page(int page, int index)
     int home_on = S.home_mode[0] && strcmp(S.home_mode, "off");
     switch (page) {
     case PAGE_HOME:
-        sheet_open("Home Button");
+        sheet_open("Remote");
         settings_row("Home Button", home_on ? "Opens Home+" : "Opens LG Home", ACT_HOME_TOGGLE, 0, 0, 0);
         if (home_on && S.noflash_available) settings_row("No Flash", S.noflash_active ? "On" : "Off", ACT_HOME_MODE, 0, 0, 0);
+        if (S.settings_key_available) /* needs LG Input Hook, which catches the key */
+            settings_row("Settings Button", S.settings_key ? "Control Center" : "LG Quick Settings", ACT_SETTINGS_KEY, 0, 0, 0);
         if (!S.noflash_available)
-            sheet_body("On this TV, LG Input Hook from Homebrew Channel opens Home+\n"
-                       "without LG\xE2\x80\x99s home screen showing first (see the README).");
+            sheet_body(S.settings_key_available ? "With Home+ in front, the Settings button can open the Control Center;\n"
+                                                  "in other apps it opens LG\xE2\x80\x99s Quick Settings."
+                                                : "On this TV, LG Input Hook from Homebrew Channel opens Home+\n"
+                                                  "without LG\xE2\x80\x99s home screen showing first (see the README).");
         break;
     case PAGE_DISPLAY:
         sheet_open("Display & OLED");
@@ -1930,7 +1943,7 @@ static void settings_page(int page, int index)
     default: {
         page = PAGE_MAIN;
         sheet_open("Settings");
-        settings_row("Home Button", home_on ? "Opens Home+" : "Opens LG Home", ACT_PAGE, PAGE_HOME, 1, 0);
+        settings_row("Remote", home_on ? "Home Opens Home+" : "", ACT_PAGE, PAGE_HOME, 1, 0);
         snprintf(v, sizeof v, "Dims After %s", minutes(S.idle_dim_ms, IDLE_DIM_MS, v2, sizeof v2));
         settings_row("Display & OLED", S.idle_dim_ms == IDLE_NEVER ? "Never Dims" : v, ACT_PAGE, PAGE_DISPLAY, 1, 0);
         settings_row("Sounds", S.sounds_off ? "Off" : "On", ACT_SOUNDS, 0, 0, 0);
@@ -2080,6 +2093,13 @@ static void run_action(Action act, int arg)
     case ACT_HOME_NO:
         set_home_mode("off", 1);
         toast("You can turn this on later in Settings", 3000);
+        break;
+    case ACT_SETTINGS_KEY:
+        S.settings_key = !S.settings_key;
+        net_post("/api/home", S.settings_key ? "{\"settingsKey\":true}" : "{\"settingsKey\":false}", TAG_HOME);
+        toast(S.settings_key ? "With Home+ in front, the Settings button opens the Control Center"
+                             : "The Settings button opens LG\xE2\x80\x99s Quick Settings", 3000);
+        settings_again();
         break;
     case ACT_HOME_TOGGLE: {
         int on = S.home_mode[0] && strcmp(S.home_mode, "off");
@@ -3972,6 +3992,25 @@ static int wake(int key)
     S.idle_stage = 0;
     if (dark && key) S.swallow_up = 1;
     return dark;
+}
+
+/* The remote's Settings key while Home+ is in front (LG Input Hook runs our script, which asks the
+ * service): the Control Center, as from the clock, over whatever was open; pressed again, it closes. */
+static void settings_key(void)
+{
+    wake(0); /* a dimmed or dark screen comes back too */
+    if (S.cc.open) {
+        cc_close();
+        return;
+    }
+    if (S.sheet.open) sheet_dismiss();
+    if (S.recents.open) sw_reset();
+    if (S.moving) { /* moving an app: it stays where it is now */
+        S.moving = 0;
+        save_layout();
+    }
+    if (S.zone != ZONE_TOP) enter_top(S.focus % COLS);
+    cc_open();
 }
 
 /* window -> logical coordinates (the GL drawable may not be 1920x1080) */

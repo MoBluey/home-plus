@@ -403,6 +403,36 @@ void net_start(void)
     for (int i = 0; i < WORKERS; i++) threads[i] = SDL_CreateThread(worker, "homeplus-net", NULL);
 }
 
+/* The service's events (the remote's Settings key while Home+ is in front): a request it answers
+ * when one happens, or after 15 s, kept open by a thread of its own. Each answer arrives in
+ * net_poll as a JSON result with this tag. */
+static int events_tag;
+
+static int events_loop(void *arg)
+{
+    (void)arg;
+    while (running) {
+        Result r = { 0 };
+        r.kind = JOB_JSON;
+        r.tag = events_tag;
+        r.status = http_request("/api/events", NULL, &r.body, NULL);
+        if (r.status == 200 && r.body && strstr(r.body, "\"events\":[\"")) {
+            push_done(&r);
+            continue;
+        }
+        free(r.body);
+        if (r.status != 200) SDL_Delay(2000); /* the service isn't up yet */
+    }
+    return 0;
+}
+
+void net_events(int tag)
+{
+    if (events_tag) return;
+    events_tag = tag;
+    SDL_DetachThread(SDL_CreateThread(events_loop, "homeplus-events", NULL)); /* it may be waiting at exit */
+}
+
 void net_stop(void)
 {
     SDL_LockMutex(lock);
