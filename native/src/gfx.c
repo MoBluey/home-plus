@@ -138,6 +138,17 @@ static int icon_inside(int kind, float x, float y)
         if (x >= -0.13f && x <= 0.13f && y >= -0.24f && y <= -0.12f) return 1;
         return sd_segment(x, y, -0.13f, 0.02f, -0.13f, 0.16f) < T / 2 || sd_segment(x, y, 0, 0.02f, 0, 0.16f) < T / 2 ||
                sd_segment(x, y, 0.13f, 0.02f, 0.13f, 0.16f) < T / 2;
+    case ICON_PICTURE: /* a photo: its frame, a mountain and the sun */
+        if (in_ring_rrect(x, y, 0, 0, 0.4f, 0.3f, 0.07f, T)) return 1;
+        if (!in_rrect(x, y, 0, 0, 0.4f - T, 0.3f - T, 0.02f)) return 0;
+        if ((x - 0.15f) * (x - 0.15f) + (y + 0.1f) * (y + 0.1f) < 0.065f * 0.065f) return 1;
+        return y > -0.04f + fabsf(x + 0.09f) * 0.95f && y < 0.24f;
+    case ICON_EYE: { /* an eye: the lid's outline (where two circles overlap) and the pupil */
+        const float R = 0.5f, C = 0.32f;
+        float a = sqrtf(x * x + (y - C) * (y - C)), b = sqrtf(x * x + (y + C) * (y + C));
+        if (x * x + y * y < 0.11f * 0.11f) return 1;
+        return a < R && b < R && (a > R - T || b > R - T);
+    }
     case ICON_ACCESS: { /* the accessibility figure in a ring */
         float rr = sqrtf(x * x + y * y);
         if (fabsf(rr - 0.42f) < T / 2) return 1;

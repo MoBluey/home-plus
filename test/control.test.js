@@ -5,8 +5,8 @@ const assert = require('node:assert/strict');
 const createControl = require('../service/control');
 
 /* A stand-in TV: answers the luna calls the Control Center makes, and records them. */
-function fakeTv({ arc = true, livetv = true, wifi = 'Home Wi-Fi', wired = false, output = 'external_arc', sleep = 'off' } = {}) {
-  const tv = { soundOutput: output, sleepTimer: sleep }, calls = [];
+function fakeTv({ arc = true, livetv = true, wifi = 'Home Wi-Fi', wired = false, output = 'external_arc', earc = 'off', sleep = 0, readConfig, writeConfig } = {}) {
+  const tv = { soundOutput: output, eArcSupport: earc, sleepMinutes: sleep, pictureMode: 'expert1', eyeComfortMode: 'off' }, calls = [];
   const luna = async (uri, params) => {
     calls.push({ uri, params });
     if (uri.endsWith('/getAllInputStatus')) {
@@ -19,11 +19,18 @@ function fakeTv({ arc = true, livetv = true, wifi = 'Home Wi-Fi', wired = false,
     if (uri.endsWith('connectionmanager/getStatus')) {
       return { returnValue: true, wifi: wifi ? { state: 'connected', ssid: wifi } : { state: 'disconnected' }, wired: { state: wired ? 'connected' : 'disconnected' } };
     }
-    if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: { [params.keys[0]]: tv[params.keys[0]] } };
+    if (uri.endsWith('/getSystemSettingDesc')) { /* the picture modes, as webOS 23 lists them for SDR */
+      return { returnValue: true, results: [{ key: 'pictureMode', values: { arrayExt: ['vivid', 'normal', 'cinema', 'filmMaker', 'expert1']
+        .map((value) => ({ value, visible: true, active: true })).concat([{ value: 'hdrVivid', visible: false, active: true }]) } }] };
+    }
+    if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: Object.fromEntries(params.keys.map((k) => [k, tv[k]])) };
+    /* LG's sleep timer: minutes and seconds left (no minutes when it's off) */
+    if (uri.endsWith('/timer/sleep/getRemainTime')) return Object.assign({ returnValue: true, sleepTimeSecond: 0 }, tv.sleepMinutes ? { sleepTimeMinute: tv.sleepMinutes - 1, sleepTimeSecond: 59 } : {});
+    if (uri.endsWith('/timer/sleep/add')) { tv.sleepMinutes = params.sleepTimeMinute; return { returnValue: true }; }
     if (uri.endsWith('/setSystemSettings')) { Object.assign(tv, params.settings); return { returnValue: true }; }
     return { returnValue: true };
   };
-  return { control: createControl({ luna, log: () => {} }), tv, calls };
+  return { control: createControl({ luna, log: () => {}, readConfig, writeConfig }), tv, calls };
 }
 
 test('control: what the panel shows: network, sound output, sleep timer and inputs', async () => {
@@ -43,9 +50,21 @@ test('control: no Wi-Fi: Ethernet (the tile says so; its line says "Connected"),
   assert.deepEqual((await fakeTv({ wifi: '' }).control.state()).network, { kind: 'none', name: 'Not Connected' });
 });
 
-test('control: without an ARC device the only output is the TV\'s speakers (plus whatever is on now)', async () => {
-  assert.deepEqual((await fakeTv({ arc: false, output: 'tv_speaker' }).control.state()).sound.outputs, ['tv_speaker']);
-  assert.deepEqual((await fakeTv({ arc: false, output: 'bt_soundbar' }).control.state()).sound.outputs, ['tv_speaker', 'bt_soundbar']);
+test('control: Sound offers HDMI ARC even while webOS reports no ARC device (a soundbar asleep)', async () => {
+  const { control, tv } = fakeTv({ arc: false, output: 'tv_speaker' });
+  assert.deepEqual((await control.state()).sound.outputs, ['tv_speaker', 'external_arc']);
+  await control.act('sound', 'next');
+  assert.equal(tv.soundOutput, 'external_arc');
+  await control.act('sound', 'next');
+  assert.equal(tv.soundOutput, 'tv_speaker', 'and back');
+});
+
+test('control: Sound also offers the other outputs the TV has used, and remembers them', async () => {
+  const cfg = {};
+  const opts = { readConfig: () => JSON.parse(JSON.stringify(cfg)), writeConfig: (c) => Object.assign(cfg, c) };
+  assert.deepEqual((await fakeTv({ arc: false, output: 'bt_soundbar', ...opts }).control.state()).sound.outputs, ['tv_speaker', 'external_arc', 'bt_soundbar']);
+  assert.deepEqual(cfg.soundOutputs, ['bt_soundbar']);
+  assert.deepEqual((await fakeTv({ arc: false, output: 'tv_speaker', ...opts }).control.state()).sound.outputs, ['tv_speaker', 'external_arc', 'bt_soundbar'], 'after a restart too');
 });
 
 test('control: Sound steps through the outputs', async () => {
@@ -57,13 +76,26 @@ test('control: Sound steps through the outputs', async () => {
   await assert.rejects(control.act('sound', 'loudspeaker'), /not a sound output/);
 });
 
-test('control: Sleep Timer steps through LG\'s own values', async () => {
-  const { control, tv } = fakeTv();
+test('control: Sleep Timer steps through LG\'s own values, on the timer that turns the TV off', async () => {
+  const { control, tv, calls } = fakeTv();
   const seen = [];
   for (let i = 0; i < 9; i++) seen.push((await control.act('sleepTimer', 'next')).sleepTimer);
   assert.deepEqual(seen, ['10', '20', '30', '60', '90', '120', '180', '240', 'off']);
-  assert.equal(tv.sleepTimer, 'off');
+  assert.equal(tv.sleepMinutes, 0, 'off');
+  assert.ok(calls.some((c) => c.uri === 'luna://com.webos.service.tvReservationAgent/timer/sleep/add' && c.params.sleepTimeMinute === 240));
   await assert.rejects(control.act('sleepTimer', '45'), /sleep timer/);
+});
+
+test('control: the Sleep Timer shows the minutes left, and Next goes on from the step they\'re in', async () => {
+  const { control, tv } = fakeTv({ sleep: 47 });
+  assert.equal((await control.state()).sleepTimer, '47');
+  assert.equal((await control.act('sleepTimer', 'next')).sleepTimer, '90', '47 minutes left is the 60-minute timer');
+  assert.equal(tv.sleepMinutes, 90);
+});
+
+test('control: HDMI ARC is "HDMI eARC" when eARC is on', async () => {
+  assert.equal((await fakeTv({ earc: 'on' }).control.state()).sound.label, 'HDMI eARC');
+  assert.equal((await fakeTv().control.state()).sound.label, 'HDMI ARC');
 });
 
 test('control: an input opens only if the TV has it', async () => {
@@ -80,4 +112,25 @@ test('control: Power Off and Screen Off ask the TV\'s power service', async () =
   await control.act('screenOff');
   assert.deepEqual(calls.at(-1), { uri: 'luna://com.webos.service.tvpower/power/turnOffScreen', params: { standbyMode: 'active' } });
   await assert.rejects(control.act('reboot'), /unknown action/);
+});
+
+test('control: the picture mode, with the modes LG offers for what\'s on now, by LG\'s names', async () => {
+  const { control, tv } = fakeTv();
+  const st = await control.state();
+  assert.deepEqual(st.picture, { mode: 'expert1', label: 'Expert (Bright)', modes: [
+    { id: 'vivid', label: 'Vivid' }, { id: 'normal', label: 'Standard' }, { id: 'cinema', label: 'Cinema' },
+    { id: 'filmMaker', label: 'Filmmaker Mode' }, { id: 'expert1', label: 'Expert (Bright)' }] });
+  await control.act('pictureMode', 'cinema');
+  assert.equal(tv.pictureMode, 'cinema');
+  await assert.rejects(control.act('pictureMode', 'hdrVivid'), /picture mode/, 'an HDR mode, while SDR is on');
+  assert.equal(tv.pictureMode, 'cinema');
+});
+
+test('control: Eye Comfort turns on and off', async () => {
+  const { control, tv } = fakeTv();
+  assert.equal((await control.state()).eyeComfort, 'off');
+  assert.equal((await control.act('eyeComfort', 'next')).eyeComfort, 'on');
+  assert.equal(tv.eyeComfortMode, 'on');
+  assert.equal((await control.act('eyeComfort', 'next')).eyeComfort, 'off');
+  await assert.rejects(control.act('eyeComfort', 'bright'), /on or off/);
 });

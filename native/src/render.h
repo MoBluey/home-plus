@@ -36,6 +36,8 @@ void r_tex_free(Tex **t);
 
 /* Textured quad tinted by rgba; radius > 0 rounds its corners. */
 void r_image(const Tex *t, float x, float y, float w, float h, Uint8 r, Uint8 g, Uint8 b, Uint8 a, float radius);
+/* Only the part of it from u0 to u1 (0..1, across), drawn into the rect: text that scrolls. */
+void r_image_part(const Tex *t, float x, float y, float w, float h, float u0, float u1, Uint8 r, Uint8 g, Uint8 b, Uint8 a);
 /* Same, scaled to cover the rect and cropped (biased upward, like the shelf art). */
 void r_cover(const Tex *t, float x, float y, float w, float h, Uint8 a, float radius);
 /* Rounded rect (radius = h/2 for a capsule). stroke > 0 draws only a ring that

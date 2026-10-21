@@ -631,7 +631,7 @@ async function tvRegion() {
   return tvCountry;
 }
 const tmdb = require('./tmdb')({ readConfig, writeConfig, log, region: tvRegion });
-const control = require('./control')({ luna, log }); /* the Control Center's TV controls */
+const control = require('./control')({ luna, log, readConfig, writeConfig }); /* the Control Center's TV controls */
 
 // What's popular on the service a streaming app is, or trending for an app with no picture,
 // for its Top Shelf (pictures through us).

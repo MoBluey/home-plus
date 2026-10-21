@@ -168,8 +168,10 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
 
 // A stand-in TV for the Control Center: inputs (a soundbar with a PS5 behind it), sound output,
 // sleep timer and Wi-Fi, as webOS 23's services answer them; settings changes are kept.
-// HOMEPLUS_PREVIEW_NET=wired|none: another connection; HOMEPLUS_PREVIEW_REFUSE=1: the TV refuses changes.
-const tv = { soundOutput: 'external_arc', sleepTimer: 'off' };
+// HOMEPLUS_PREVIEW_NET=wired|none: another connection; HOMEPLUS_PREVIEW_SSID: the Wi-Fi's name;
+// HOMEPLUS_PREVIEW_REFUSE=1: the TV refuses changes.
+const tv = { soundOutput: 'external_arc', eArcSupport: 'on', sleepMinutes: 0, pictureMode: 'filmMaker', eyeComfortMode: 'off' };
+const PICTURE_MODES = ['personalized', 'vivid', 'normal', 'eco', 'cinema', 'sports', 'game', 'filmMaker', 'expert1', 'expert2'];
 global.__stubLuna = (uri, params) => {
   if (uri.endsWith('/getAllInputStatus')) {
     return { returnValue: true, arcDevice: true, devices: [
@@ -177,7 +179,16 @@ global.__stubLuna = (uri, params) => {
       { id: 'HDMI_2', appId: 'com.webos.app.hdmi2', label: 'Soundbar', spdProductDescription: 'PS5', hdmiPlugIn: true },
       { id: 'HDMI_3', appId: 'com.webos.app.hdmi3', label: 'HDMI 3', hdmiPlugIn: false }] };
   }
+  if (uri.endsWith('/getSystemSettingDesc')) {
+    return { returnValue: true, results: [{ key: 'pictureMode', values: { arrayExt: PICTURE_MODES.map((value) => ({ value, visible: true, active: true })) } }] };
+  }
   if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: Object.fromEntries((params.keys || []).map((k) => [k, tv[k]])) };
+  if (uri.endsWith('/timer/sleep/getRemainTime')) return Object.assign({ returnValue: true, sleepTimeSecond: 0 }, tv.sleepMinutes ? { sleepTimeMinute: tv.sleepMinutes } : {});
+  if (uri.endsWith('/timer/sleep/add')) {
+    if (process.env.HOMEPLUS_PREVIEW_REFUSE) return { returnValue: false, errorText: 'refused' };
+    tv.sleepMinutes = params.sleepTimeMinute;
+    return { returnValue: true };
+  }
   if (uri.endsWith('/setSystemSettings')) {
     if (process.env.HOMEPLUS_PREVIEW_REFUSE) return { returnValue: false, errorText: 'refused' };
     Object.assign(tv, params.settings);
@@ -187,7 +198,7 @@ global.__stubLuna = (uri, params) => {
     const net = process.env.HOMEPLUS_PREVIEW_NET;
     if (net === 'wired') return { returnValue: true, wired: { state: 'connected' }, wifi: { state: 'disconnected' } };
     if (net === 'none') return { returnValue: true, wired: { state: 'disconnected' }, wifi: { state: 'disconnected' } };
-    return { returnValue: true, wifi: { state: 'connected', ssid: 'Home Wi-Fi' } };
+    return { returnValue: true, wifi: { state: 'connected', ssid: process.env.HOMEPLUS_PREVIEW_SSID || 'Home Wi-Fi' } };
   }
   if (/\/power\/(powerOff|turnOffScreen)$/.test(uri)) return { returnValue: true };
   // Recents: Netflix, YouTube and Spotify were opened; webOS also runs Disney+ in the background

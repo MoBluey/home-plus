@@ -70,11 +70,12 @@ From the top row, press **Up** to reach the clock at the top right, as on tvOS; 
 
 ![Control Center](docs/screenshots/control-center.jpg)
 
-**Control Center**, like tvOS's, opens from the clock: glass tiles under it for **Power Off**, **Wi-Fi** (your network; OK opens LG's network settings), **Screen Off** (sound keeps playing; any key brings the picture back), **Sound** (OK switches between TV speakers and HDMI ARC when the TV has an ARC device, plus the current output if it's another one: not a full picker), **Sleep Timer** (OK steps through LG's 10 to 240 minutes), and round buttons for **Inputs** (Live TV and the HDMI ports by LG's names, with what's plugged in, like "Soundbar · PS5"), **Recents**, **Accessibility** and **Settings**. Each action is also a service method, so anything that can send a luna call (a script, a home automation, a key-mapping tool) can use it:
+**Control Center**, like tvOS's, opens from the clock: glass tiles under it for **Power Off**, **Wi-Fi** (your network; OK opens LG's network settings), **Screen Off** (sound keeps playing; any key brings the picture back), **Sound** (OK switches between TV speakers and HDMI ARC or eARC, and any other output the TV has used, like Optical: not a full picker), **Sleep Timer** (the minutes left; OK steps through LG's 10 to 240 minutes, and the TV turns off when it runs out), **Picture** (the picture mode; OK lists the modes LG offers for what's on, which differ for HDR and Dolby Vision), **Eye Comfort** (OK turns it on or off), and round buttons for **Inputs** (Live TV and the HDMI ports by LG's names, with what's plugged in, like "Soundbar · PS5"), **Recents**, **Accessibility** and **Settings**. A name too long for its tile scrolls while the tile has focus. Each action is also a service method, so anything that can send a luna call (a script, a home automation, a key-mapping tool) can use it:
 
 ```sh
 luna-send -n 1 luna://com.github.pmiraka.homeplus.service/control '{"action":"screenOff"}'
-# actions: powerOff, screenOff, sound ("next" or an output), sleepTimer ("next", "off" or minutes), input (an input's app id)
+# actions: powerOff, screenOff, sound ("next" or an output), sleepTimer ("next", "off" or minutes),
+#          pictureMode (a mode, like "cinema" or "filmMaker"), eyeComfort ("next", "on" or "off"), input (an input's app id)
 ```
 
 **Settings** works like tvOS's: each row shows its current value, rows with **›** open a page, and **Back** goes up one page.

@@ -490,6 +490,11 @@ void r_image(const Tex *t, float x, float y, float w, float h, Uint8 r, Uint8 g,
     image_uv(t, x, y, w, h, 0, 0, 1, 1, r, g, b, a, radius);
 }
 
+void r_image_part(const Tex *t, float x, float y, float w, float h, float u0, float u1, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    image_uv(t, x, y, w, h, u0, 0, u1, 1, r, g, b, a, 0);
+}
+
 void r_cover(const Tex *t, float x, float y, float w, float h, Uint8 a, float radius)
 {
     if (!t) return;

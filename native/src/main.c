@@ -92,14 +92,17 @@ enum { SRC_NONE, SRC_STREMIO, SRC_JELLYFIN, SRC_PLEX, SRC_COUNT };
 
 /* Control Center, like tvOS's: opened from the clock, its tiles float under it on the
  * right, on Apple's grid of four round-button-sized units (91 px, 20 px apart). */
-enum { CC_POWER, CC_NETWORK, CC_SCREEN, CC_SOUND, CC_SLEEP, CC_INPUTS, CC_RECENTS, CC_ACCESS, CC_SETTINGS, CC_COUNT };
+enum { CC_POWER, CC_NETWORK, CC_SCREEN, CC_SOUND, CC_SLEEP, CC_PICTURE, CC_COMFORT, CC_INPUTS, CC_RECENTS, CC_ACCESS, CC_SETTINGS,
+       CC_COUNT };
 static const struct { int col, row, w, h, icon; const char *title; } CC_TILE[CC_COUNT] = {
     { 0, 0, 2, 2, ICON_POWER, "Power Off" },   { 2, 0, 2, 1, ICON_WIFI, "Wi-Fi" },
     { 2, 1, 2, 1, ICON_SCREEN_OFF, "Screen Off" }, { 0, 2, 2, 1, ICON_SOUND, "Sound" },
-    { 2, 2, 2, 1, ICON_TIMER, "Sleep Timer" }, { 0, 3, 1, 1, ICON_INPUT, "Inputs" },
-    { 1, 3, 1, 1, ICON_RECENTS, "Recents" },   { 2, 3, 1, 1, ICON_ACCESS, "Accessibility" },
-    { 3, 3, 1, 1, ICON_SETTINGS, "Settings" },
+    { 2, 2, 2, 1, ICON_TIMER, "Sleep Timer" }, { 0, 3, 2, 1, ICON_PICTURE, "Picture" },
+    { 2, 3, 2, 1, ICON_EYE, "Eye Comfort" },   { 0, 4, 1, 1, ICON_INPUT, "Inputs" },
+    { 1, 4, 1, 1, ICON_RECENTS, "Recents" },   { 2, 4, 1, 1, ICON_ACCESS, "Accessibility" },
+    { 3, 4, 1, 1, ICON_SETTINGS, "Settings" },
 };
+#define CC_TITLE_PX 19 /* a pill's name: "Sleep Timer" and "Eye Comfort" fit, with room either side */
 #define CC_U 91
 #define CC_G 20
 
@@ -149,7 +152,7 @@ typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_UNHIDE, ACT_UNHIDE_A
                ACT_HOME_MODE, ACT_SOUNDS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY,
-               ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN } Action;
+               ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN, ACT_PICTURE_MODE } Action;
 
 /* First run: the service has to be running and elevated (root, via Homebrew
  * Channel) before Home+ can list apps. Each step that can fail has a screen. */
@@ -334,6 +337,9 @@ static struct {
         Tex *icon[CC_COUNT], *title[CC_COUNT], *value[CC_COUNT], *wired;
         int tw[CC_COUNT], th[CC_COUNT], vw[CC_COUNT], vh[CC_COUNT], net; /* net: 0 Wi-Fi, 1 Ethernet, 2 none */
         struct { char app[ID_LEN], name[120]; int plugged; } inputs[12];
+        struct { char id[32], name[48]; } modes[24]; /* the picture modes this input offers now */
+        int nmodes, mode, marquee;   /* mode: the one on (-1 unknown); marquee: a long value is scrolling */
+        Uint32 focus_at;             /* when the focused tile got focus: its long value scrolls from then */
     } cc;
     float chevron_a;
     int sheet_qr_s, qr_gen;
@@ -867,11 +873,12 @@ static void parse_continue(const char *json, int src)
     cJSON_Delete(o);
 }
 
-/* a Control Center tile's second line: the network, the sound output, the sleep timer */
+/* a Control Center tile's second line: the network, the sound output, the sleep timer, the
+ * picture mode (whole: a long one scrolls when its tile has focus) */
 static void cc_value(int i, const char *text)
 {
     tex_free(&S.cc.value[i]);
-    if (text && text[0]) S.cc.value[i] = text_render(S.f_medium, 18, text, 126, &S.cc.vw[i], &S.cc.vh[i]);
+    if (text && text[0]) S.cc.value[i] = text_render(S.f_medium, 18, text, 0, &S.cc.vw[i], &S.cc.vh[i]);
 }
 
 /* the Control Center's state, from the service (also its answer to every action) */
@@ -885,7 +892,7 @@ static void parse_control(const char *json)
     if (k != S.cc.net) { /* its name, and its icon (drawn from the choice), follow the connection */
         S.cc.net = k;
         tex_free(&S.cc.title[CC_NETWORK]);
-        S.cc.title[CC_NETWORK] = text_render(S.f_semi, 21, k == 1 ? "Ethernet" : k == 0 ? "Wi-Fi" : "Network", 220,
+        S.cc.title[CC_NETWORK] = text_render(S.f_semi, CC_TITLE_PX, k == 1 ? "Ethernet" : k == 0 ? "Wi-Fi" : "Network", 220,
                                              &S.cc.tw[CC_NETWORK], &S.cc.th[CC_NETWORK]);
     }
     cc_value(CC_NETWORK, jstr(net, "name"));
@@ -895,6 +902,20 @@ static void parse_control(const char *json)
     if (!sl[0] || !strcmp(sl, "off")) snprintf(t, sizeof t, "Off");
     else snprintf(t, sizeof t, "%s min", sl);
     cc_value(CC_SLEEP, t);
+    cJSON *pic = cJSON_GetObjectItem(o, "picture");
+    const char *mode = jstr(pic, "mode");
+    S.cc.nmodes = 0;
+    S.cc.mode = -1;
+    cJSON_ArrayForEach(v, cJSON_GetObjectItem(pic, "modes")) {
+        if (S.cc.nmodes >= (int)(sizeof S.cc.modes / sizeof S.cc.modes[0])) break;
+        snprintf(S.cc.modes[S.cc.nmodes].id, sizeof S.cc.modes[0].id, "%s", jstr(v, "id"));
+        snprintf(S.cc.modes[S.cc.nmodes].name, sizeof S.cc.modes[0].name, "%s", jstr(v, "label"));
+        if (!strcmp(S.cc.modes[S.cc.nmodes].id, mode)) S.cc.mode = S.cc.nmodes;
+        S.cc.nmodes++;
+    }
+    cc_value(CC_PICTURE, jstr(pic, "label"));
+    const char *ec = jstr(o, "eyeComfort");
+    cc_value(CC_COMFORT, !strcmp(ec, "on") ? "On" : !strcmp(ec, "off") ? "Off" : "");
     S.cc.ninputs = 0;
     cJSON_ArrayForEach(v, cJSON_GetObjectItem(o, "inputs")) {
         if (S.cc.ninputs >= 12) break;
@@ -2008,6 +2029,13 @@ static void run_action(Action act, int arg)
 {
     App *a = item_app(S.focus);
     switch (act) {
+    case ACT_PICTURE_MODE:
+        if (arg >= 0 && arg < S.cc.nmodes) {
+            char body[96];
+            snprintf(body, sizeof body, "{\"action\":\"pictureMode\",\"value\":\"%s\"}", S.cc.modes[arg].id);
+            net_post("/api/control", body, TAG_CONTROL);
+        }
+        break;
     case ACT_MOVE: S.moving = 1; break;
     case ACT_FRONT: move_item_to(0); save_layout(); break;
     case ACT_HIDE:
@@ -2220,6 +2248,7 @@ static void cc_open(void)
 {
     S.cc.open = 1;
     S.cc.index = CC_NETWORK; /* nearest the clock, and harmless (unlike Power Off) */
+    S.cc.focus_at = SDL_GetTicks();
     net_get_json("/api/control", TAG_CONTROL, 0, 0);
 }
 
@@ -2241,7 +2270,7 @@ static void cc_move(int dx, int dy)
         float d = dx ? fabsf(ax) + 2.5f * fabsf(ay) : fabsf(ay) + 2.5f * fabsf(ax);
         if (d < best_d) best_d = d, best = i;
     }
-    if (best >= 0) S.cc.index = best;
+    if (best >= 0) S.cc.index = best, S.cc.focus_at = SDL_GetTicks();
     else if (dy < 0) cc_close();
 }
 
@@ -2258,6 +2287,18 @@ static void open_inputs_sheet(void)
     S.sheet.wide = 1;
 }
 
+/* the picture modes LG offers for what's on now (they differ for HDR and Dolby Vision) */
+static void open_picture_sheet(void)
+{
+    sheet_open("Picture Mode");
+    for (int i = 0; i < S.cc.nmodes && S.sheet.n < MAX_SHEET - 1; i++)
+        settings_row(S.cc.modes[i].name, i == S.cc.mode ? "\xE2\x9C\x93" : "", ACT_PICTURE_MODE, i, 0, 0);
+    if (!S.cc.nmodes) sheet_body("The TV didn\xE2\x80\x99t list its picture modes.");
+    sheet_add("Done", ACT_CANCEL, 0, 0);
+    S.sheet.wide = 1;
+    if (S.cc.mode > 0) S.sheet.index = S.cc.mode;
+}
+
 static void cc_activate(void)
 {
     switch (S.cc.index) {
@@ -2269,6 +2310,8 @@ static void cc_activate(void)
     case CC_SCREEN: net_post("/api/control", "{\"action\":\"screenOff\"}", TAG_CONTROL); cc_close(); break;
     case CC_SOUND: net_post("/api/control", "{\"action\":\"sound\",\"value\":\"next\"}", TAG_CONTROL); break;
     case CC_SLEEP: net_post("/api/control", "{\"action\":\"sleepTimer\",\"value\":\"next\"}", TAG_CONTROL); break;
+    case CC_PICTURE: cc_close(); open_picture_sheet(); break;
+    case CC_COMFORT: net_post("/api/control", "{\"action\":\"eyeComfort\",\"value\":\"next\"}", TAG_CONTROL); break;
     case CC_INPUTS: cc_close(); open_inputs_sheet(); break;
     case CC_RECENTS: cc_close(); sw_open(); break;
     case CC_ACCESS: cc_close(); settings_page(PAGE_ACCESS, 0); break;
@@ -2893,6 +2936,7 @@ static int update(float dt)
         spring(&S.top_s[i], &S.top_v[i], f ? on : 0.0f, f ? resp : 0.35f, f ? damp : 0.7f, dt, &anim);
     }
     spring(&S.cc.t, &S.cc.tv, S.cc.open ? 1.0f : 0.0f, S.reduce_motion ? 0.15f : 0.32f, 0.9f, dt, &anim);
+    if (S.cc.marquee && S.cc.open) anim = 1; /* a long name is scrolling */
     for (int i = 0; i < CC_COUNT; i++) {
         int f = S.cc.open && S.cc.index == i;
         spring(&S.cc.s[i], &S.cc.sv[i], f ? on : 0.0f, f ? resp : 0.35f, f ? damp : 0.7f, dt, &anim);
@@ -3555,8 +3599,42 @@ static void draw_switcher_card(int i, float t)
 /* The Control Center: tvOS's glass tiles under the clock, growing out of it one after
  * another; the focused one turns white, like every focused button. Round buttons have
  * only their icon: the focused one's name shows under the grid. */
+/* Text in a room it may not fit, like tvOS's: what doesn't fit fades out at the room's edge,
+ * and from `since` (0: never) it waits 2 s, then slides left to show the rest, a gap, then
+ * the start again. Sets S.cc.marquee while it moves. */
+static void draw_marquee(Tex *t, int tw, int th, float x, float y, float room, Uint8 c, Uint8 a, Uint32 since)
+{
+    if (!t || !a) return;
+    if (tw <= room) {
+        r_image(t, x, y, tw, th, c, c, c, a, 0);
+        return;
+    }
+    const float gap = 40, speed = 36, rest = 2.0f, fade = 16; /* px, px/s, s, px */
+    float period = tw + gap, off = 0;
+    if (since && !S.reduce_motion) {
+        float cyc = rest + period / speed, ts = fmodf((SDL_GetTicks() - since) / 1000.0f, cyc);
+        off = ts > rest ? (ts - rest) * speed : 0;
+        S.cc.marquee = 1;
+    }
+    /* the strip is the text, a gap and the text again; [s0, s1] of it is drawn at x + s0 - off */
+    for (int k = 0; k < 2; k++) {
+        float base = k * period, s0 = fmaxf(off, base), s1 = fminf(off + room, base + tw);
+        if (s1 <= s0) continue;
+        /* the middle at full strength, the edges in thin slices that fade (the left one only
+         * while the text has moved) */
+        float lo = off > 0.5f ? off + fade : off, hi = off + room - fade;
+        for (float u = s0; u < s1;) {
+            float e = u < lo ? fminf(fminf(u + 2, lo), s1) : u < hi ? fminf(hi, s1) : fminf(u + 2, s1);
+            float m = (u + e) / 2, f = m < lo ? (m - off) / fade : m > hi ? (off + room - m) / fade : 1;
+            r_image_part(t, x + u - off, y, e - u, th, (u - base) / tw, (e - base) / tw, c, c, c, (Uint8)(a * fmaxf(0, fminf(1, f))));
+            u = e;
+        }
+    }
+}
+
 static void draw_control_center(void)
 {
+    S.cc.marquee = 0;
     if (S.cc.t < 0.004f) return;
     float open = fminf(fmaxf(S.cc.t, 0), 1), span = 1 - 0.04f * (CC_COUNT - 1);
     for (int i = 0; i < CC_COUNT; i++) {
@@ -3587,13 +3665,14 @@ static void draw_control_center(void)
             float is = 76 * sc;
             r_image(S.cc.icon[i], cx - is / 2, ry + rh * 0.42f - is / 2, is, is, c, c, c, ca, 0);
             r_image(S.cc.title[i], cx - S.cc.tw[i] / 2.0f, ry + rh - 26 * sc - S.cc.th[i], S.cc.tw[i], S.cc.th[i], c, c, c, ca, 0);
-        } else if (CC_TILE[i].w == 2) { /* the icon, then the name over its value */
-            float is = 34 * sc, ix = rx + 22 * sc, tx = ix + is + 14 * sc;
+        } else if (CC_TILE[i].w == 2) { /* the icon, then the name over its value, clear of the round end */
+            float is = 30 * sc, ix = rx + 18 * sc, tx = ix + is + 12 * sc, room = rx + rw - 22 * sc - tx;
             Tex *ic = i == CC_NETWORK && S.cc.net == 1 ? S.cc.wired : S.cc.icon[i];
             r_image(ic, ix, cy - is / 2, is, is, c, c, c, i == CC_NETWORK && S.cc.net == 2 ? (Uint8)(ca * 0.5f) : ca, 0);
             float vh = S.cc.value[i] ? S.cc.vh[i] : 0, ty = cy - (S.cc.th[i] + vh) / 2;
-            r_image(S.cc.title[i], tx, ty, S.cc.tw[i], S.cc.th[i], c, c, c, ca, 0);
-            if (S.cc.value[i]) r_image(S.cc.value[i], tx, ty + S.cc.th[i], S.cc.vw[i], S.cc.vh[i], c, c, c, (Uint8)(ca * 0.72f), 0);
+            Uint32 since = i == S.cc.index && S.cc.open ? S.cc.focus_at : 0; /* only the focused one scrolls */
+            draw_marquee(S.cc.title[i], S.cc.tw[i], S.cc.th[i], tx, ty, room, c, ca, since);
+            draw_marquee(S.cc.value[i], S.cc.vw[i], S.cc.vh[i], tx, ty + S.cc.th[i], room, c, (Uint8)(ca * 0.72f), since);
         } else {
             float is = 40 * sc;
             r_image(S.cc.icon[i], cx - is / 2, cy - is / 2, is, is, c, c, c, ca, 0);
@@ -3731,7 +3810,7 @@ static int load_assets(void)
     S.top_tex[TOP_SETTINGS] = gfx_icon(ICON_CONTROLS, 64); /* the Control Center's glyph: drawn at 30 px, 64 stays sharp */
     for (int i = 0; i < CC_COUNT; i++) {
         S.cc.icon[i] = gfx_icon(CC_TILE[i].icon, i == CC_POWER ? 128 : 64);
-        S.cc.title[i] = text_render(S.f_semi, i == CC_POWER ? 24 : 21, CC_TILE[i].title, 220, &S.cc.tw[i], &S.cc.th[i]);
+        S.cc.title[i] = text_render(S.f_semi, i == CC_POWER ? 24 : CC_TITLE_PX, CC_TILE[i].title, 220, &S.cc.tw[i], &S.cc.th[i]);
     }
     S.cc.wired = gfx_icon(ICON_ETHERNET, 64);
     S.chevron = gfx_icon(ICON_CHEVRON, 64);

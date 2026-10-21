@@ -133,6 +133,11 @@ appears in your own SSH command line** — it kills the session. Use:
   `appInstallService/dev/remove`.
 - Picture mode is `settingsservice` `picture`/`pictureMode`, read and set without a `dimension` for
   the current input and range; `getSystemSettingDesc` lists the modes (`active && visible`).
+- The sleep timer that turns the TV off is `com.webos.service.tvReservationAgent`
+  `timer/sleep/add {"sleepTimeMinute":N}` (0 = off) and `timer/sleep/getRemainTime`; the
+  `time/sleepTimer` setting doesn't start it. With the output on the TV's speakers, webOS reports no
+  ARC device (a soundbar asleep, `arcDevice: false`), so Sound always offers HDMI ARC;
+  `sound/eArcSupport` says whether it's eARC.
 
 ## Open items
 - Confirm the colour keys on a remote that has them.
