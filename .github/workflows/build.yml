@@ -48,10 +48,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: homeplus-ipk
-          path: dist/*.ipk
+          path: |
+            dist/*.ipk
+            dist/*.manifest.json
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.ipk --title "Home+ $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/*.ipk dist/*.manifest.json --title "Home+ $GITHUB_REF_NAME" --generate-notes

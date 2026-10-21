@@ -22,7 +22,7 @@ In this repository: issues, pull requests, discussions and reviews. It also appl
 
 ## Reporting
 
-If someone breaks this code, or you feel unsafe, tell the maintainer, [@pmiraka](https://github.com/pmiraka), privately: by email, at the address on their GitHub profile. For abuse on GitHub itself, you can also use GitHub's **Report content**.
+If someone breaks this code, or you feel unsafe, tell the maintainer, [@pbalazaar](https://github.com/pbalazaar), privately: by email, at the address on their GitHub profile. For abuse on GitHub itself, you can also use GitHub's **Report content**.
 
 Every report is read, and the reporter's name is kept private. The maintainer may edit or remove comments, close issues and pull requests, or block someone from the project, depending on what happened.
 

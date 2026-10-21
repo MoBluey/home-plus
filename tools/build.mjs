@@ -4,6 +4,7 @@
 //   node tools/build.mjs   -> dist/com.github.pmiraka.homeplus_<version>_all.ipk: the native
 //                             launcher with its service and boot script (one package, as the
 //                             Homebrew Channel lists one). Run `make -C native webos` first.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
@@ -111,6 +112,7 @@ function buildPackage({ appinfo, stage: fill, services = [], executable = [] }) 
   const out = path.join(dist, `${id}_${version}_all.ipk`);
   fs.writeFileSync(out, ar(build, ['debian-binary', 'control.tar.gz', 'data.tar.gz']));
   console.log(`built ${path.relative(root, out)} (${fs.statSync(out).size} bytes)`);
+  return out;
 }
 
 // ---- Home+: the launcher, its service and its boot script, in one package ----
@@ -124,7 +126,7 @@ const svcDir = path.join(root, 'service');
 // never hidden files (.DS_Store), service/data (a local config, maybe with sign-ins) or tests
 const shipped = (src) => !path.basename(src).startsWith('.') &&
   path.relative(svcDir, src).split(path.sep)[0] !== 'data' && !src.endsWith('.test.js');
-buildPackage({
+const ipk = buildPackage({
   appinfo,
   services: [svc.id],
   executable: ['homeplus', ...fs.readdirSync(path.join(root, 'init.d')).map((f) => `init.d/${f}`)]
@@ -146,3 +148,20 @@ buildPackage({
     fs.cpSync(svcDir, path.join(data, 'usr/palm/services', svc.id), { recursive: true, filter: shipped });
   }
 });
+
+// The Homebrew Channel's manifest for the package: webosbrew's apps-repo lists Home+ from the latest
+// release's copy, and its hash and size describe this very .ipk, so every release carries a fresh one.
+// GITHUB_REPOSITORY (set in CI) keeps its links right if the repository moves.
+const repo = process.env.GITHUB_REPOSITORY || 'pbalazaar/home-plus';
+const manifest = path.join(dist, `${appinfo.id}.manifest.json`);
+fs.writeFileSync(manifest, JSON.stringify({
+  id: appinfo.id, version: appinfo.version, type: appinfo.type, title: appinfo.title,
+  appDescription: 'A tvOS-style home screen for rooted LG TVs, in a Liquid Glass look',
+  iconUri: `https://raw.githubusercontent.com/${repo}/main/docs/icon.png`,
+  sourceUrl: `https://github.com/${repo}`,
+  rootRequired: true,
+  ipkUrl: path.basename(ipk),
+  ipkSize: fs.statSync(ipk).size,
+  ipkHash: { sha256: crypto.createHash('sha256').update(fs.readFileSync(ipk)).digest('hex') }
+}, null, 2) + '\n');
+console.log(`wrote ${path.relative(root, manifest)}`);

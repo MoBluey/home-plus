@@ -2049,7 +2049,7 @@ static void settings_page(int page, int index)
         char keys[64] = "Every remote key so far is one Home+ knows.";
         if (S.last_unknown_key) snprintf(keys, sizeof keys, "Last remote key Home+ ignored: %d", S.last_unknown_key);
         char about[700];
-        snprintf(about, sizeof about, "Home+ %s, %s\n%s\nMIT licence \xC2\xB7 github.com/pmiraka/home-\n"
+        snprintf(about, sizeof about, "Home+ %s, %s\n%s\nMIT licence \xC2\xB7 github.com/pbalazaar/home-plus\n"
                  "Not affiliated with LG, Apple, Stremio, Trakt, Jellyfin or Plex.\n"
                  "Uses the TMDB API but is not endorsed or certified by TMDB.",
                  S.svc_version[0] ? S.svc_version : "\xE2\x80\x93",

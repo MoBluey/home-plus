@@ -25,7 +25,7 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with C
 ## Requirements
 
 - A **rooted** LG TV running webOS, with the **[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel)** installed.
-- **Tested on:** LG C3 (OLED), webOS 23.20.59. Other recent webOS TVs may well work, but haven't been tried. If you try one, please open an issue saying how it went.
+- **Tested on:** LG C3 (OLED), webOS 9.2.1 (webOS 24; firmware 23.20.59). Other recent webOS TVs may well work, but haven't been tried. If you try one, please open an issue saying how it went.
 - **Optional:**
   - for Continue Watching, any of: a [Stremio](https://www.stremio.com) account and the Stremio app; a [Jellyfin](https://jellyfin.org) server and the Jellyfin app; a [Plex](https://www.plex.tv) server and the Plex app;
   - a [Trakt](https://trakt.tv) account;
