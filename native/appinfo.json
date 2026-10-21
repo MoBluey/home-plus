@@ -1,6 +1,6 @@
 {
   "id": "com.github.pmiraka.homeplus",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "vendor": "pmiraka",
   "type": "native",
   "main": "homeplus",
