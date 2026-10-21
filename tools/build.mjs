@@ -37,8 +37,10 @@ function ar(dir, members) {
   return Buffer.concat(chunks);
 }
 
-// The .tar.gz that `tar --format=gnu --owner=0 --group=0 --numeric-owner --sort=name -czf out -C dir .`
+// The .tar.gz that `cd dir && tar --format=gnu --owner=0 --group=0 --numeric-owner --sort=name -czf out *`
 // writes. macOS's bsdtar has none of those flags, and it would add ._* entries for extended attributes.
+// Names are as ares-package writes them, `control` and `usr/...`, not `./control`: the TV takes either,
+// but the Homebrew Channel's repository looks for `control` and appinfo.json by those names.
 // Modes are set here, not read from the disk, so a package built from a Windows folder (where every
 // file looks 0777, or 0666) comes out the same: folders and the files in `executable` 0755, the rest 0644.
 function tarGz(dir, executable = new Set()) {
@@ -64,11 +66,11 @@ function tarGz(dir, executable = new Set()) {
     const p = path.join(dir, rel);
     const st = fs.statSync(p);
     if (st.isDirectory()) {
-      blocks.push(header(rel ? `./${rel}/` : './', st, '5', 0, 0o755));
+      if (rel) blocks.push(header(`${rel}/`, st, '5', 0, 0o755));
       for (const name of fs.readdirSync(p).sort()) add(rel ? `${rel}/${name}` : name);
     } else {
       const data = fs.readFileSync(p);
-      blocks.push(header(`./${rel}`, st, '0', data.length, executable.has(rel) ? 0o755 : 0o644),
+      blocks.push(header(rel, st, '0', data.length, executable.has(rel) ? 0o755 : 0o644),
         data, Buffer.alloc((512 - data.length % 512) % 512));
     }
   })('');
