@@ -110,10 +110,13 @@ jobs:
   service-required:
     name: Service (ubuntu-24.04)
     needs: service
+    if: always()
     runs-on: ubuntu-24.04
     steps:
       - name: All service runtimes passed
-        run: echo "The complete service matrix passed."
+        env:
+          SERVICE_RESULT: ${{ needs.service.result }}
+        run: test "$SERVICE_RESULT" = success
 
   launcher:
     name: Launcher
