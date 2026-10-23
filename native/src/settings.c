@@ -80,7 +80,7 @@ int settings_steps(Action act)
 }
 
 /* a line on what the last row does, under its name */
-void settings_desc(const char *text)
+static void settings_desc(const char *text)
 {
     if (!S.sheet.n) return;
     SheetItem *it = &S.sheet.it[S.sheet.n - 1];

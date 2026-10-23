@@ -695,7 +695,6 @@ int stremio_installed(void);
 /* settings.c */
 void settings_page(int page, int index);
 void settings_row(const char *label, const char *value, Action act, int arg, int chevron, int destructive);
-void settings_desc(const char *text);
 int settings_steps(Action act);
 int settings_keydown(SDL_Keycode k);
 void settings_enter(void);
