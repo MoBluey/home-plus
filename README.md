@@ -12,7 +12,9 @@
 
 A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with Continue Watching from Stremio, Trakt, Jellyfin and Plex.
 
-![Home+ home screen](docs/screenshots/home.jpg)
+![Home+ on an LG C3: navigating apps, Recents, Control Center, and two-pane Settings, with Prime Video](docs/screenshots/homeplus-demo.gif)
+
+*Recorded on an LG C3. [Watch the MP4](docs/screenshots/homeplus-demo.mp4).*
 
 *Screenshots show a real TV's apps and Continue Watching. The Jellyfin one uses placeholder shows.*
 
