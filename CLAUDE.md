@@ -1,6 +1,6 @@
 # Home+ — notes for Claude
 
-tvOS-style launcher for a rooted LG C3 (webOS 23.20.59, kernel aarch64, **32-bit ARM userland**,
+tvOS-style launcher for a rooted LG C3 (webOS 9.2.1, firmware 23.20.59, kernel aarch64, **32-bit ARM userland**,
 SDL2 2.0.14, GLES2/EGL/Wayland). The TV: `<tv-ip>`, root SSH via Homebrew Channel
 (`ssh root@<tv-ip>`, or an alias of your own).
 PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
@@ -13,7 +13,7 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   "Uninstall the Old Home+" says so when `/api/status` isn't its own service's), and LG Input Hook
   binds made for it count as Home+'s.
 - `service/` — Node 12.21+ webOS service (webOS 22 and later) `com.github.pbalazaar.homeplus.service`, elevated with Homebrew
-  Channel's `elevateService` (the launcher asks; see First run). Luna methods + a local HTTP API on `127.0.0.1:47823` (see README).
+  Channel's `elevateService` (the launcher asks; see First run). Luna methods + a local HTTP API on `127.0.0.1:47823` (see `docs/ARCHITECTURE.md`).
   Also: Home button takeover (`watch` mode, and `redirect` = no-flash bind mount over LG home's
   start page, approved by the owner; and an app that quits brings Home+ at once, see Known TV quirks), settings
   apps, recents, and Continue Watching from

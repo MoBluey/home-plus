@@ -67,7 +67,7 @@ jobs:
             dist/*.manifest.json
 
   service:
-    name: Service (${{ matrix.os }}, Node ${{ matrix.tv-node || '22' }})
+    name: Service (${{ matrix.os }}${{ matrix.tv-node && format(', Node {0}', matrix.tv-node) || '' }})
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +104,19 @@ jobs:
           node-version: 22
       - name: Service tests
         run: node --test test/*.test.js
+
+  # Keep the existing required Linux check while testing every TV runtime above.
+  # This gate succeeds only after the entire service matrix has succeeded.
+  service-required:
+    name: Service (ubuntu-24.04)
+    needs: service
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: All service runtimes passed
+        env:
+          SERVICE_RESULT: ${{ needs.service.result }}
+        run: test "$SERVICE_RESULT" = success
 
   launcher:
     name: Launcher
