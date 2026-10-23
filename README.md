@@ -17,9 +17,11 @@
 > - So far it's **tested only on an LG C3** with webOS 9.2.1 (firmware 23.20.59). Other models and webOS versions may work but haven't been tried; reports from other TVs go in [COMPATIBILITY.md](COMPATIBILITY.md).
 > - Optional: [LG Input Hook](https://github.com/Simon34545/lginputhook), so LG's home screen never flashes on the Home button and the Settings button opens Home+'s Control Center over any app.
 
-**Install:** download the `.ipk` from the [latest release](https://github.com/pbalazaar/home-plus/releases/latest), install it with [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) (Apps → Install), and open **Home+**. Changed your mind? **Settings → Remove Home+** puts everything back. More in [Install](#install).
+**Install:** download the `.ipk` from the [latest release](https://github.com/pbalazaar/home-plus/releases/latest), install it with [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) (Apps → Install), and open **Home+**. Changed your mind? **Settings → Remove Home+** removes its setup and uninstalls it. More in [Install](#install).
 
-![Home+ home screen](docs/screenshots/home.jpg)
+![Home+ on an LG C3: navigating apps, Recents, Control Center, and two-pane Settings, with Prime Video](docs/screenshots/homeplus-demo.gif)
+
+*Recorded on an LG C3. [Watch the MP4](docs/screenshots/homeplus-demo.mp4).*
 
 *Screenshots show a real TV's apps and Continue Watching. The Jellyfin one uses placeholder shows.*
 
@@ -42,7 +44,7 @@
 ## Requirements
 
 - A **rooted** LG TV running webOS, with the **[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel)** installed.
-- **Tested on:** LG C3 (OLED), webOS 9.2.1 (firmware 23.20.59). Other recent webOS TVs may well work; [COMPATIBILITY.md](COMPATIBILITY.md) lists those people have tried. If you try one, please [send a compatibility report](https://github.com/pbalazaar/home-plus/issues/new?template=compatibility.yml), whether it went well or not.
+- **Tested on:** LG C3 (OLED), webOS 9.2.1 (firmware 23.20.59). [COMPATIBILITY.md](COMPATIBILITY.md) lists reported TV checks. The service also runs on webOS 22 and 23's Node 12 (checked in CI); nothing else has been tried on those TVs. If you try one, please [send a compatibility report](https://github.com/pbalazaar/home-plus/issues/new?template=compatibility.yml), whether it went well or not.
 - **Optional:**
   - for Continue Watching, any of: a [Stremio](https://www.stremio.com) account and the Stremio app; a [Jellyfin](https://jellyfin.org) server and the Jellyfin app; a [Plex](https://www.plex.tv) server and the Plex app;
   - a [Trakt](https://trakt.tv) account;
@@ -266,9 +268,9 @@ If the TV ever has trouble booting, the Homebrew Channel's failsafe skips boot s
 
 ## Questions
 
-**Will it harm my TV?** Home+ doesn't change webOS's own files. It runs as an app and a background service, adds a boot script as a link that goes when Home+ does, and, with LG Input Hook, adds keybinds that fall back to LG's own buttons if Home+ is gone. If the TV ever has trouble starting, the Homebrew Channel's failsafe skips boot scripts. [Removing Home+](#removing-home) lists everything it sets up.
+**Will it harm my TV?** Home+ runs a background service with root access and sets up a boot-script link and optional LG Input Hook keybinds. Root access and boot changes carry risk; testing on one TV cannot guarantee safety on every model or firmware. The keybinds fall back to LG's buttons when Home+ is gone. If the TV has trouble starting, the Homebrew Channel's failsafe can skip boot scripts. [Removing Home+](#removing-home) explains cleanup, including what a plain uninstall leaves behind.
 
-**Can I go back to LG's home screen?** Yes. **Settings → Home Button** gives the Home button back to LG, and **Settings → Remove Home+** undoes everything and uninstalls.
+**Can I go back to LG's home screen?** Yes. **Settings → Home Button** gives the Home button back to LG, and **Settings → Remove Home+** removes its setup and uninstalls.
 
 **Does it work without root?** No. Opening apps, the Home button and the Control Center all need the root access the Homebrew Channel gives.
 
@@ -305,7 +307,7 @@ Every push is built and tested by GitHub Actions. Pushing a `v*` tag does the sa
 
 ## How Home+ is built and tested
 
-Home+ is designed by its author, who makes every decision about what it does and how it does it. Claude, an AI assistant, helps write its code and its documentation. Every commit has been tried on the author's own LG C3 (webOS 9.2.1, firmware 23.20.59). The launcher is a native app, written in C, and on every change CI also runs the service's tests (with the service on the TV's Node 16), renders and checks every screen of the launcher, drives the Control Center's QML, and builds and checks the package.
+Home+ is designed by its author, who makes every decision about what it does and how it does it. Claude, an AI assistant, helps write its code and its documentation. Development checks have been run on the author's LG C3 (webOS 9.2.1, firmware 23.20.59); the individual pull requests record what was tried and what is still pending. The launcher is a native app, written in C. On every change CI runs the service's tests against the Node versions in webOS 22–26, drives the Control Center's QML, and builds and checks the package. The launcher's screens are rendered and checked locally.
 
 ## How it works
 
