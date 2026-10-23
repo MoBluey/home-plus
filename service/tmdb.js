@@ -11,6 +11,7 @@
 'use strict';
 
 const { requestJSON } = require('./net');
+const { URLSearchParams } = require('url');
 
 // The preview harness points these at a mock; on the TV they're TMDB's.
 const API = process.env.HOMEPLUS_TMDB || 'https://api.themoviedb.org/3';
@@ -136,8 +137,9 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     if (!building.has(id)) {
       building.set(id, build(p).then((items) => {
         lists.set(id, { at: Date.now(), items });
+        building.delete(id);
         return items;
-      }).finally(() => building.delete(id)));
+      }, (e) => { building.delete(id); throw e; }));
     }
     try {
       return await building.get(id);

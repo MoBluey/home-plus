@@ -5,10 +5,13 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const { URL } = require('url');
 const { EventEmitter } = require('events');
 const { png } = require('./png');
 
 const [assets, serviceDir] = process.argv.slice(2);
+const { mkdirSync } = require(path.join(serviceDir, 'mkdir'));
+const { requestOptions } = require(path.join(serviceDir, 'net'));
 const APPS = fs.readFileSync(path.join(assets, 'apps.txt'), 'utf8').trim().split(',').map((s) => s.split('|'));
 const COLORS = { netflix: '#E50914', prime: '#00A8E1', disney: '#113CCF', hdmi1: '#3A3A40' };
 
@@ -16,7 +19,7 @@ const COLORS = { netflix: '#E50914', prime: '#00A8E1', disney: '#113CCF', hdmi1:
 // when it's set (tests, and run.sh, which need no root), else where the TV keeps it.
 const CONFIG_DIR = process.env.HOMEPLUS_CONFIG_DIR || '/var/lib/homeplus';
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
-fs.mkdirSync(CONFIG_DIR, { recursive: true });
+mkdirSync(CONFIG_DIR);
 // HOMEPLUS_PREVIEW_FRESH: a first install (the welcome steps not done yet)
 fs.writeFileSync(CONFIG_FILE, JSON.stringify(
   process.env.HOMEPLUS_PREVIEW_FRESH ? { stremioAuthKey: 'preview' } : { stremioAuthKey: 'preview', homeAsked: true, homeMode: 'watch' }));
@@ -46,11 +49,11 @@ const library = SHOWS.map((name, i) => Object.assign({
 // HOMEPLUS_PREVIEW_HTTPS: Stremio's and Trakt's APIs (the service's https requests) are this server
 // instead (tests: one that hangs up halfway through its replies)
 const HTTPS = process.env.HOMEPLUS_PREVIEW_HTTPS;
-https.request = (url, opts, cb) => {
-  if (HTTPS) {
-    const u = new URL(url);
-    return require('http').request(HTTPS + u.pathname + u.search, opts, cb);
-  }
+// The service makes its requests as request(options, cb), which webOS 6's Node 8 needs: the URL is its parts
+const target = (o) => `${o.protocol}//${o.hostname}${o.port ? `:${o.port}` : ''}${o.path}`;
+https.request = (opts, cb) => {
+  const url = target(opts);
+  if (HTTPS) return require('http').request(Object.assign({}, opts, requestOptions(HTTPS + opts.path)), cb);
   const req = new EventEmitter();
   req.end = () => {
     const res = new EventEmitter();
@@ -64,7 +67,8 @@ https.request = (url, opts, cb) => {
 };
 // HOMEPLUS_PREVIEW_IMG_MS: pictures take this long to arrive (on the TV: ~250 ms)
 const IMG_MS = Number(process.env.HOMEPLUS_PREVIEW_IMG_MS) || 0;
-https.get = (url, opts, cb) => {
+https.get = (opts, cb) => {
+  const url = target(opts);
   const m = /tt000000(\d)/.exec(String(url));
   const res = fs.createReadStream(path.join(assets, `show${m ? m[1] : 0}.jpg`));
   res.statusCode = /\/logo\//.test(url) ? 404 : 200;
@@ -190,7 +194,7 @@ const ambient = { leds: true, capture: true };
 if (process.env.HOMEPLUS_PREVIEW_AMBIENT) {
   const http = require('http');
   const PORT = 47902;
-  for (const d of ['hyperhdr', 'piccap']) fs.mkdirSync(path.join(CONFIG_DIR, 'ambient', d), { recursive: true });
+  for (const d of ['hyperhdr', 'piccap']) mkdirSync(path.join(CONFIG_DIR, 'ambient', d));
   process.env.HOMEPLUS_HYPERHDR_DIR = path.join(CONFIG_DIR, 'ambient', 'hyperhdr');
   process.env.HOMEPLUS_PICCAP_DIR = path.join(CONFIG_DIR, 'ambient', 'piccap');
   process.env.HOMEPLUS_HYPERHDR = `http://127.0.0.1:${PORT}/json-rpc`;
@@ -235,7 +239,7 @@ global.__stubLuna = (uri, params) => {
     return { returnValue: true, results: [{ key, ui: { active: key !== 'hdrDynamicToneMapping' && key !== 'gameOptimization' },
       values: d.range ? { range: d.range } : { arrayExt: d.map((value) => ({ value, visible: true, active: true })) } }] };
   }
-  if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: Object.fromEntries((params.keys || []).map((k) => [k, tv[k]])) };
+  if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: (params.keys || []).reduce((o, k) => Object.assign(o, { [k]: tv[k] }), {}) };
   if (uri.endsWith('/timer/sleep/getRemainTime')) return Object.assign({ returnValue: true, sleepTimeSecond: 0 }, tv.sleepMinutes ? { sleepTimeMinute: tv.sleepMinutes } : {});
   if (uri.endsWith('/timer/sleep/add')) {
     if (process.env.HOMEPLUS_PREVIEW_REFUSE) return { returnValue: false, errorText: 'refused' };
@@ -274,7 +278,7 @@ global.__stubLuna = (uri, params) => {
       let r = { returnValue: false, errorCode: 2, errorText: 'ERROR_NOT_INITIALIZED' };
       if (kind !== 'busy') {
         try {
-          fs.mkdirSync(path.dirname(params.path), { recursive: true });
+          mkdirSync(path.dirname(params.path));
           fs.writeFileSync(params.path, png(params.width, params.height, () => rgb));
           r = { returnValue: true, capturedWidth: params.width, capturedHeight: params.height };
         } catch (e) {

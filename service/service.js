@@ -15,12 +15,14 @@ const https = require('https');
 const http = require('http');
 const dns = require('dns');
 const pkg = require('./package.json');
-const { requestJSON, onThisTV } = require('./net');
+const { requestJSON, onThisTV, requestOptions } = require('./net');
 const Service = require('webos-service');
 const callers = require('./callers');
 const png = require('./png');
 const tmp = require('./tmp');
 const remove = require('./remove');
+const { mkdirSync } = require('./mkdir');
+const { URL } = require('url');
 
 const service = new Service(pkg.name);
 
@@ -89,7 +91,7 @@ function findConfigPath() {
   if (configPath) return configPath;
   for (const dir of CONFIG_DIRS) {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      mkdirSync(dir);
       fs.accessSync(dir, fs.constants.W_OK);
       configPath = path.join(dir, 'config.json');
       return configPath;
@@ -128,11 +130,11 @@ function writeConfig(cfg) {
 function postJSON(url, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const req = https.request(url, {
+    const req = https.request(requestOptions(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
       timeout: 15000
-    }, (res) => {
+    }), (res) => {
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; });
@@ -198,7 +200,8 @@ function indexApps(apps) {
     };
   }
   images = next;
-  titles = Object.fromEntries((apps || []).map((a) => [a.id, a.title || a.id]));
+  titles = {};
+  for (const a of apps || []) titles[a.id] = a.title || a.id;
 }
 
 async function listApps() {
@@ -386,7 +389,7 @@ function installBootScript() {
     try { have = fs.readlinkSync(INITD); } catch (e) { /* not there yet, or a copy */ }
     if (have === script) return true;
     if (!fs.existsSync(script)) { log('boot script: no', script); return false; }
-    fs.mkdirSync(path.dirname(INITD), { recursive: true }); /* some ways of rooting never made it */
+    mkdirSync(path.dirname(INITD)); /* some ways of rooting never made it */
     remove.rmSync(INITD, { force: true }); /* the copy Home+ 0.11 and older made */
     fs.symlinkSync(script, INITD);
     log('boot script linked:', INITD, '->', script);
@@ -936,7 +939,9 @@ const lastUsed = new Map((() => {
 })());
 
 function saveRecents() {
-  try { tmp.write(RECENTS_FILE, JSON.stringify(Object.fromEntries(lastUsed))); } catch (e) { /* only for restarts */ }
+  const o = {};
+  for (const [id, at] of lastUsed) o[id] = at;
+  try { tmp.write(RECENTS_FILE, JSON.stringify(o)); } catch (e) { /* only for restarts */ }
 }
 
 async function onForeground(appId) {
@@ -1115,7 +1120,7 @@ const IMAGE_DEADLINE_MS = Number(process.env.HOMEPLUS_FETCH_DEADLINE_MS) || 3000
 function imageCacheDir() {
   if (!imageDir) {
     imageDir = path.join(path.dirname(findConfigPath()), 'images');
-    fs.mkdirSync(imageDir, { recursive: true, mode: 0o700 }); /* what you watch: root's only */
+    mkdirSync(imageDir, 0o700); /* what you watch: root's only */
   }
   return imageDir;
 }
@@ -1215,7 +1220,7 @@ function fetchRemote(url, res, depth = 0, file = '', started = Date.now()) {
   const mod = u && u.protocol === 'https:' ? https : u && u.protocol === 'http:' ? http : null;
   if (!mod) { res.writeHead(404); return res.end(); }
   let answered = false; /* a response came: its end says how it went */
-  const req = mod.get(u, { timeout: IMAGE_TIMEOUT_MS, lookup: lookupOffTV }, (up) => {
+  const req = mod.get(requestOptions(u, { timeout: IMAGE_TIMEOUT_MS, lookup: lookupOffTV }), (up) => {
     answered = true;
     up.on('error', () => {}); /* (cut short: 'close' below sees to it) */
     if (up.statusCode >= 300 && up.statusCode < 400 && up.headers.location && depth < 4) {
@@ -1410,7 +1415,7 @@ async function apiContinue() {
   sources.push(trakt.playback());
   const lists = await Promise.all(sources.map((p) => p.catch((e) => { log('continue source failed', e.message); return []; })));
   const byId = new Map();
-  for (const it of lists.flat()) {
+  for (const it of [].concat(...lists)) {
     const prev = byId.get(it.id);
     if (!prev || String(it.lastWatched) > String(prev.lastWatched)) byId.set(it.id, it);
   }
@@ -1627,8 +1632,8 @@ const imageServer = http.createServer(async (req, res) => {
   });
   fs.createReadStream(file).on('error', () => res.end()).pipe(res);
 });
-imageServer.headersTimeout = 10000; /* a request never sent whole doesn't keep its socket (Node 16 sets no limit) */
-imageServer.requestTimeout = 30000;
+imageServer.headersTimeout = 10000; /* a request never sent whole doesn't keep its socket (Node 16 sets no limit; */
+imageServer.requestTimeout = 30000; /* Node 8 has neither, but closes a socket idle for 2 minutes) */
 imageServer.on('error', (e) => log('image server error', e.message));
 imageServer.listen(IMAGE_PORT, '127.0.0.1', () => log('image server listening on', IMAGE_PORT));
 

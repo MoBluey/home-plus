@@ -25,7 +25,7 @@ Response times vary; there is no guaranteed response time.
 What the TV allows:
 
 - **The launcher** is a 32-bit ARM program that uses the TV's own SDL, version 2.0.14. It's compiled against SDL 2.0.14's headers (`native/third_party/SDL2`), and the package check turns away a launcher that calls an SDL function the TV doesn't have. LG's additions to SDL are looked up while running, the way `input.c` finds `SDL_webOSCursorVisibility`.
-- **The service** targets Node 12.21.0 and newer (webOS 22 and later), so optional chaining and newer APIs such as `fetch` mustn't be required. `service/remove.js` handles file and tree removal on Node 12 too. It has no npm dependencies: its folder is copied to the TV as it is.
+- **The service** targets Node 8.12.0 and newer (webOS 6, and webOS 22 and later), so optional chaining and APIs newer than Node 8 mustn't be required: the global `URL` (require it from `url`), `{ recursive: true }` folders (`service/mkdir.js`, and `service/remove.js` for removal), `request(url, options, callback)` (`requestOptions()` in `service/net.js`), `Object.fromEntries`, `.flat()`, `Promise.prototype.finally`, `fetch`. It has no npm dependencies: its folder is copied to the TV as it is.
 - **The GPU and CPU** are shared with the TV's own apps, and often with PicCap and HyperHDR. Keep the launcher's use of them low.
 
 ## Building
@@ -83,7 +83,7 @@ tools/test.sh all           # all four
 
 CI runs all of it on every pull request, except the screens:
 
-- the service's tests, on Linux with the service on the Node versions in webOS 22–26, and on Windows;
+- the service's tests, on Linux with the service on the Node versions in webOS 6 and 22–26, and on Windows;
 - the launcher's own tests (`native/test/`), and the Control Center's QML, loaded and driven;
 - the package.
 
@@ -94,7 +94,7 @@ The screens are rendered on a desktop instead (`tools/test.sh screens`): in CI t
 ## Pull requests
 
 - Keep each pull request to one change, and say what it changes and why.
-- Match the code around it: its names and its comments. C is gnu11 and builds without warnings. The service's JavaScript must run on Node 12.21.0 and newer.
+- Match the code around it: its names and its comments. C is gnu11 and builds without warnings. The service's JavaScript must run on Node 8.12.0 and newer.
 - Add or update the service's tests, or a preview scene for a new screen.
 - For a change you can see, add before and after screenshots.
 - Leave the version alone: it changes when a release is made.

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { requestJSON } = require('../service/net');
+const { requestJSON, requestOptions } = require('../service/net');
 const { mockServer } = require('./helpers');
 
 test('net: JSON replies are parsed, and the status is passed on', async (t) => {
@@ -51,6 +51,16 @@ test('net: a server that hangs up halfway through its reply is a network error (
 test('net: only http and https URLs', async () => {
   await assert.rejects(requestJSON('GET', 'ftp://example.com/x'), /unsupported URL/);
   await assert.rejects(requestJSON('GET', 'not a url'), /bad URL/);
+});
+
+test('net: a URL becomes request options as Node makes them (webOS 6\'s Node 8 takes no URL with options)', () => {
+  assert.deepEqual(requestOptions('https://a.example/p/q?x=1&y=%20', { method: 'POST', timeout: 5 }),
+    { protocol: 'https:', hostname: 'a.example', port: undefined, path: '/p/q?x=1&y=%20', auth: undefined, method: 'POST', timeout: 5 });
+  const o = requestOptions(new URL('http://u%40s:p%3Aw@[::1]:8090/'), {});
+  assert.equal(o.hostname, '::1');
+  assert.equal(o.port, '8090');
+  assert.equal(o.path, '/');
+  assert.equal(o.auth, 'u@s:p:w');
 });
 
 test('callers: the luna methods answer the TV\'s own tools and Home+, not other apps', () => {

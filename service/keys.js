@@ -8,6 +8,7 @@ const http = require('http');
 const os = require('os');
 const crypto = require('crypto');
 const qr = require('./qr');
+const { URLSearchParams } = require('url');
 
 const TTL_MS = Number(process.env.HOMEPLUS_KEYS_TTL_MS) || 10 * 60 * 1000;
 

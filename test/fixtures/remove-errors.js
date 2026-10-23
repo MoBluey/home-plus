@@ -20,9 +20,9 @@ const rm = process.argv[2] === 'sync'
     let error;
     try { await rm(); } catch (e) { error = e; }
     // Node 16's native rmSync can leave a protected tree without throwing. Preserve native
-    // behavior there; our Node 12 fallback must report the error, and neither may hang.
+    // behavior there; our Node 8 and 12 fallback must report the error, and neither may hang.
     const native = process.argv[2] === 'sync' ? fs.rmSync : fs.rm;
-    if (!native) assert.ok(error, 'the Node 12 fallback reports permission errors');
+    if (!native) assert.ok(error, 'the Node 8/12 fallback reports permission errors');
     if (error) assert.ok(error.code === 'EACCES' || error.code === 'EPERM', error.message);
     assert.equal(fs.readFileSync(path.join(locked, 'keep'), 'utf8'), 'permission denied');
   } finally {
