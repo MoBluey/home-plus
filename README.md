@@ -10,9 +10,18 @@
 [![Downloads](https://img.shields.io/github/downloads/pbalazaar/home-plus/total)](https://github.com/pbalazaar/home-plus/releases)
 [![Platform: rooted LG webOS TVs](https://img.shields.io/badge/platform-rooted%20LG%20webOS%20TVs-blue)](#requirements)
 
-A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with Continue Watching from Stremio, Trakt, Jellyfin and Plex.
+**A home screen replacement for rooted LG webOS TVs.** Set as your home screen, it's there after the TV starts, the Home button goes to it, and closing an app comes back to it. Its Control Center handles the settings you change every day, and it shows no ads. tvOS-style, in a Liquid Glass look, with Continue Watching from Plex, Jellyfin and Stremio. Free and open source.
 
-![Home+ home screen](docs/screenshots/home.jpg)
+> **Can I use it?**
+> - Your LG TV is **rooted** and has the [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel). Most current LG firmware can't be rooted; the Homebrew Channel's page explains how to check yours.
+> - So far it's **tested only on an LG C3** with webOS 9.2.1 (firmware 23.20.59). Other models and webOS versions may work but haven't been tried; reports from other TVs go in [COMPATIBILITY.md](COMPATIBILITY.md).
+> - Optional: [LG Input Hook](https://github.com/Simon34545/lginputhook), so LG's home screen never flashes on the Home button and the Settings button opens Home+'s Control Center over any app.
+
+**Install:** download the `.ipk` from the [latest release](https://github.com/pbalazaar/home-plus/releases/latest), install it with [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) (Apps → Install), and open **Home+**. Changed your mind? **Settings → About → Remove Home+** removes its setup and uninstalls it. More in [Install](#install).
+
+![Home+ on an LG C3: navigating apps, Recents, Control Center, and two-pane Settings, with Prime Video](docs/screenshots/homeplus-demo.gif)
+
+*Recorded on an LG C3. [Watch the MP4](docs/screenshots/homeplus-demo.mp4).*
 
 *Screenshots show a real TV's apps and Continue Watching. The Jellyfin one uses placeholder shows.*
 
@@ -27,14 +36,15 @@ A tvOS-style home screen for rooted LG webOS TVs, in a Liquid Glass look, with C
 - **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. It turns to the next title every 10 seconds (or stays still: **Settings → Display & OLED → Top Shelf**); press **Up**, then **Left** and **Right**, to step through them. You sign in with a code or a QR code, so no password is typed on the TV.
 - **Recents:** an App Switcher for the apps you opened that are still running, most recent first. Apps webOS runs by itself (preloaded, or started again in the background) stay out. Open them, close them one by one, or close them all. Press **Back** on the first app to open it.
 - **Your layout:** hold **OK** on an app to move it, move it to the front, hide it, or delete it from the TV (like tvOS's Delete App; LG's built-in apps, the Homebrew Channel, LG Input Hook and Home+ itself can't be deleted). Hidden apps collect in a "Hidden" tile at the end.
-- **Home button:** optionally, the Home button opens Home+ instead of LG's home screen.
+- **Your home screen, all day:** optionally, the Home button opens Home+ instead of LG's home screen, closing an app comes back to it, and it's what you see after the TV starts.
+- **No ads:** no sponsored rows or tiles. Home+ connects only to the services you sign in to (see [Privacy and security](#privacy-and-security)).
 - **OLED care:** the picture drifts by a pixel every minute, and an idle Home+ dims, then goes black.
 - **Light on the TV:** a native app (C, SDL2, OpenGL ES 2) that draws nothing while nothing moves. It shares the GPU happily with PicCap and HyperHDR.
 
 ## Requirements
 
 - A **rooted** LG TV running webOS, with the **[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel)** installed.
-- **Tested on:** LG C3 (OLED), webOS 9.2.1 (webOS 24; firmware 23.20.59). Other recent webOS TVs may well work, but haven't been tried. If you try one, please [send a compatibility report](https://github.com/pbalazaar/home-plus/issues/new?template=compatibility.yml), whether it went well or not.
+- **Tested on:** LG C3 (OLED), webOS 9.2.1 (firmware 23.20.59). [COMPATIBILITY.md](COMPATIBILITY.md) lists reported TV checks. The service also runs on webOS 22 and 23's Node 12 (checked in CI); nothing else has been tried on those TVs. If you try one, please [send a compatibility report](https://github.com/pbalazaar/home-plus/issues/new?template=compatibility.yml), whether it went well or not.
 - **Optional:**
   - for Continue Watching, any of: a [Stremio](https://www.stremio.com) account and the Stremio app; a [Jellyfin](https://jellyfin.org) server and the Jellyfin app; a [Plex](https://www.plex.tv) server and the Plex app;
   - a [Trakt](https://trakt.tv) account;
@@ -254,6 +264,22 @@ If the TV ever has trouble booting, the Homebrew Channel's failsafe skips boot s
 - **"No Jellyfin server found":** the TV and the server must be on the same network, with the server's auto-discovery on (it is by default). Or give Home+ its address (see [Jellyfin](#jellyfin)).
 - **Plex: "none of your servers answered":** the server must be running and reachable from the TV. If it's only reachable from outside, turn on Remote Access in Plex.
 
+## Questions
+
+**Will it harm my TV?** Home+ runs a background service with root access and sets up a boot-script link and optional LG Input Hook keybinds. Root access and boot changes carry risk; testing on one TV cannot guarantee safety on every model or firmware. The keybinds fall back to LG's buttons when Home+ is gone. If the TV has trouble starting, the Homebrew Channel's failsafe can skip boot scripts. [Removing Home+](#removing-home) explains cleanup, including what a plain uninstall leaves behind.
+
+**Can I go back to LG's home screen?** Yes. **Settings → Remote → Home Button** gives the Home button back to LG, and **Settings → About → Remove Home+** removes its setup and uninstalls.
+
+**Does it work without root?** No. Opening apps, the Home button and the Control Center all need the root access the Homebrew Channel gives.
+
+**Does it remove LG's ads everywhere?** No, only from the home screen, since Home+ replaces it. LG's screensaver, Live TV and its own apps are unchanged.
+
+**Why does LG's home screen flash when I press Home?** Without [LG Input Hook](#home-button), Home+ can only replace LG's home screen once it has appeared. With it, the Home button opens Home+ directly.
+
+**Why do I need my own TMDB or Trakt key?** Home+ doesn't come with keys of its own, so each TV uses its own. Both are free, and you paste them on your phone from a QR code, with no typing on the TV. Plex, Jellyfin and Stremio need no key.
+
+**Does it work on my TV?** Maybe: only an LG C3 on webOS 9.2.1 has been tried so far, so other models and versions are unknown. [COMPATIBILITY.md](COMPATIBILITY.md) has the list, and a report from your TV, good or bad, adds to it.
+
 ## Privacy and security
 
 - **What Home+ connects to:** only the services you sign in to: Stremio's and Trakt's APIs, `plex.tv` and your Plex server, your Jellyfin server, and TMDB (`api.themoviedb.org`, `image.tmdb.org`) if you add a key. Stremio artwork comes from `images.metahub.space`; Jellyfin and Plex artwork comes from your server. To find a Jellyfin server, Home+ sends one broadcast on your local network (UDP port 7359), only when you start a Jellyfin sign-in.
@@ -279,47 +305,11 @@ Every push is built and tested by GitHub Actions. Pushing a `v*` tag does the sa
 
 ## How Home+ is built and tested
 
-Home+ is designed by its author, who makes every decision about what it does and how it does it. Claude, an AI assistant, helps write its code and its documentation. Every commit has been tried on the author's own LG C3 (webOS 9.2.1, firmware 23.20.59). The launcher is a native app, written in C, and on every change CI also runs the service's tests (with the service on the TV's Node 16), renders and checks every screen of the launcher, drives the Control Center's QML, and builds and checks the package.
+Home+ is designed by its author, who makes every decision about what it does and how it does it. Claude, an AI assistant, helps write its code and its documentation. Development checks have been run on the author's LG C3 (webOS 9.2.1, firmware 23.20.59); the individual pull requests record what was tried and what is still pending. The launcher is a native app, written in C. On every change CI runs the service's tests against the Node versions in webOS 22–26, drives the Control Center's QML, and builds and checks the package. The launcher's screens are rendered and checked locally.
 
 ## How it works
 
-One package, `com.github.pbalazaar.homeplus`, holds three things:
-- **The launcher** (`native/`): C with SDL2 and OpenGL ES 2, using the TV's own libraries. Our renderer (`native/src/render.c`) draws the glass, shapes and shadows with shaders. A frame is a few dozen quads, and glass works on a half-resolution copy of the screen. Animations are springs, and nothing is redrawn while nothing moves.
-- **The service** (`service/`): a Node.js webOS service that runs as root once the Homebrew Channel elevates it. It lists, opens and closes apps and serves their icons. It also talks to Stremio, Trakt, Jellyfin and Plex, and handles the Home button.
-- **The boot script** (`init.d/`): makes the Homebrew Channel re-elevate and start the service at every boot. The service links it into the Homebrew Channel's `/var/lib/webosbrew/init.d/`: a link, not a copy, so it goes with the package.
-
-The launcher talks to the service over a local HTTP API on `127.0.0.1:47823`. It uses the webOS luna bus only to start the service and to ask the Homebrew Channel for root.
-
-| Endpoint | What it does |
-|---|---|
-| `GET /api/status` | Version, whether the service is root, setup state (no token needed) |
-| `GET /api/apps` | App list |
-| `POST /api/launch` | Open an app |
-| `GET` / `POST /api/layout` | Tile order and hidden apps |
-| `GET /api/continue` | Continue Watching from Stremio and Trakt, or with `?source=jellyfin` or `plex` |
-| `GET /api/featured?app=<id>` | What's popular on a streaming app (TMDB), for its Top Shelf |
-| `GET` / `POST /api/control` | The Control Center: network, sound output, sleep timer and inputs; `{action, value}` acts |
-| `POST /api/overlay` | The Control Center over other apps asks for what it can't do itself: `{"event": "open", "target": "network" \| "recents" \| "accessibility" \| "settings"}`, `{"event": "open", "app"}` (an input it offered), `{"event": "closed"}`, `{"event": "failed"}` |
-| `GET /api/<account>/status`, `POST .../link`, `POST .../disconnect` | Accounts (`stremio`, `trakt`, `jellyfin`, `plex`): state, a sign-in code, signing out |
-| `POST /api/jellyfin/server` | A Jellyfin server's address, for one Home+ can't find |
-| `GET /api/system` | LG's settings apps |
-| `GET /api/running`, `POST /api/close` | Recents, and closing apps |
-| `POST /api/remove` | Deletes an app from the TV (`{"id": ...}`) |
-| `GET` / `POST /api/home` | Home button mode; `onboarded` marks the welcome steps done |
-| `GET /api/keys`, `POST .../open`, `POST .../close`, `GET .../qr` | The keys page for TMDB and Trakt, on the local network: whether it's open, its link, its QR code |
-| `GET` / `POST /api/prefs` | `sounds`, `dimMinutes`, `offMinutes`, `pixelShift`, `calmColours`, `clock24`, `reduceMotion`, `reduceTransparency` |
-| `POST /api/uninstall` | Remove Home+ |
-| `GET /icon/<id>`, `/art/<id>`, `/img/<key>` | App icons, app artwork, and artwork and QR codes from the accounts |
-
-```
-native/     the launcher (C, SDL2 + OpenGL ES 2)
-service/    the Node.js service
-init.d/     the boot script
-docker/     the build environment
-tools/      build.mjs (packages the .ipk), install.sh, build-release.sh, docker-build.sh, native-preview/
-preview/    screenshots from tools/native-preview
-docs/       design notes
-```
+One package holds three things: the launcher (C, SDL2 and OpenGL ES 2), a Node.js service that runs as root, and a boot script. The launcher talks to the service over a local HTTP API. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the details: the pieces, the API and the folders.
 
 `CLAUDE.md` holds development notes, including the webOS quirks found along the way. Who makes Home+, and how: [How Home+ is built and tested](#how-home-is-built-and-tested).
 

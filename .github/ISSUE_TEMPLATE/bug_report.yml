@@ -22,7 +22,7 @@ body:
     attributes:
       label: TV and webOS version
       description: The model, and the webOS version from the TV's own settings (About This TV).
-      placeholder: LG C3, webOS 23.20.59
+      placeholder: LG OLED55C3, webOS 9.2.1 (firmware 23.20.59)
     validations:
       required: true
   - type: dropdown
