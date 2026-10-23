@@ -14,7 +14,7 @@
 
 > **Can I use it?**
 > - Your LG TV is **rooted** and has the [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel). Most current LG firmware can't be rooted; the Homebrew Channel's page explains how to check yours.
-> - It runs **webOS 9.2 or later**. Tested on an LG C3, webOS 9.2.1 (firmware 23.20.59); other TVs are in [COMPATIBILITY.md](COMPATIBILITY.md).
+> - So far it's **tested only on an LG C3** with webOS 9.2.1 (firmware 23.20.59). Other models and webOS versions may work but haven't been tried; reports from other TVs go in [COMPATIBILITY.md](COMPATIBILITY.md).
 > - Optional: [LG Input Hook](https://github.com/Simon34545/lginputhook), so LG's home screen never flashes on the Home button and the Settings button opens Home+'s Control Center over any app.
 
 **Install:** download the `.ipk` from the [latest release](https://github.com/pbalazaar/home-plus/releases/latest), install it with [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) (Apps → Install), and open **Home+**. Changed your mind? **Settings → Remove Home+** puts everything back. More in [Install](#install).
@@ -278,7 +278,7 @@ If the TV ever has trouble booting, the Homebrew Channel's failsafe skips boot s
 
 **Why do I need my own TMDB or Trakt key?** Home+ doesn't come with keys of its own, so each TV uses its own. Both are free, and you paste them on your phone from a QR code, with no typing on the TV. Plex, Jellyfin and Stremio need no key.
 
-**Does it work on my TV?** If your TV is rooted and runs webOS 9.2 or later, probably, but only the C3 is confirmed so far. [COMPATIBILITY.md](COMPATIBILITY.md) has the list, and a report from your TV, good or bad, adds to it.
+**Does it work on my TV?** Maybe: only an LG C3 on webOS 9.2.1 has been tried so far, so other models and versions are unknown. [COMPATIBILITY.md](COMPATIBILITY.md) has the list, and a report from your TV, good or bad, adds to it.
 
 ## Privacy and security
 
