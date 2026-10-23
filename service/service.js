@@ -22,6 +22,7 @@ const png = require('./png');
 const tmp = require('./tmp');
 const remove = require('./remove');
 const { mkdirSync } = require('./mkdir');
+const { sortStable } = require('./sort');
 const { URL } = require('url');
 
 const service = new Service(pkg.name);
@@ -233,7 +234,7 @@ function firstExisting(files, folder) {
 function guessIcon(folder) {
   try {
     const names = fs.readdirSync(folder).filter((n) => /icon.*\.(png|jpe?g|webp)$/i.test(n));
-    names.sort((a, b) => (/large|big|130|256|512/i.test(b) ? 1 : 0) - (/large|big|130|256|512/i.test(a) ? 1 : 0));
+    sortStable(names, (a, b) => (/large|big|130|256|512/i.test(b) ? 1 : 0) - (/large|big|130|256|512/i.test(a) ? 1 : 0));
     return names.length ? insideApp(path.join(folder, names[0]), folder) : null;
   } catch (e) {
     return null;
@@ -890,7 +891,9 @@ function listen(req, res) {
   if (recent.length) return sendJSON(res, 200, { events: recent });
   listeners.add(res);
   const t = setTimeout(() => { if (listeners.delete(res)) sendJSON(res, 200, { events: [] }); }, 15000);
-  res.on('close', () => { clearTimeout(t); listeners.delete(res); });
+  const done = () => { clearTimeout(t); listeners.delete(res); };
+  res.on('finish', done); /* answered (Node 8 says only that: 'close' is for a hang-up there) */
+  res.on('close', done);
 }
 
 function dropElevation() {
@@ -1254,7 +1257,8 @@ function fetchRemote(url, res, depth = 0, file = '', started = Date.now()) {
   req.on('timeout', () => req.destroy(new Error('timed out'))); /* the server stopped sending */
   /* too long in all: cut short as when it stops sending (a redirect goes on with what's left) */
   const late = setTimeout(() => req.destroy(new Error('took too long')), Math.max(0, started + IMAGE_DEADLINE_MS - Date.now()));
-  req.on('response', (up) => up.on('close', () => clearTimeout(late)));
+  /* (Node 8 sends no 'close' after a whole response, only 'end') */
+  req.on('response', (up) => { up.on('end', () => clearTimeout(late)); up.on('close', () => clearTimeout(late)); });
   req.on('error', () => {
     clearTimeout(late);
     if (answered) return;
@@ -1419,8 +1423,7 @@ async function apiContinue() {
     const prev = byId.get(it.id);
     if (!prev || String(it.lastWatched) > String(prev.lastWatched)) byId.set(it.id, it);
   }
-  const items = [...byId.values()]
-    .sort((a, b) => String(b.lastWatched).localeCompare(String(a.lastWatched)))
+  const items = sortStable([...byId.values()], (a, b) => String(b.lastWatched).localeCompare(String(a.lastWatched)))
     .slice(0, 16)
     .map((it) => Object.assign({}, it, {
       background: proxied(it.background), thumbnail: proxied(it.thumbnail), logo: proxied(it.logo), poster: proxied(it.poster)
@@ -1726,9 +1729,8 @@ function toItem(li) {
 
 async function continueWatching(authKey) {
   const lib = await stremio('datastoreGet', { authKey, collection: 'libraryItem', ids: [], all: true });
-  return (lib || [])
-    .filter((li) => (!li.removed || li.temp) && li.state && li.state.timeOffset > 0)
-    .sort((a, b) => String(b.state.lastWatched || '').localeCompare(String(a.state.lastWatched || '')))
+  return sortStable((lib || []).filter((li) => (!li.removed || li.temp) && li.state && li.state.timeOffset > 0),
+    (a, b) => String(b.state.lastWatched || '').localeCompare(String(a.state.lastWatched || '')))
     .slice(0, 15)
     .map(toItem);
 }

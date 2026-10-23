@@ -8,9 +8,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { mockServer, quiet, freshRequire, until } = require('./helpers');
+const { rmSync } = require('../service/remove');
+const { mkdirSync } = require('../service/mkdir');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-ambient-'));
-test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+test.after(() => rmSync(dir, { recursive: true, force: true }));
 const PAUSED = path.join(dir, 'piccap-paused'); /* the mark that PicCap's capture is paused */
 process.env.HOMEPLUS_PICCAP_PAUSED = PAUSED;
 process.env.HOMEPLUS_PICCAP_AGAIN_MS = '50'; /* PicCap starts again this long after the Control Center closes (on the TV: 2 s) */
@@ -38,8 +40,8 @@ async function fakeHyperhdr(leds) {
 function ambient({ url = 'http://127.0.0.1:9/json-rpc', hyperhdr = true, piccap = true, capturing = false } = {}) {
   for (const [name, on] of [['hyperhdr', hyperhdr], ['piccap', piccap]]) {
     const d = path.join(dir, name);
-    if (on) fs.mkdirSync(d, { recursive: true });
-    else fs.rmSync(d, { recursive: true, force: true });
+    if (on) mkdirSync(d);
+    else rmSync(d, { recursive: true, force: true });
   }
   process.env.HOMEPLUS_HYPERHDR = url;
   process.env.HOMEPLUS_HYPERHDR_DIR = path.join(dir, 'hyperhdr');

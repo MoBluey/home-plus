@@ -10,6 +10,7 @@
 
 const crypto = require('crypto');
 const { requestJSON } = require('./net');
+const { sortStable } = require('./sort');
 
 // The preview harness points these at a mock; on the TV they're Plex's.
 const PLEX_TV = process.env.HOMEPLUS_PLEX_TV || 'https://plex.tv';
@@ -60,9 +61,9 @@ module.exports = function createPlex({ readConfig, writeConfig, log, version }) 
     const r = await requestJSON('GET', `${PLEX_CLIENTS}/api/v2/resources?includeHttps=1&includeRelay=1`, { headers: headers(token) });
     if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`Plex didn't list your servers (${r.status})`);
     const servers = r.json.filter((d) => String(d.provides || '').split(',').includes('server'));
-    servers.sort((a, b) => (b.owned ? 1 : 0) - (a.owned ? 1 : 0));
+    sortStable(servers, (a, b) => (b.owned ? 1 : 0) - (a.owned ? 1 : 0));
     for (const s of servers) {
-      const conns = (s.connections || []).slice().sort((a, b) =>
+      const conns = sortStable((s.connections || []).slice(), (a, b) =>
         (a.relay ? 2 : a.local ? 0 : 1) - (b.relay ? 2 : b.local ? 0 : 1));
       for (const c of conns) {
         try {

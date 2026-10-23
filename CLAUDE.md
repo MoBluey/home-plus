@@ -126,7 +126,11 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   file/tree cleanup and `service/mkdir.js` for `mkdir -p`: Node 8 and 12 have no `fs.rm`/`fs.rmSync`, Node 8
   no `{ recursive: true }`, and neither parses optional chaining. Node 8 (the LG C1's) also lacks the global
   `URL` (require it from `url`), `request(url, options, cb)` (`requestOptions()` in `net.js`; the harness's
-  mocks take `(options, cb)` too), `Object.fromEntries`, `.flat()` and `Promise.prototype.finally`.
+  mocks take `(options, cb)` too), `Object.fromEntries`, `.flat()`, `Promise.prototype.finally`, regex named
+  groups and `\p{}` (`--check` misses those), and a stable `sort()` past 10 items (`service/sort.js`). The tests
+  that load service modules themselves run on that target too (`runtime.test.js`, through `test/target/run.js`,
+  a stand-in for the bit of `node:test` they use), so they're written for Node 8 as well (`last()` in helpers,
+  `remove.rmSync`, no global `URL`).
   `HOMEPLUS_LOG` and `HOMEPLUS_RECENTS_FILE` move its files in /tmp (opened only as its own, never
   through a link: `service/tmp.js`); `HOMEPLUS_FETCH_TIMEOUT_MS` and `HOMEPLUS_LUNA_TIMEOUT_MS` shorten
   the image proxy's and luna calls' 15 s. The harness's `HOMEPLUS_PREVIEW_ART` serves the mock Stremio

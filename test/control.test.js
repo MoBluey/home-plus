@@ -3,6 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const createControl = require('../service/control');
+const { last } = require('./helpers');
+/* (Node 8 has no Object.fromEntries) */
+const byKey = (pairs) => pairs.reduce((o, [k, v]) => Object.assign(o, { [k]: v }), {});
 
 /* A stand-in TV: answers the luna calls the Control Center makes, and records them. */
 function fakeTv({ arc = true, livetv = true, wifi = 'Home Wi-Fi', wired = false, output = 'external_arc', earc = 'off', sleep = 0,
@@ -29,7 +32,7 @@ function fakeTv({ arc = true, livetv = true, wifi = 'Home Wi-Fi', wired = false,
       return { returnValue: true, results: [{ key, ui, values: d.range ? { range: d.range } :
         { arrayExt: d.values.map((value) => ({ value, visible: true, active: true })).concat((d.hidden || []).map((value) => ({ value, visible: false, active: true }))) } }] };
     }
-    if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: Object.fromEntries(params.keys.map((k) => [k, tv[k]])) };
+    if (uri.endsWith('/getSystemSettings')) return { returnValue: true, settings: byKey(params.keys.map((k) => [k, tv[k]])) };
     /* LG's sleep timer: minutes and seconds left (no minutes when it's off) */
     if (uri.endsWith('/timer/sleep/getRemainTime')) return Object.assign({ returnValue: true, sleepTimeSecond: 0 }, tv.sleepMinutes ? { sleepTimeMinute: tv.sleepMinutes - 1, sleepTimeSecond: 59 } : {});
     if (uri.endsWith('/timer/sleep/add')) { tv.sleepMinutes = params.sleepTimeMinute; return { returnValue: true }; }
@@ -118,16 +121,16 @@ test('control: HDMI ARC is "HDMI eARC" when eARC is on', async () => {
 test('control: an input opens only if the TV has it', async () => {
   const { control, calls } = fakeTv();
   await control.act('input', 'com.webos.app.hdmi2');
-  assert.deepEqual(calls.at(-1), { uri: 'luna://com.webos.applicationManager/launch', params: { id: 'com.webos.app.hdmi2' } });
+  assert.deepEqual(last(calls), { uri: 'luna://com.webos.applicationManager/launch', params: { id: 'com.webos.app.hdmi2' } });
   await assert.rejects(control.act('input', 'com.evil.app'), /not an input/);
 });
 
 test('control: Power Off and Screen Off ask the TV\'s power service', async () => {
   const { control, calls } = fakeTv();
   await control.act('powerOff');
-  assert.deepEqual(calls.at(-1), { uri: 'luna://com.webos.service.tvpower/power/powerOff', params: { reason: 'remoteKey' } });
+  assert.deepEqual(last(calls), { uri: 'luna://com.webos.service.tvpower/power/powerOff', params: { reason: 'remoteKey' } });
   await control.act('screenOff');
-  assert.deepEqual(calls.at(-1), { uri: 'luna://com.webos.service.tvpower/power/turnOffScreen', params: { standbyMode: 'active' } });
+  assert.deepEqual(last(calls), { uri: 'luna://com.webos.service.tvpower/power/turnOffScreen', params: { standbyMode: 'active' } });
   await assert.rejects(control.act('reboot'), /unknown action/);
 });
 
@@ -156,7 +159,7 @@ test('control: the default list is today\'s Control Center, and the catalogue of
   const st = await fakeTv({ has: ['pictureMode', 'soundMode', 'backlight'] }).control.state();
   assert.deepEqual(st.controls.map((c) => `${c.id}:${c.size}`), ['power:large', 'network:wide', 'screenOff:wide', 'sound:wide', 'sleepTimer:wide',
     'pictureMode:wide', 'eyeComfort:wide', 'inputs:small', 'recents:small', 'accessibility:small', 'settings:small']);
-  const cat = Object.fromEntries(st.catalog.map((e) => [e.id, e]));
+  const cat = byKey(st.catalog.map((e) => [e.id, e]));
   assert.equal(cat.soundMode.available, true);
   assert.equal(cat.brightness.available, true);
   assert.equal(cat.energySaving.available, false, 'not described by this TV');
@@ -224,7 +227,7 @@ test('control: switches turn on and off; a setting the TV can\'t change now show
 test('control: what can be off says whether it is on, which tvOS shows in the glyph; the rest say nothing', async () => {
   const ids = ['network', 'sleepTimer', 'sound', 'eyeComfort', 'energySaving', 'gameOptimizer', 'soundMode', 'brightness', 'power'];
   const mem = memoryConfig({ controlCenter: ids.map((id) => ({ id, size: id === 'power' ? 'large' : 'wide' })) });
-  const on = async (opts) => Object.fromEntries((await fakeTv(Object.assign(opts, mem)).control.state()).controls.map((c) => [c.id, c.on]));
+  const on = async (opts) => byKey((await fakeTv(Object.assign(opts, mem)).control.state()).controls.map((c) => [c.id, c.on]));
   assert.deepEqual(await on({ sleep: 30 }), { network: true, sleepTimer: true, sound: true, eyeComfort: false, energySaving: false,
     gameOptimizer: false, soundMode: null, brightness: null, power: null, settings: null }, 'connected, a timer set, a sound system playing');
   const off = await on({ wifi: '', output: 'tv_speaker' });

@@ -8,6 +8,7 @@ const http = require('http');
 const os = require('os');
 const crypto = require('crypto');
 const qr = require('./qr');
+const { sortStable } = require('./sort');
 const { URLSearchParams } = require('url');
 
 const TTL_MS = Number(process.env.HOMEPLUS_KEYS_TTL_MS) || 10 * 60 * 1000;
@@ -15,7 +16,7 @@ const TTL_MS = Number(process.env.HOMEPLUS_KEYS_TTL_MS) || 10 * 60 * 1000;
 // the TV's address on the local network: Wi-Fi or Ethernet, IPv4
 function lanAddress() {
   const all = os.networkInterfaces();
-  const names = Object.keys(all).sort((a, b) => (/^(wlan|eth|en)/.test(b) ? 1 : 0) - (/^(wlan|eth|en)/.test(a) ? 1 : 0));
+  const names = sortStable(Object.keys(all), (a, b) => (/^(wlan|eth|en)/.test(b) ? 1 : 0) - (/^(wlan|eth|en)/.test(a) ? 1 : 0));
   for (const name of names) {
     for (const a of all[name] || []) {
       if ((a.family === 'IPv4' || a.family === 4) && !a.internal) return a.address;

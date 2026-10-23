@@ -10,6 +10,9 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { startService } = require('./helpers');
+const { URL, URLSearchParams } = require('url');
+const { requestOptions } = require('../service/net');
+const { rmSync } = require('../service/remove');
 const qr = require('../service/qr');
 
 let svc, dir, tmdbServer;
@@ -19,7 +22,7 @@ const call = (...args) => svc.call(...args);
 function fetchPage(url, form) {
   return new Promise((resolve, reject) => {
     const body = form ? new URLSearchParams(form).toString() : '';
-    const req = http.request(url, { method: form ? 'POST' : 'GET', headers: form ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {} }, (res) => {
+    const req = http.request(requestOptions(url, { method: form ? 'POST' : 'GET', headers: form ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {} }), (res) => {
       let buf = '';
       res.on('data', (c) => { buf += c; });
       res.on('end', () => resolve({ status: res.statusCode, html: buf }));
@@ -44,7 +47,7 @@ test.before(async () => {
 test.after(async () => {
   if (svc) await svc.stop();
   tmdbServer.close();
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
 });
 
 test('qr: a link becomes a QR code of the right size, as a PNG', () => {

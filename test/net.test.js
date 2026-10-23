@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { requestJSON, requestOptions } = require('../service/net');
 const { mockServer } = require('./helpers');
+const { URL } = require('url');
 
 test('net: JSON replies are parsed, and the status is passed on', async (t) => {
   const s = await mockServer(() => ({ status: 201, json: { a: 1 } }));

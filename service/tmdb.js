@@ -11,6 +11,7 @@
 'use strict';
 
 const { requestJSON } = require('./net');
+const { sortStable } = require('./sort');
 const { URLSearchParams } = require('url');
 
 // The preview harness points these at a mock; on the TV they're TMDB's.
@@ -71,14 +72,14 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     const exact = providers.list.filter((p) => p.key === t || p.key === `${t}plus`);
     const within = providers.list.filter((p) => !exact.includes(p) && t.length >= 4 && p.key.endsWith(t));
     const byPriority = (a, b) => a.priority - b.priority;
-    return [...exact.sort(byPriority), ...within.sort(byPriority)].slice(0, 3);
+    return [...sortStable(exact, byPriority), ...sortStable(within, byPriority)].slice(0, 3);
   }
 
   // the title's logo: English or language-free, the best voted
   async function logoFor(kind, id) {
     try {
       const r = await get(`/${kind}/${id}/images`, { include_image_language: 'en,null' });
-      const logos = ((r.json && r.json.logos) || []).slice().sort((a, b) =>
+      const logos = sortStable(((r.json && r.json.logos) || []).slice(), (a, b) =>
         (b.iso_639_1 === 'en') - (a.iso_639_1 === 'en') || (b.vote_average || 0) - (a.vote_average || 0));
       return logos.length ? `${IMG}/w500${logos[0].file_path}` : '';
     } catch (e) {
@@ -112,7 +113,7 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
         }
         if (found.length >= 6) break;
       }
-      found.sort((a, b) => (b.m.popularity || 0) - (a.m.popularity || 0));
+      sortStable(found, (a, b) => (b.m.popularity || 0) - (a.m.popularity || 0));
     } else {
       const r = await get('/trending/all/day', { language: 'en-US' });
       if (r.status !== 200 || !r.json) throw new Error(`TMDB trending failed (${r.status})`);

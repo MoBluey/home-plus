@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mockServer, configStore, quiet, freshRequire } = require('./helpers');
+const { mockServer, configStore, quiet, last, freshRequire } = require('./helpers');
 
 /* A stand-in TMDB: a few streaming services, their popular titles, trending, logos and keys. */
 const PROVIDERS = [
@@ -70,8 +70,8 @@ test('tmdb: "Netflix" is Netflix, not "Netflix basic with Ads"', async () => {
   const f = await tmdb.featured({ id: 'netflix', title: 'Netflix' }, true);
   assert.equal(f.kind, 'popular');
   assert.equal(f.provider, 'Netflix');
-  assert.equal(discovered().at(-1).query.get('with_watch_providers'), '8');
-  assert.equal(discovered().at(-1).query.get('watch_region'), 'US');
+  assert.equal(last(discovered()).query.get('with_watch_providers'), '8');
+  assert.equal(last(discovered()).query.get('watch_region'), 'US');
 });
 
 test('tmdb: "Prime Video" is Amazon Prime Video, and "Disney+" is Disney Plus', async () => {
@@ -132,9 +132,9 @@ test('tmdb: a key is checked before it\'s kept; "" removes it', async () => {
 test('tmdb: a Read Access Token is sent as a Bearer token', async () => {
   const { tmdb } = makeTmdb({});
   await tmdb.setKey('good.read.token');
-  const last = tmdbServer.hits.at(-1);
-  assert.equal(last.headers.authorization, 'Bearer good.read.token');
-  assert.equal(last.query.get('api_key'), null);
+  const hit = last(tmdbServer.hits);
+  assert.equal(hit.headers.authorization, 'Bearer good.read.token');
+  assert.equal(hit.query.get('api_key'), null);
 });
 
 test('tmdb: the region is a two-letter country code', () => {
