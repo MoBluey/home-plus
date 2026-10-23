@@ -188,6 +188,27 @@ static int icon_inside(int kind, float x, float y)
         return x * x + (y + 0.03f) * (y + 0.03f) < 0.1f * 0.1f;
     case ICON_PLUS:
         return (fabsf(x) < T / 2 && fabsf(y) < 0.3f) || (fabsf(y) < T / 2 && fabsf(x) < 0.3f);
+    case ICON_REMOTE: /* a remote, upright: its outline, the ring of arrows and two buttons below */
+        if (in_ring_rrect(x, y, 0, 0, 0.17f, 0.44f, 0.13f, T)) return 1;
+        if (fabsf(sqrtf(x * x + (y + 0.2f) * (y + 0.2f)) - 0.075f) < T / 2) return 1;
+        return x * x + (y - 0.08f) * (y - 0.08f) < 0.04f * 0.04f || x * x + (y - 0.22f) * (y - 0.22f) < 0.04f * 0.04f;
+    case ICON_TILES: /* four app tiles */
+        return in_rrect(x, y, -0.19f, -0.19f, 0.15f, 0.15f, 0.06f) || in_rrect(x, y, 0.19f, -0.19f, 0.15f, 0.15f, 0.06f) ||
+               in_rrect(x, y, -0.19f, 0.19f, 0.15f, 0.15f, 0.06f) || in_rrect(x, y, 0.19f, 0.19f, 0.15f, 0.15f, 0.06f);
+    case ICON_PERSON: { /* a head over shoulders */
+        if (x * x + (y + 0.17f) * (y + 0.17f) < 0.15f * 0.15f) return 1;
+        float d = sqrtf(x * x + (y - 0.4f) * (y - 0.4f));
+        return y < 0.4f && d < 0.36f && d > 0;
+    }
+    case ICON_INFO: { /* an i in a ring */
+        float rr = sqrtf(x * x + y * y);
+        if (fabsf(rr - 0.42f) < T / 2) return 1;
+        if (x * x + (y + 0.18f) * (y + 0.18f) < 0.055f * 0.055f) return 1;
+        return sd_segment(x, y, 0, -0.04f, 0, 0.22f) < T / 2 + 0.005f;
+    }
+    case ICON_TV: /* a screen on a stand */
+        if (in_ring_rrect(x, y, 0, -0.05f, 0.4f, 0.26f, 0.06f, T)) return 1;
+        return sd_segment(x, y, -0.15f, 0.34f, 0.15f, 0.34f) < T / 2 || sd_segment(x, y, 0, 0.21f, 0, 0.34f) < T / 2;
     case ICON_ACCESS: { /* the accessibility figure in a ring */
         float rr = sqrtf(x * x + y * y);
         if (fabsf(rr - 0.42f) < T / 2) return 1;

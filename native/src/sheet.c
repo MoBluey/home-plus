@@ -15,9 +15,14 @@ void sheet_close(void)
     S.sheet.nbody = 0;
     S.sheet.locked = 0;
     S.trakt_poll = 0;
+    tex_free(&S.sheet.ptitle);
+    tex_free(&S.sheet.psub);
+    for (int c = 0; c < S.sheet.ncat; c++) tex_free(&S.sheet.cat_tex[c]);
+    S.sheet.ncat = S.sheet.split = S.sheet.side = 0;
     for (int i = 0; i < S.sheet.n; i++) {
         tex_free(&S.sheet.it[i].tex);
         tex_free(&S.sheet.it[i].val);
+        tex_free(&S.sheet.it[i].desc);
         S.sheet.it[i].chevron = S.sheet.it[i].check = S.sheet.it[i].swatches = 0;
     }
     S.sheet.open = 0;
@@ -122,33 +127,40 @@ float sheet_head(void)
  * footer in a panel no taller than the safe area. */
 int sheet_rows(int nfoot)
 {
+    if (S.sheet.split) return split_rows();
     int fit = (int)((H - 2 * SAFE_Y - sheet_head() - PAD + SHEET_GAP) / (SHEET_BH + SHEET_GAP)) - nfoot;
     int nlist = S.sheet.n - nfoot;
     return nlist < fit ? nlist : fit < 1 ? 1 : fit;
 }
 
-void draw_sheet_button(const SheetItem *it, int focused, float bx, float y, float bw, float k, Uint8 ca)
+/* A button, or a Settings row (BH tall, corners rad): stepper, its value between ‹ and › (Left and Right change it) */
+static void draw_row(const SheetItem *it, int focused, float bx, float y, float bw, float BH, float rad, float k, Uint8 ca, int stepper)
 {
     static const Uint8 RED[2][3] = { { RED_ON_GLASS }, { RED_ON_WHITE } };
-    const float BH = SHEET_BH;
     Uint8 a = (Uint8)(ca * k);
     /* Settings rows (a value or a page): label on the left, value and › on the right */
-    int row = it->val || it->chevron || it->swatches;
+    int row = it->val || it->chevron || it->swatches || it->desc;
     float tx = row ? bx + 36 : bx + (bw - it->w) / 2, ty = y + (BH - it->h) / 2;
+    if (it->desc) ty = y + (BH - it->h - it->dh) / 2; /* the name, and its line under it */
     Uint8 lr, lg, lb, la;
     if (focused) { /* tvOS: the focused button turns opaque white with a dark label */
-        r_shadow(bx, y, bw, BH, BH / 2, 18, 8, 0.4f * a / 255);
-        r_shape(bx, y, bw, BH, BH / 2, 245, 245, 247, a, 0, 1, 1);
+        r_shadow(bx, y, bw, BH, rad, 18, 8, 0.4f * a / 255);
+        r_shape(bx, y, bw, BH, rad, 245, 245, 247, a, 0, 1, 1);
         lr = 28, lg = 28, lb = 30;
         la = a;
     } else { /* dark under the light glass: the label reads over white tiles too */
-        r_shape(bx, y, bw, BH, BH / 2, 12, 12, 16, (Uint8)(95 * a / 255), 0, 1, 1);
-        r_shape(bx, y, bw, BH, BH / 2, 255, 255, 255, (Uint8)(18 * a / 255), 0, 1, 1);
+        r_shape(bx, y, bw, BH, rad, 12, 12, 16, (Uint8)(95 * a / 255), 0, 1, 1);
+        r_shape(bx, y, bw, BH, rad, 255, 255, 255, (Uint8)(18 * a / 255), 0, 1, 1);
         lr = lg = lb = 255;
         la = (Uint8)(TEXT_STATIC * a / 255);
     }
     if (it->destructive) lr = RED[!!focused][0], lg = RED[!!focused][1], lb = RED[!!focused][2];
     r_image(it->tex, tx, ty, (float)it->w, (float)it->h, lr, lg, lb, la, 0);
+    if (it->desc) {
+        Uint8 c = focused ? 88 : 255;
+        r_image(it->desc, tx, ty + it->h, (float)it->dw, (float)it->dh, c, c, focused ? 94 : 255,
+                (Uint8)(focused ? a : TEXT_SECONDARY * a / 255), 0);
+    }
     if (it->check) { /* the choice that's on: a tick on the right, in its label's colour */
         static Tex *tick;
         static int kw, kh;
@@ -166,6 +178,15 @@ void draw_sheet_button(const SheetItem *it, int focused, float bx, float y, floa
         return;
     }
     float right = bx + bw - 36;
+    if (stepper && it->val) { /* ‹ value ›: Left and Right change it */
+        static Tex *prev, *next;
+        static int aw, ah;
+        if (!prev) prev = text_render(S.f_semi, 34, "\xE2\x80\xB9", 0, &aw, &ah), next = text_render(S.f_semi, 34, "\xE2\x80\xBA", 0, &aw, &ah);
+        Uint8 c = focused ? 120 : 255, ca2 = (Uint8)(focused ? a : TEXT_TERTIARY * a / 255);
+        r_image(next, right - aw, y + (BH - ah) / 2 - 2, (float)aw, (float)ah, c, c, focused ? 126 : 255, ca2, 0);
+        right -= aw + 16;
+        r_image(prev, right - it->vw - 16 - aw, y + (BH - ah) / 2 - 2, (float)aw, (float)ah, c, c, focused ? 126 : 255, ca2, 0);
+    }
     if (it->chevron) {
         static Tex *chev;
         static int cw, ch;
@@ -181,18 +202,114 @@ void draw_sheet_button(const SheetItem *it, int focused, float bx, float y, floa
     }
 }
 
+void draw_sheet_button(const SheetItem *it, int focused, float bx, float y, float bw, float k, Uint8 ca)
+{
+    draw_row(it, focused, bx, y, bw, SHEET_BH, SHEET_BH / 2, k, ca, 0);
+}
+
+/* ---- Settings, in two panes: its pages on the left, the one on show on the right */
+
+static float split_x(void) { return S.sheet.px + SPLIT_SIDE + PAD; }
+
+/* the top of the rows on the right: under the page's name, its line and its words */
+float split_list_top(void)
+{
+    float y = S.sheet.py + PAD + S.sheet.pth + 8 + S.sheet.psh + 28;
+    for (int i = 0; i < S.sheet.nbody; i++) y += S.sheet.bh[i] + 6;
+    return S.sheet.nbody ? y + 18 : y;
+}
+
+static Tex *split_hint(int *w, int *h)
+{
+    static Tex *t[3];
+    static int tw[3], th[3];
+    static const char *const text[3] = {
+        "OK or \xE2\x86\x92 opens  \xC2\xB7  Back closes Settings",
+        "\xE2\x86\x90 \xE2\x86\x92 change  \xC2\xB7  Back returns to the list",
+        "OK selects  \xC2\xB7  Back returns to the list",
+    };
+    int k = S.sheet.side ? 0 : S.sheet.n && settings_steps(S.sheet.it[S.sheet.index].act) ? 1 : 2;
+    if (!t[k]) t[k] = text_render(S.f_medium, SPLIT_HINT_PX, text[k], 0, &tw[k], &th[k]);
+    *w = tw[k], *h = th[k];
+    return t[k];
+}
+
+/* rows on screen on the right: as many as fit above the hint */
+int split_rows(void)
+{
+    int hw, hh;
+    split_hint(&hw, &hh);
+    float bottom = (H - SPLIT_H) / 2.0f + SPLIT_H - PAD - hh - 20;
+    int fit = (int)((bottom - split_list_top() + SPLIT_GAP) / (SPLIT_ROW + SPLIT_GAP));
+    return S.sheet.n < fit ? S.sheet.n : fit < 1 ? 1 : fit;
+}
+
+static void draw_split(float px, float py, float pw, float ph, Uint8 ca)
+{
+    (void)pw;
+    /* the list of pages, under Settings' name */
+    draw_text(S.sheet.title, S.sheet.tw, S.sheet.th, px + PAD + 24, py + PAD, (Uint8)(TEXT_STATIC * ca / 255));
+    float cx = px + PAD, cw = SPLIT_SIDE - PAD - PAD / 2, cy = py + PAD + S.sheet.th + 32;
+    for (int c = 0; c < S.sheet.ncat; c++, cy += SPLIT_CAT + SPLIT_CAT_GAP) {
+        int focused = S.sheet.side && c == S.sheet.cat;
+        Uint8 l = 255, la = (Uint8)(TEXT_STATIC * ca / 255);
+        if (focused) {
+            r_shadow(cx, cy, cw, SPLIT_CAT, SPLIT_CAT / 2, 18, 8, 0.4f * ca / 255);
+            r_shape(cx, cy, cw, SPLIT_CAT, SPLIT_CAT / 2, 245, 245, 247, ca, 0, 1, 1);
+            l = 28, la = ca;
+        } else if (c == S.sheet.cat) { /* the page on show, while focus is in it */
+            r_shape(cx, cy, cw, SPLIT_CAT, SPLIT_CAT / 2, 255, 255, 255, (Uint8)(34 * ca / 255), 0, 1, 1);
+        }
+        const float is = 34;
+        r_image(cc_glyph(S.sheet.cat_icon[c], 0), cx + 24, cy + (SPLIT_CAT - is) / 2, is, is, l, l, l, la, 0);
+        r_image(S.sheet.cat_tex[c], cx + 24 + is + 18, cy + (SPLIT_CAT - S.sheet.cat_h[c]) / 2, (float)S.sheet.cat_w[c],
+                (float)S.sheet.cat_h[c], l, l, l, la, 0);
+    }
+    r_shape(px + SPLIT_SIDE, py + PAD, 2, ph - 2 * PAD, 1, 255, 255, 255, (Uint8)(26 * ca / 255), 0, 1, 1);
+    /* the page on show: its name, a line on it, its words, its rows */
+    float x = split_x(), w = px + pw - PAD - x, y = py + PAD;
+    draw_text(S.sheet.ptitle, S.sheet.ptw, S.sheet.pth, x, y, (Uint8)(TEXT_STATIC * ca / 255));
+    y += S.sheet.pth + 8;
+    draw_text(S.sheet.psub, S.sheet.psw, S.sheet.psh, x, y, (Uint8)(TEXT_SECONDARY * ca / 255));
+    y += S.sheet.psh + 28;
+    for (int i = 0; i < S.sheet.nbody; i++) {
+        draw_text(S.sheet.body[i], S.sheet.bw[i], S.sheet.bh[i], x, y, (Uint8)(TEXT_SECONDARY * ca / 255));
+        y += S.sheet.bh[i] + 6;
+    }
+    int rows = split_rows();
+    y = split_list_top();
+    S.sheet.lx = x, S.sheet.ly = y, S.sheet.lw = w;
+    float step = SPLIT_ROW + SPLIT_GAP, list_h = rows * step;
+    float more_above = fminf(fmaxf(S.sheet.scroll, 0), 1), more_below = fminf(fmaxf(S.sheet.n - rows - S.sheet.scroll, 0), 1);
+    for (int i = 0; i < S.sheet.n; i++) {
+        float ry = y + (i - S.sheet.scroll) * step;
+        float out = fmaxf(y - ry, ry + SPLIT_ROW - (y + list_h - SPLIT_GAP));
+        float k = 1 - fmaxf(out, 0) / (SPLIT_ROW * 0.6f);
+        if (k <= 0) continue;
+        float top = fminf(fmaxf((ry - y) / step, 0), 1), bottom = fminf(fmaxf((y + list_h - SPLIT_GAP - ry - SPLIT_ROW) / step, 0), 1);
+        k *= 1 - 0.55f * more_above * (1 - top);
+        k *= 1 - 0.55f * more_below * (1 - bottom);
+        const SheetItem *it = &S.sheet.it[i];
+        draw_row(it, !S.sheet.side && i == S.sheet.index, x, ry, w, SPLIT_ROW, 28, k, ca, settings_steps(it->act));
+    }
+    int hw, hh;
+    Tex *hint = split_hint(&hw, &hh);
+    draw_text(hint, hw, hh, x, py + ph - PAD - hh, (Uint8)(TEXT_TERTIARY * ca / 255));
+}
+
 void draw_sheet(void)
 {
     if (!S.sheet.open) return;
     float t = S.sheet.t, tc = t < 0 ? 0 : t > 1 ? 1 : t;
     r_fill(0, 0, 0, (Uint8)(80 * tc));
-    const float BH = SHEET_BH, BGAP = SHEET_GAP, rad = BH / 2 + PAD; /* corners concentric with the buttons */
+    const float BH = SHEET_BH, BGAP = SHEET_GAP, rad = S.sheet.split ? 28 + PAD : BH / 2 + PAD; /* corners concentric with the buttons */
     float big = S.sheet_big ? S.sheet_big_h + 24 : 0;
     int nfoot = sheet_footer(), nlist = S.sheet.n - nfoot, rows = sheet_rows(nfoot);
     float pw = S.sheet.wide ? 900 : SHEET_W; /* Settings: room for a label and its value */
     if (S.sheet.tw + 2 * PAD > pw) pw = S.sheet.tw + 2 * PAD;
     for (int i = 0; i < S.sheet.nbody; i++) if (S.sheet.bw[i] + 2 * PAD > pw) pw = S.sheet.bw[i] + 2 * PAD;
     float ph = sheet_head() + (rows + nfoot) * (BH + BGAP) - (S.sheet.n ? BGAP : 24) + PAD;
+    if (S.sheet.split) pw = SPLIT_W, ph = SPLIT_H;
     float px = (W - pw) / 2, py = (H - ph) / 2;
     S.sheet.px = px; S.sheet.py = py; S.sheet.pw = pw; S.sheet.ph = ph; S.sheet.pr = rad;
     /* grows out of the button it came from on a spring, and its lensing
@@ -208,6 +325,10 @@ void draw_sheet(void)
     float c = (t - 0.55f) / 0.45f; /* content fades in once the panel is nearly there */
     Uint8 ca = (Uint8)(255 * (c < 0 ? 0 : c > 1 ? 1 : c));
     if (!ca) return;
+    if (S.sheet.split) {
+        draw_split(px, py, pw, ph, ca);
+        return;
+    }
     draw_text(S.sheet.title, S.sheet.tw, S.sheet.th, px + (pw - S.sheet.tw) / 2, py + PAD, (Uint8)(TEXT_STATIC * ca / 255));
     float y = py + PAD + S.sheet.th + 24;
     for (int i = 0; i < S.sheet.nbody; i++) {

@@ -60,7 +60,10 @@ shot cc-gallery "UOHOLDDDDO" 5800
 shot settings "UODDDDRO" 4400
 shot recents "B" 3800
 shot settings-display "UODDDDRODO" 4600
-shot settings-remove "UODDDDRODDDDDDDDO" 5800
+# Settings: Right on a row changes it in place (Dim After, one step on), and About, at the end of its pages
+shot settings-step "UODDDDRODOR" 4800
+shot settings-about "UODDDDRODDDDDDD" 5200
+shot settings-remove "UODDDDRODDDDDDDOO" 5800
 shot last-row "DD" 3500
 shot move-hint "H.O" 3800
 shot pointer-settings "MCM" 4200 "1790,80 960,600"
@@ -68,21 +71,21 @@ shot crossfade "R" 1590
 shot pointer-then-keys "MUC" 4200 "1660,850"
 service HOMEPLUS_PREVIEW_PREFS='{"reduceTransparency":true}'
 shot reduce-transparency "UODDDDRO" 4400
-# app tiles: dark tiles; glass over the grid's background; Settings -> Display & OLED -> App Tiles, Tinted's
+# app tiles: dark tiles; glass over the grid's background; Settings -> App Tiles, Tinted's
 # colours focused and one step on
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_PREFS='{"iconLook":"dark"}'
 shot icons-dark "" 2500
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_PREFS='{"iconLook":"clear"}'
 shot icons-clear "DR" 3000
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_PREFS='{"iconLook":"tinted","iconTint":"Teal"}'
-shot icons-tinted "UODDDDRODODDDDDODR" 7200
+shot icons-tinted "UODDDDRODDODR" 6400
 # media servers: Jellyfin's and Plex's Continue Watching, and a sign-in with a QR code
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_AMBIENT=1 HOMEPLUS_PREVIEW_CC='[{"id":"power","size":"small"},{"id":"ambientLight","size":"wide"},{"id":"screenCapture","size":"wide"},{"id":"soundMode","size":"wide"},{"id":"brightness","size":"wide"},{"id":"pictureMode","size":"wide"},{"id":"toneMapping","size":"wide"},{"id":"sleepTimer","size":"small"},{"id":"recents","size":"small"},{"id":"settings","size":"small"}]'
 shot cc-custom "UO" 3600
 # with LG Input Hook (the Control Center over other apps) and PicCap: Settings -> Control Center
 mkdir -p "$ASSETS/lginputhook"
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_AMBIENT=1 HOMEPLUS_INPUTHOOK_BINDS="$ASSETS/lginputhook/keybinds.json"
-shot settings-cc "UODDDDRODDO" 4600
+shot settings-cc "UODDDDRODDDO" 4600
 # Add a Control with its first group's row full (the C3's layout): the next group goes under it
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_CC='[{"id":"power","size":"large"},{"id":"network","size":"wide"},{"id":"screenOff","size":"wide"},{"id":"sound","size":"wide"},{"id":"sleepTimer","size":"wide"},{"id":"pictureMode","size":"wide"},{"id":"eyeComfort","size":"wide"},{"id":"brightness","size":"wide"},{"id":"inputs","size":"small"},{"id":"accessibility","size":"small"},{"id":"settings","size":"small"}]'
 shot cc-gallery-groups "UOHOLDDDDRO" 6000
