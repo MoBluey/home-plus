@@ -71,6 +71,18 @@
 #define SHEET_W 720                    /* a sheet (Settings' are wider: a label and its value) */
 #define SHEET_TITLE_PX 30              /* its title, its words, its buttons */
 #define SHEET_BODY_PX 26
+/* Settings: two panes, its pages listed on the left and the one on show on the right */
+#define SPLIT_W 1600
+#define SPLIT_H 860
+#define SPLIT_SIDE 460                 /* the list of pages, from the panel's left edge to the line */
+#define SPLIT_CAT 64                   /* a page's name in it, and the gap between them */
+#define SPLIT_CAT_GAP 6
+#define SPLIT_ROW 96                   /* a row on the right: its name, and a line on what it does */
+#define SPLIT_GAP 12
+#define SPLIT_TITLE_PX 40
+#define SPLIT_DESC_PX 24
+#define SPLIT_HINT_PX 22
+#define MAX_CATS 12
 #define SHEET_BUTTON_PX 31
 #define RED_ON_GLASS 255, 90, 80       /* what can't be undone: its label on glass, */
 #define RED_ON_WHITE 215, 40, 40       /* and on a focused (white) button */
@@ -127,11 +139,11 @@ typedef struct {
 
 /* Settings pages (a sheet's page; 0 = not a Settings page) */
 enum { PAGE_MAIN = 1, PAGE_HOME, PAGE_DISPLAY, PAGE_CC, PAGE_ACCESS, PAGE_ACCOUNTS, PAGE_TV, PAGE_ABOUT, PAGE_CONFIRM, PAGE_SIGNIN, PAGE_ICONS,
-       PAGE_WELCOME, PAGE_KEYS };
+       PAGE_WELCOME, PAGE_KEYS, PAGE_GENERAL };
 
 /* zones: what the remote is moving through */
 enum { ZONE_GRID, ZONE_RAIL, ZONE_TOP };
-/* how app tiles look (Settings -> Display & OLED -> App Tiles): their own colours; dark tiles;
+/* how app tiles look (Settings -> App Tiles): their own colours; dark tiles;
  * glass with white logos; glass in a colour */
 enum { LOOK_DEFAULT, LOOK_DARK, LOOK_CLEAR, LOOK_TINTED };
 /* Tinted's colours: Apple's system colours, as on a dark screen */
@@ -218,6 +230,8 @@ typedef struct {
     int chevron; /* opens a page */
     int check;   /* the choice that's on: a tick on the right (its label still in the middle) */
     int swatches; /* Tinted's colours, the one that's on ringed: Left and Right pick another */
+    Tex *desc;   /* Settings: a line on what the row does, under its name */
+    int dw, dh;
 } SheetItem;
 
 typedef struct {
@@ -323,6 +337,12 @@ typedef struct {
         int first;            /* first list button on screen: long lists scroll */
         int page, parent, parent_index; /* Settings pages: Back opens the parent at that row */
         int wide;             /* label-and-value rows need the room */
+        int split, side, cat, ncat; /* Settings: two panes; side: focus is on the list of pages; cat: the page on show */
+        int cat_page[MAX_CATS], cat_icon[MAX_CATS], cat_w[MAX_CATS], cat_h[MAX_CATS];
+        Tex *cat_tex[MAX_CATS];
+        Tex *ptitle, *psub;   /* the page on show: its name and a line on it */
+        int ptw, pth, psw, psh;
+        float lx, ly, lw;     /* its rows, where they were last drawn */
         float scroll, scroll_v; /* where the list is drawn from, springing to first */
         float t, tv;          /* morph: 0 = still the button it grew from, 1 = open */
         float fx, fy, fw, fh; /* that button's rect */
@@ -563,6 +583,8 @@ void sheet_body(const char *text);
 int sheet_footer(void);
 float sheet_head(void);
 int sheet_rows(int nfoot);
+float split_list_top(void);
+int split_rows(void);
 void draw_sheet_button(const SheetItem *it, int focused, float bx, float y, float bw, float k, Uint8 ca);
 void draw_sheet(void);
 void draw_ghost(void);
@@ -673,6 +695,10 @@ int stremio_installed(void);
 /* settings.c */
 void settings_page(int page, int index);
 void settings_row(const char *label, const char *value, Action act, int arg, int chevron, int destructive);
+int settings_steps(Action act);
+int settings_keydown(SDL_Keycode k);
+void settings_enter(void);
+int settings_pointer(int mx, int my, int apply);
 void settings_again(void);
 float swatch_x(float bx, float bw, int i);
 int swatch_at(float mx);

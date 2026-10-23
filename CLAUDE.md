@@ -81,7 +81,11 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   first frame back moves every animation to its end (`S.settle`). Then it comes into focus over `BACK_MS` (700 ms,
   `back_in()`, `draw.c`): the scene's blurred, dimmed backdrop over it clears, easing out gently (not with Reduce
   Motion: it's there at once).
-  App tile looks (Settings → Display & OLED → App Tiles; prefs `iconLook`, `iconTint` from `TINTS`):
+  Settings is two panes (`settings.c`, drawn by `draw_split()` in `sheet.c`): `CATS[]` is the sidebar (a page, a line
+  about it, a glyph), `PAGE_MAIN` means the sidebar has focus and its pane shows that section's rows; rows have a
+  description, and those in `settings_steps()` change with Left/Right (`settings_keydown()`, `arg` -1 steps back).
+  Each move rebuilds the sheet's textures, as a page change always did.
+  App tile looks (Settings → App Tiles; prefs `iconLook`, `iconTint` from `TINTS`):
   `draw_face()` (`draw.c`) draws every tile (dock, big tile, Recents), `FS_LOGO` the logo in one colour or for a
   dark tile. `make_logo()` (`tiles.c`) cuts a logo out of its icon's background, edge pixels unblended from it
   (a light icon's logo on a dark tile kept a rim of it); Default's sizes still come from the plain key.

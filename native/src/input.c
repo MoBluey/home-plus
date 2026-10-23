@@ -254,6 +254,7 @@ void on_key_down(SDL_KeyboardEvent *e)
         return;
     }
     if (S.sheet.open) {
+        if (settings_keydown(k)) return;
         if (k == SDLK_UP && S.sheet.index > 0) S.sheet.index--;
         else if (k == SDLK_DOWN && S.sheet.index < S.sheet.n - 1) S.sheet.index++;
         else if ((k == SDLK_LEFT || k == SDLK_RIGHT) && S.sheet.it[S.sheet.index].swatches) {
@@ -319,6 +320,10 @@ void ok_release(void)
     if (S.recents.open) {
         sw_ok();
     } else if (S.sheet.open) {
+        if (S.sheet.split && S.sheet.side) { /* Settings' list of pages: into the one on show */
+            settings_enter();
+            return;
+        }
         if (!S.sheet.n) return; /* "Setting up…": nothing to press */
         SheetItem it = S.sheet.it[S.sheet.index];
         S.at_page = S.sheet.page; /* a Settings action rebuilds its page in place */
@@ -357,7 +362,7 @@ static int hit_item(int mx, int my)
 int sheet_button_at(int mx, int my, int *outside)
 {
     *outside = mx < S.sheet.px || mx > S.sheet.px + S.sheet.pw || my < S.sheet.py || my > S.sheet.py + S.sheet.ph;
-    if (*outside || !S.sheet.n) return -1;
+    if (*outside || !S.sheet.n || S.sheet.split) return -1;
     int nfoot = sheet_footer(), nlist = S.sheet.n - nfoot, rows = sheet_rows(nfoot);
     float step = SHEET_BH + SHEET_GAP, y0 = S.sheet.py + sheet_head(), list_h = rows * step;
     if (mx < S.sheet.px + PAD || mx > S.sheet.px + S.sheet.pw - PAD) return -1;
@@ -394,6 +399,7 @@ int pointer_at(int mx, int my, int apply)
         }
         return 0;
     }
+    if (S.sheet.open && S.sheet.split) return settings_pointer(mx, my, apply);
     if (S.sheet.open) {
         int outside, i = sheet_button_at(mx, my, &outside);
         if (i >= 0 && apply) S.sheet.index = i;

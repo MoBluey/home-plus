@@ -143,7 +143,7 @@ int update(float dt)
      * Shelf turning by itself moves nothing */
     int layer = S.recents.open ? 2 : S.sheet.open ? 1 : 0; /* home, a sheet, the App Switcher */
     int key = layer == 2 ? 2000000 + S.recents.index * 2 + S.recents.close_all
-            : layer == 1 ? 1000000 + S.sheet.index
+            : layer == 1 ? 1000000 + (S.sheet.split && S.sheet.side ? 1000 + S.sheet.cat : S.sheet.index)
                          : S.zone * 100000 + S.focus * 1000 + S.top_index * 100 + (S.zone == ZONE_RAIL ? S.rail_index : 0);
     if (key != S.focus_key) {
         /* a tick when a key moved focus: not when a layer opens or closes, nor
@@ -385,6 +385,7 @@ int main(int argc, char **argv)
             case SDL_MOUSEWHEEL:
                 if (wake(0)) break;
                 if (S.recents.open) sw_key(e.wheel.y < 0 ? SDLK_RIGHT : SDLK_LEFT);
+                else if (S.sheet.open && S.sheet.split && S.sheet.side) settings_keydown(e.wheel.y < 0 ? SDLK_DOWN : SDLK_UP);
                 else if (S.sheet.open) {
                     if (e.wheel.y < 0 && S.sheet.index < S.sheet.n - 1) S.sheet.index++;
                     else if (e.wheel.y > 0 && S.sheet.index > 0) S.sheet.index--;

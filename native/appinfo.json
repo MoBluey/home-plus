@@ -1,6 +1,6 @@
 {
   "id": "com.github.pbalazaar.homeplus",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "vendor": "pbalazaar",
   "type": "native",
   "main": "homeplus",

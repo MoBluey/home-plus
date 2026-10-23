@@ -157,7 +157,7 @@ void run_action(Action act, int arg, const char *id)
         sheet_add("Remove Home+", ACT_REMOVE, 0, 1);
         sheet_add("Cancel", ACT_UP, 0, 0);
         S.sheet.index = 1; /* Cancel first, so a stray OK keeps Home+ */
-        if (S.at_page) S.sheet.page = PAGE_CONFIRM, S.sheet.parent = PAGE_MAIN, S.sheet.parent_index = S.at_index;
+        if (S.at_page) S.sheet.page = PAGE_CONFIRM, S.sheet.parent = S.at_page, S.sheet.parent_index = S.at_index;
         break;
     case ACT_REMOVE:
         setup_set(SETUP_REMOVING);
@@ -224,13 +224,12 @@ void run_action(Action act, int arg, const char *id)
     case ACT_ACCESSIBILITY:
         settings_page(PAGE_ACCESS, 0);
         break;
-    case ACT_PAGE: /* a Settings page (App Tiles on the look that's on); Back returns to the row that opened it */
+    case ACT_PAGE: /* a Settings page (App Tiles on the look that's on) */
         settings_page(arg, arg == PAGE_ICONS ? S.icon_look : 0);
-        S.sheet.parent_index = S.at_index;
         break;
-    case ACT_HIDDEN:
+    case ACT_HIDDEN: /* Back returns to its row */
         open_hidden_sheet();
-        S.sheet.parent = PAGE_MAIN;
+        S.sheet.parent = S.at_page;
         S.sheet.parent_index = S.at_index;
         break;
     case ACT_CLOCK:
@@ -240,14 +239,14 @@ void run_action(Action act, int arg, const char *id)
         settings_again();
         break;
     case ACT_DIM:
-    case ACT_OFF: { /* each press steps to the next choice */
+    case ACT_OFF: { /* each press steps to the next choice (arg -1: Left, to the one before) */
         static const int dim[] = { 1, 2, 5, 10, -1 }, off[] = { 5, 10, 20, 30, 60, -1 };
         int is_dim = act == ACT_DIM, n = is_dim ? 5 : 6;
         const int *opt = is_dim ? dim : off;
         Uint32 cur = is_dim ? S.idle_dim_ms : S.idle_off_ms, dflt = is_dim ? IDLE_DIM_MS : IDLE_OFF_MS;
         int now = cur == IDLE_NEVER ? -1 : (int)((cur ? cur : dflt) / 60000), k = 0;
         while (k < n && opt[k] != now) k++;
-        int next = opt[(k + 1) % n];
+        int next = opt[(k + (arg < 0 ? n - 1 : 1)) % n];
         Uint32 ms = next < 0 ? IDLE_NEVER : (Uint32)next * 60000;
         if (is_dim) S.idle_dim_ms = ms;
         else S.idle_off_ms = ms;

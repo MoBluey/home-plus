@@ -17,7 +17,7 @@
 > - So far it's **tested only on an LG C3** with webOS 9.2.1 (firmware 23.20.59). Other models and webOS versions may work but haven't been tried; reports from other TVs go in [COMPATIBILITY.md](COMPATIBILITY.md).
 > - Optional: [LG Input Hook](https://github.com/Simon34545/lginputhook), so LG's home screen never flashes on the Home button and the Settings button opens Home+'s Control Center over any app.
 
-**Install:** download the `.ipk` from the [latest release](https://github.com/pbalazaar/home-plus/releases/latest), install it with [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) (Apps → Install), and open **Home+**. Changed your mind? **Settings → Remove Home+** removes its setup and uninstalls it. More in [Install](#install).
+**Install:** download the `.ipk` from the [latest release](https://github.com/pbalazaar/home-plus/releases/latest), install it with [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) (Apps → Install), and open **Home+**. Changed your mind? **Settings → About → Remove Home+** removes its setup and uninstalls it. More in [Install](#install).
 
 ![Home+ on an LG C3: navigating apps, Recents, Control Center, and two-pane Settings, with Prime Video](docs/screenshots/homeplus-demo.gif)
 
@@ -32,7 +32,7 @@
 - **Top Shelf:** focus an app in the top row and the screen fills with its pictures, one title at a time, like tvOS. Stremio, Jellyfin and Plex show what you're partway through; streaming apps show what's popular on them (with a free TMDB key); other apps get a glow taken from their icon.
 - **Liquid Glass:** the dock, clock, buttons and menus bend the light at their edges and blur only what sits behind text. Focused tiles lift, sway and catch a moving light. The Magic Remote pointer steers that light.
 - **App tiles:** like iOS 26's, every app can show its own colours, sit on a dark tile, or turn to glass: clear, or tinted in one of ten colours.
-- **Motion and sound:** everything moves on springs, and menus grow out of the button that opened them. A soft tick plays when focus moves; **Settings → Sounds** turns it off.
+- **Motion and sound:** everything moves on springs, and menus grow out of the button that opened them. A soft tick plays when focus moves; **Settings → General → Sounds** turns it off.
 - **Continue Watching:** what you're partway through in Stremio (with your Trakt progress), Jellyfin or Plex, newest first. It turns to the next title every 10 seconds (or stays still: **Settings → Display & OLED → Top Shelf**); press **Up**, then **Left** and **Right**, to step through them. You sign in with a code or a QR code, so no password is typed on the TV.
 - **Recents:** an App Switcher for the apps you opened that are still running, most recent first. Apps webOS runs by itself (preloaded, or started again in the background) stay out. Open them, close them one by one, or close them all. Press **Back** on the first app to open it.
 - **Your layout:** hold **OK** on an app to move it, move it to the front, hide it, or delete it from the TV (like tvOS's Delete App; LG's built-in apps, the Homebrew Channel, LG Input Hook and Home+ itself can't be deleted). Hidden apps collect in a "Hidden" tile at the end.
@@ -104,25 +104,23 @@ luna-send -n 1 luna://com.github.pbalazaar.homeplus.service/control '{"action":"
 #          run (a control's id, like "soundMode" or "ambientLight": it steps or switches), reset (the default controls)
 ```
 
-**Settings** works like tvOS's: each row shows its current value, rows with **›** open a page, and **Back** goes up one page.
+**Settings** is two panes: its sections down the left, each with its icon, and the rows of the one in focus on the right, each with a line on what it does. **Up** and **Down** move through the sections, **OK** or **Right** goes into one, and **Left** or **Back** comes back out. A row with a value (On or Off, a time, a choice) shows it between **‹ ›**: **Left** and **Right** change it where it is. A line at the bottom says what the keys do.
 
-| Row | What's there |
+| Section | What's there |
 |---|---|
-| **Remote** | Whether the Home button opens Home+ or LG's home screen, No Flash on TVs that support it, and with LG Input Hook, whether the Settings button opens the Control Center |
-| **Display & OLED** | Dim After, Turn Off After, Pixel Shift, Calm Colours (dark app backgrounds, so ambient lights don't flood the room), whether the Top Shelf turns pages by itself, and App Tiles |
+| **Remote** | Whether the Home button opens Home+ or LG's home screen, No Flash on TVs that support it, and with LG Input Hook, what the Settings and Input buttons open |
+| **Display & OLED** | Dim After, Turn Off After, Pixel Shift, Calm Colours (dark app backgrounds, so ambient lights don't flood the room), and whether the Top Shelf turns pages by itself |
+| **App Tiles** | Default, Dark, Clear or Tinted, and Tinted's colour |
 | **Control Center** | With LG Input Hook and PicCap: Blur Over Video, which pauses PicCap's capture while the Control Center is open over other apps, so its glass can blur the video |
-| **Sounds** | Focus sounds on or off |
-| **Clock** | 12-hour or 24-hour |
+| **General** | Focus sounds, a 12-hour or 24-hour clock, and Hidden Apps (once you've hidden one) |
 | **Accessibility** | Reduce Motion, Reduce Transparency |
 | **Accounts** | Stremio, Trakt, Jellyfin, Plex and TMDB: whether they're connected, signing in and signing out |
-| **Hidden Apps** | Apps you've hidden, to show them again |
 | **TV Settings** | LG's own settings apps |
-| **About** | Version, whether Home+ is set up, the last remote key it ignored, licence |
-| **Remove Home+** | Undoes everything and uninstalls (see below) |
+| **About** | Version, whether Home+ is set up, the last remote key it ignored, licence, and **Remove Home+** (undoes everything and uninstalls, see below) |
 
 ![App tiles: Default, Dark, Clear and Tinted](docs/screenshots/app-icons.jpg)
 
-**App Tiles** (Settings → Display & OLED) changes every app's tile, like iOS 26's icon styles. **Default** keeps each icon's own colours. **Dark** puts the logo on a dark tile in its own colours: a light icon's black lettering turns light, and a white logo on a coloured icon takes that colour, as Prime Video's does. **Clear** turns the tiles to frosted glass with white logos, coloured by the picture behind them. **Tinted** is glass in a colour, with the logo in a pale tint of it.
+**App Tiles** (in Settings) changes every app's tile, like iOS 26's icon styles. **Default** keeps each icon's own colours. **Dark** puts the logo on a dark tile in its own colours: a light icon's black lettering turns light, and a white logo on a coloured icon takes that colour, as Prime Video's does. **Clear** turns the tiles to frosted glass with white logos, coloured by the picture behind them. **Tinted** is glass in a colour, with the logo in a pale tint of it.
 
 ![App Tiles in Settings, with Tinted's colours](docs/screenshots/app-icons-settings.jpg)
 
@@ -208,7 +206,7 @@ Home+ checks the key with TMDB before keeping it, and `{"key":""}` removes it. T
 
 ## Home button
 
-With **Settings → Home Button** set to **Opens Home+**, Home+ watches for LG's home screen and opens itself instead. LG's home screen shows for a moment first.
+With **Settings → Remote → Home Button** set to **Opens Home+**, Home+ watches for LG's home screen and opens itself instead. LG's home screen shows for a moment first.
 
 Leaving an app (its own Exit, or Back on its first screen) comes back to Home+ too, without LG's home screen: Home+ opens as soon as the app has closed, before webOS would open LG's (it waits a second for that). Coming back, the home screen comes into focus where you left it, on the app you opened, as tvOS's does.
 
@@ -220,7 +218,7 @@ To remove that flash, use lginputhook (1.5.1 or later, from the Homebrew Channel
 
 Home+ turns that keybind into a command that opens Home+ only while it's installed, and LG's home screen otherwise, so the Home button keeps working if Home+ is ever removed without **Remove Home+**. The Settings button's keybind (see [Using Home+](#using-home)) falls back to LG's Quick Settings the same way.
 
-On TVs where LG's home screen is a web app (not the C3), **Settings → Home Button** also offers **No Flash**. In that mode, Home+ replaces LG's home page in memory while it runs; nothing on disk changes.
+On TVs where LG's home screen is a web app (not the C3), **Settings → Remote → Home Button** also offers **No Flash**. In that mode, Home+ replaces LG's home page in memory while it runs; nothing on disk changes.
 
 ## OLED protection
 
@@ -233,7 +231,7 @@ Change the timings, or turn any of these off, in **Settings → Display & OLED**
 
 ## Removing Home+
 
-**Settings → Remove Home+** undoes everything Home+ set up, then uninstalls it:
+**Settings → About → Remove Home+** undoes everything Home+ set up, then uninstalls it:
 - it turns off the Home button takeover;
 - it deletes its boot script, the boot script's log, and its settings;
 - it deletes its sign-ins and keys (Stremio, Trakt, Jellyfin, Plex, TMDB);
@@ -260,7 +258,7 @@ If the TV ever has trouble booting, the Homebrew Channel's failsafe skips boot s
   - `/tmp/homeplus-service.log`: the service.
   - `homeplus-native.log`: the launcher's own log, inside its app sandbox. Find it with `find / -name homeplus-native.log`.
   - `/var/lib/webosbrew/homeplus-boot.log`: the boot script, at the last start-up.
-- **The Home button still opens LG's home screen:** check **Settings → Home Button**. If you use lginputhook, restart the TV after changing its keybinds.
+- **The Home button still opens LG's home screen:** check **Settings → Remote → Home Button**. If you use lginputhook, restart the TV after changing its keybinds.
 - **No Continue Watching:** sign in under **Settings → Accounts**, and make sure the app's tile is in the top row.
 - **A streaming app shows a glow, not what's popular:** check **Settings → Accounts → TMDB**, and that the app's name is one TMDB lists for your TV's country.
 - **"No Jellyfin server found":** the TV and the server must be on the same network, with the server's auto-discovery on (it is by default). Or give Home+ its address (see [Jellyfin](#jellyfin)).
@@ -270,7 +268,7 @@ If the TV ever has trouble booting, the Homebrew Channel's failsafe skips boot s
 
 **Will it harm my TV?** Home+ runs a background service with root access and sets up a boot-script link and optional LG Input Hook keybinds. Root access and boot changes carry risk; testing on one TV cannot guarantee safety on every model or firmware. The keybinds fall back to LG's buttons when Home+ is gone. If the TV has trouble starting, the Homebrew Channel's failsafe can skip boot scripts. [Removing Home+](#removing-home) explains cleanup, including what a plain uninstall leaves behind.
 
-**Can I go back to LG's home screen?** Yes. **Settings → Home Button** gives the Home button back to LG, and **Settings → Remove Home+** removes its setup and uninstalls.
+**Can I go back to LG's home screen?** Yes. **Settings → Remote → Home Button** gives the Home button back to LG, and **Settings → About → Remove Home+** removes its setup and uninstalls.
 
 **Does it work without root?** No. Opening apps, the Home button and the Control Center all need the root access the Homebrew Channel gives.
 
