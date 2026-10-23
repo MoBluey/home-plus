@@ -2,6 +2,18 @@
 
 Thanks for helping with Home+. Most people install a release: the `.ipk` on the [Releases](../../releases) page. This page is for building Home+ yourself, testing a change and sending it in.
 
+## Where to start
+
+You don't need to build anything to help:
+
+- **A compatibility report** from your TV, working or not ([the form](https://github.com/pbalazaar/home-plus/issues/new?template=compatibility.yml)). They fill in [COMPATIBILITY.md](COMPATIBILITY.md), and they're what tells other owners whether Home+ will work for them.
+- **The README**: a question it didn't answer for you, or a step that didn't match what you saw.
+- **Issues labelled [`good first issue`](https://github.com/pbalazaar/home-plus/labels/good%20first%20issue)**: each says which files to change and how to check the change.
+
+Many changes can be made and checked without a TV: the desktop preview runs the real service and renders the launcher on Linux (see [Testing](#testing)).
+
+Home+ has one maintainer, so expect a reply in days rather than hours.
+
 ## The pieces
 
 - `native/`: the launcher, in C. SDL2 for the window and the remote, and Home+'s own OpenGL ES 2 renderer (`src/render.c`).
@@ -97,4 +109,5 @@ For maintainers:
    git push origin v0.11.0
    ```
 
-CI builds the package, checks it and runs every test; once all of that has passed, it publishes a release with the `.ipk` attached.
+   CI builds the package, checks it and runs every test; once all of that has passed, it publishes a release with the `.ipk` attached.
+3. Edit the release on GitHub and put a few lines at the top of its notes, above the generated list of pull requests: what's new for someone using Home+, and anything they should do after updating. Thank anyone whose report or change is in it.
