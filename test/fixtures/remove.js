@@ -38,7 +38,8 @@ const rejects = (f, match = () => true) => f().then(() => assert.fail('it reject
     mkdirSync(file('tree/nested')); /* already there */
     fs.writeFileSync(file('plain'), '');
     assert.throws(() => mkdirSync(file('plain')), code('EEXIST'));
-    assert.throws(() => mkdirSync(file('plain/below')), code('ENOTDIR'));
+    /* (Windows says ENOENT under a file, so it's the file itself that's in the way there) */
+    assert.throws(() => mkdirSync(file('plain/below')), code(process.platform === 'win32' ? 'EEXIST' : 'ENOTDIR'));
     fs.writeFileSync(file('tree/nested/data'), 'remove this too');
     fs.mkdirSync(file('outside'));
     fs.writeFileSync(file('outside/keep'), 'keep this');
