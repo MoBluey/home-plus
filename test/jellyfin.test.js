@@ -2,7 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mockServer, configStore, quiet, until } = require('./helpers');
+const dgram = require('dgram');
+const http = require('http');
+const { EventEmitter } = require('events');
+const { mockServer, configStore, quiet, last, until } = require('./helpers');
 const createJellyfin = require('../service/jellyfin');
 
 const MIN = 600000000; /* Jellyfin times are 100 ns ticks: one minute */
@@ -71,6 +74,34 @@ test('jellyfin: what you\'re partway through, then the next episodes, without re
   assert.equal(movie.thumbnail, `${server.base}/Items/m1/Images/Thumb?maxWidth=480&quality=85&tag=th2&api_key=tok`);
 });
 
+test('jellyfin: found on the network, a server answering from this TV, or not as a web server, isn\'t taken', async (t) => {
+  t.mock.method(dgram, 'createSocket', () => {
+    const sock = new EventEmitter();
+    sock.bind = (cb) => setImmediate(cb);
+    sock.setBroadcast = () => {};
+    sock.close = () => {};
+    sock.send = (msg, port, address) => {
+      assert.deepEqual([String(msg), port, address], ['who is JellyfinServer?', 7359, '255.255.255.255']);
+      for (const answer of ['not JSON', { Address: 'http://127.0.0.1:8096', Name: 'This TV' }, { Address: 'http://[::ffff:127.0.0.1]:8096' },
+        { Address: 'ftp://192.168.1.21' }, { Id: 'a', Address: 'http://192.168.1.20:8096/', Name: 'Den' }]) {
+        setImmediate(() => sock.emit('message', Buffer.from(typeof answer === 'string' ? answer : JSON.stringify(answer))));
+      }
+    };
+    return sock;
+  });
+  const asked = [];
+  t.mock.method(http, 'request', (options) => { /* where Quick Connect is asked for: no network here */
+    asked.push(options);
+    const req = new EventEmitter();
+    req.end = () => setImmediate(() => req.emit('error', new Error('no network here')));
+    req.destroy = () => {};
+    return req;
+  });
+  const { jf } = makeJellyfin({});
+  await assert.rejects(jf.startLink(), /no network here/);
+  assert.deepEqual(asked.map((o) => [o.hostname, o.port, o.path, o.method]), [['192.168.1.20', '8096', '/QuickConnect/Initiate', 'POST']]);
+});
+
 test('jellyfin: older servers (and Emby) use the per-user resume route', async () => {
   mode.oldServer = true;
   const { jf } = makeJellyfin(signedIn());
@@ -115,7 +146,7 @@ test('jellyfin: sign-in with Quick Connect, approved on another device', async (
 test('jellyfin: signing out ends the session on the server too', async () => {
   const { jf, store } = makeJellyfin(signedIn());
   await jf.disconnect();
-  const logout = server.hits.filter((h) => h.path === '/Sessions/Logout').at(-1);
+  const logout = last(server.hits.filter((h) => h.path === '/Sessions/Logout'));
   assert.ok(logout, 'the server was told');
   assert.match(logout.headers.authorization, /Token="tok"/);
   assert.equal(store.get().jellyfin, undefined);

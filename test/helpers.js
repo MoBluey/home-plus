@@ -7,6 +7,7 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
+const { URL } = require('url');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -34,12 +35,14 @@ async function mockServer(route) {
       res.end(r.json !== undefined ? JSON.stringify(r.json) : r.body || '');
     });
   });
+  const sockets = new Set(); /* (Node 8 has no closeAllConnections) */
+  server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     base: `http://127.0.0.1:${server.address().port}`,
     hits,
     close: () => new Promise((resolve) => {
-      server.closeAllConnections();
+      for (const s of sockets) s.destroy();
       server.close(resolve);
     })
   };
@@ -56,6 +59,8 @@ function configStore(initial = {}) {
 }
 
 const quiet = () => {};
+/* A list's last item (Node 8 has no .at(-1)) */
+const last = (list) => list[list.length - 1];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /* Waits until check() is true, polling every 50 ms; fails after ms. */
@@ -142,4 +147,4 @@ async function startService(dir, env = {}) {
   return svc;
 }
 
-module.exports = { mockServer, configStore, quiet, sleep, until, freshRequire, startService };
+module.exports = { mockServer, configStore, quiet, sleep, last, until, freshRequire, startService };

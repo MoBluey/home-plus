@@ -9,6 +9,7 @@
 'use strict';
 
 const https = require('https');
+const { requestOptions } = require('./net');
 
 const API = 'https://api.trakt.tv';
 const OOB = 'urn:ietf:wg:oauth:2.0:oob';
@@ -25,7 +26,7 @@ function request(method, path, { body, clientId, token } = {}) {
     if (clientId) headers['trakt-api-key'] = clientId;
     if (token) headers.Authorization = `Bearer ${token}`;
     if (data) headers['Content-Length'] = Buffer.byteLength(data);
-    const req = https.request(API + path, { method, headers, timeout: 15000 }, (res) => {
+    const req = https.request(requestOptions(API + path, { method, headers, timeout: 15000 }), (res) => {
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; });

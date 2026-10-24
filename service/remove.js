@@ -1,5 +1,5 @@
-/* Forced file/tree cleanup on webOS 22/23's Node 12 as well as newer TVs. Unlink first on
- * Node 12: a symlink is removed itself, never traversed. Only a directory needs rmdir. */
+/* Forced file/tree cleanup on webOS 6's Node 8 and webOS 22/23's Node 12 as well as newer TVs. Unlink
+ * first on Node 12: a symlink is removed itself, never traversed. Only a directory needs rmdir. */
 'use strict';
 
 const fs = require('fs');
@@ -28,7 +28,15 @@ function rm(file, options, done) {
   fs.unlink(file, (e) => {
     if (!e || missing(e, options)) return done(null);
     if (!directory(e, options)) return done(e);
-    fs.rmdir(file, { recursive: true }, (e) => done(!e || missing(e, options) ? null : e));
+    // As rmSync: Node 8's rmdir has no recursive, and Node 12's can spin on a permission error.
+    fs.readdir(file, (e, names) => {
+      if (e) return done(missing(e, options) ? null : e);
+      const next = (i) => {
+        if (i === names.length) return fs.rmdir(file, (e) => done(!e || missing(e, options) ? null : e));
+        rm(path.join(file, names[i]), options, (e) => (e ? done(e) : next(i + 1)));
+      };
+      next(0);
+    });
   });
 }
 

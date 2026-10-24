@@ -15,12 +15,15 @@ const https = require('https');
 const http = require('http');
 const dns = require('dns');
 const pkg = require('./package.json');
-const { requestJSON, onThisTV } = require('./net');
+const { requestJSON, onThisTV, requestOptions } = require('./net');
 const Service = require('webos-service');
 const callers = require('./callers');
 const png = require('./png');
 const tmp = require('./tmp');
 const remove = require('./remove');
+const { mkdirSync } = require('./mkdir');
+const { sortStable } = require('./sort');
+const { URL } = require('url');
 
 const service = new Service(pkg.name);
 
@@ -89,7 +92,7 @@ function findConfigPath() {
   if (configPath) return configPath;
   for (const dir of CONFIG_DIRS) {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      mkdirSync(dir);
       fs.accessSync(dir, fs.constants.W_OK);
       configPath = path.join(dir, 'config.json');
       return configPath;
@@ -128,11 +131,11 @@ function writeConfig(cfg) {
 function postJSON(url, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const req = https.request(url, {
+    const req = https.request(requestOptions(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
       timeout: 15000
-    }, (res) => {
+    }), (res) => {
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; });
@@ -198,7 +201,8 @@ function indexApps(apps) {
     };
   }
   images = next;
-  titles = Object.fromEntries((apps || []).map((a) => [a.id, a.title || a.id]));
+  titles = {};
+  for (const a of apps || []) titles[a.id] = a.title || a.id;
 }
 
 async function listApps() {
@@ -230,7 +234,7 @@ function firstExisting(files, folder) {
 function guessIcon(folder) {
   try {
     const names = fs.readdirSync(folder).filter((n) => /icon.*\.(png|jpe?g|webp)$/i.test(n));
-    names.sort((a, b) => (/large|big|130|256|512/i.test(b) ? 1 : 0) - (/large|big|130|256|512/i.test(a) ? 1 : 0));
+    sortStable(names, (a, b) => (/large|big|130|256|512/i.test(b) ? 1 : 0) - (/large|big|130|256|512/i.test(a) ? 1 : 0));
     return names.length ? insideApp(path.join(folder, names[0]), folder) : null;
   } catch (e) {
     return null;
@@ -386,7 +390,7 @@ function installBootScript() {
     try { have = fs.readlinkSync(INITD); } catch (e) { /* not there yet, or a copy */ }
     if (have === script) return true;
     if (!fs.existsSync(script)) { log('boot script: no', script); return false; }
-    fs.mkdirSync(path.dirname(INITD), { recursive: true }); /* some ways of rooting never made it */
+    mkdirSync(path.dirname(INITD)); /* some ways of rooting never made it */
     remove.rmSync(INITD, { force: true }); /* the copy Home+ 0.11 and older made */
     fs.symlinkSync(script, INITD);
     log('boot script linked:', INITD, '->', script);
@@ -887,7 +891,9 @@ function listen(req, res) {
   if (recent.length) return sendJSON(res, 200, { events: recent });
   listeners.add(res);
   const t = setTimeout(() => { if (listeners.delete(res)) sendJSON(res, 200, { events: [] }); }, 15000);
-  res.on('close', () => { clearTimeout(t); listeners.delete(res); });
+  const done = () => { clearTimeout(t); listeners.delete(res); };
+  res.on('finish', done); /* answered (Node 8 says only that: 'close' is for a hang-up there) */
+  res.on('close', done);
 }
 
 function dropElevation() {
@@ -936,7 +942,9 @@ const lastUsed = new Map((() => {
 })());
 
 function saveRecents() {
-  try { tmp.write(RECENTS_FILE, JSON.stringify(Object.fromEntries(lastUsed))); } catch (e) { /* only for restarts */ }
+  const o = {};
+  for (const [id, at] of lastUsed) o[id] = at;
+  try { tmp.write(RECENTS_FILE, JSON.stringify(o)); } catch (e) { /* only for restarts */ }
 }
 
 async function onForeground(appId) {
@@ -1115,7 +1123,7 @@ const IMAGE_DEADLINE_MS = Number(process.env.HOMEPLUS_FETCH_DEADLINE_MS) || 3000
 function imageCacheDir() {
   if (!imageDir) {
     imageDir = path.join(path.dirname(findConfigPath()), 'images');
-    fs.mkdirSync(imageDir, { recursive: true, mode: 0o700 }); /* what you watch: root's only */
+    mkdirSync(imageDir, 0o700); /* what you watch: root's only */
   }
   return imageDir;
 }
@@ -1215,7 +1223,7 @@ function fetchRemote(url, res, depth = 0, file = '', started = Date.now()) {
   const mod = u && u.protocol === 'https:' ? https : u && u.protocol === 'http:' ? http : null;
   if (!mod) { res.writeHead(404); return res.end(); }
   let answered = false; /* a response came: its end says how it went */
-  const req = mod.get(u, { timeout: IMAGE_TIMEOUT_MS, lookup: lookupOffTV }, (up) => {
+  const req = mod.get(requestOptions(u, { timeout: IMAGE_TIMEOUT_MS, lookup: lookupOffTV }), (up) => {
     answered = true;
     up.on('error', () => {}); /* (cut short: 'close' below sees to it) */
     if (up.statusCode >= 300 && up.statusCode < 400 && up.headers.location && depth < 4) {
@@ -1249,7 +1257,8 @@ function fetchRemote(url, res, depth = 0, file = '', started = Date.now()) {
   req.on('timeout', () => req.destroy(new Error('timed out'))); /* the server stopped sending */
   /* too long in all: cut short as when it stops sending (a redirect goes on with what's left) */
   const late = setTimeout(() => req.destroy(new Error('took too long')), Math.max(0, started + IMAGE_DEADLINE_MS - Date.now()));
-  req.on('response', (up) => up.on('close', () => clearTimeout(late)));
+  /* (Node 8 sends no 'close' after a whole response, only 'end') */
+  req.on('response', (up) => { up.on('end', () => clearTimeout(late)); up.on('close', () => clearTimeout(late)); });
   req.on('error', () => {
     clearTimeout(late);
     if (answered) return;
@@ -1410,12 +1419,11 @@ async function apiContinue() {
   sources.push(trakt.playback());
   const lists = await Promise.all(sources.map((p) => p.catch((e) => { log('continue source failed', e.message); return []; })));
   const byId = new Map();
-  for (const it of lists.flat()) {
+  for (const it of [].concat(...lists)) {
     const prev = byId.get(it.id);
     if (!prev || String(it.lastWatched) > String(prev.lastWatched)) byId.set(it.id, it);
   }
-  const items = [...byId.values()]
-    .sort((a, b) => String(b.lastWatched).localeCompare(String(a.lastWatched)))
+  const items = sortStable([...byId.values()], (a, b) => String(b.lastWatched).localeCompare(String(a.lastWatched)))
     .slice(0, 16)
     .map((it) => Object.assign({}, it, {
       background: proxied(it.background), thumbnail: proxied(it.thumbnail), logo: proxied(it.logo), poster: proxied(it.poster)
@@ -1627,8 +1635,8 @@ const imageServer = http.createServer(async (req, res) => {
   });
   fs.createReadStream(file).on('error', () => res.end()).pipe(res);
 });
-imageServer.headersTimeout = 10000; /* a request never sent whole doesn't keep its socket (Node 16 sets no limit) */
-imageServer.requestTimeout = 30000;
+imageServer.headersTimeout = 10000; /* a request never sent whole doesn't keep its socket (Node 16 sets no limit; */
+imageServer.requestTimeout = 30000; /* Node 8 has neither, but closes a socket idle for 2 minutes) */
 imageServer.on('error', (e) => log('image server error', e.message));
 imageServer.listen(IMAGE_PORT, '127.0.0.1', () => log('image server listening on', IMAGE_PORT));
 
@@ -1721,9 +1729,8 @@ function toItem(li) {
 
 async function continueWatching(authKey) {
   const lib = await stremio('datastoreGet', { authKey, collection: 'libraryItem', ids: [], all: true });
-  return (lib || [])
-    .filter((li) => (!li.removed || li.temp) && li.state && li.state.timeOffset > 0)
-    .sort((a, b) => String(b.state.lastWatched || '').localeCompare(String(a.state.lastWatched || '')))
+  return sortStable((lib || []).filter((li) => (!li.removed || li.temp) && li.state && li.state.timeOffset > 0),
+    (a, b) => String(b.state.lastWatched || '').localeCompare(String(a.state.lastWatched || '')))
     .slice(0, 15)
     .map(toItem);
 }

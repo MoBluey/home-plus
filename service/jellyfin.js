@@ -14,6 +14,7 @@
 const crypto = require('crypto');
 const dgram = require('dgram');
 const { requestJSON, onThisTV } = require('./net');
+const { URL } = require('url');
 
 const TICKS_PER_MIN = 600000000; // Jellyfin times are 100 ns ticks
 

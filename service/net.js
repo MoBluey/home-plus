@@ -5,6 +5,7 @@
 
 const http = require('http');
 const https = require('https');
+const { URL } = require('url');
 
 function requestJSON(method, url, { headers = {}, body, timeout = 10000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -18,7 +19,7 @@ function requestJSON(method, url, { headers = {}, body, timeout = 10000 } = {}) 
       if (!h['Content-Type']) h['Content-Type'] = 'application/json';
       h['Content-Length'] = Buffer.byteLength(data);
     }
-    const req = mod.request(u, { method, headers: h, timeout }, (res) => {
+    const req = mod.request(requestOptions(u, { method, headers: h, timeout }), (res) => {
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { if (buf.length < 4 * 1024 * 1024) buf += c; });
@@ -37,6 +38,19 @@ function requestJSON(method, url, { headers = {}, body, timeout = 10000 } = {}) 
   });
 }
 
+// A URL and options as one options object: webOS 6's Node 8 has no request(url, options, callback)
+// (it takes the options for the callback). An IPv6 host loses its brackets, as Node's own does.
+function requestOptions(url, options) {
+  const u = typeof url === 'string' ? new URL(url) : url;
+  return Object.assign({
+    protocol: u.protocol,
+    hostname: u.hostname.replace(/^\[|\]$/g, ''),
+    port: u.port || undefined,
+    path: u.pathname + u.search,
+    auth: u.username || u.password ? `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}` : undefined
+  }, options);
+}
+
 // Whether a URL's host is this TV, where its own services answer: localhost, 127.0.0.0/8, 0.0.0.0/8 (which
 // Linux connects to this machine too) and :: and ::1, however a URL writes them, IPv4-mapped included:
 // [::ffff:127.0.0.1] becomes ::ffff:7f00:1, and [::ffff:0.0.0.0] becomes ::ffff:0:0.
@@ -46,4 +60,4 @@ function onThisTV(host) {
     /^::(1|ffff:(7f[0-9a-f]{2}|[0-9a-f]{1,2}):[0-9a-f]{1,4}|ffff:(127|0)\.\d+\.\d+\.\d+)?$/.test(h);
 }
 
-module.exports = { requestJSON, onThisTV };
+module.exports = { requestJSON, onThisTV, requestOptions };

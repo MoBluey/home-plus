@@ -7,16 +7,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { quiet, freshRequire, sleep } = require('./helpers');
+const { rmSync } = require('../service/remove');
 
 const proc = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-proc-'));
-test.after(() => fs.rmSync(proc, { recursive: true, force: true }));
+test.after(() => rmSync(proc, { recursive: true, force: true }));
 process.env.HOMEPLUS_PROC = proc;
 process.env.HOMEPLUS_STREMIO_GRACE_MS = '60'; /* (on the TV: 10 s) */
 
 /* processes in the stand-in /proc: pid -> its command line as Linux writes it, or [its name, command line].
  * Its name (comm) is otherwise as Linux gives it: Node's is its title's first 15 characters */
 function processes(list) {
-  for (const name of fs.readdirSync(proc)) fs.rmSync(path.join(proc, name), { recursive: true, force: true });
+  for (const name of fs.readdirSync(proc)) rmSync(path.join(proc, name), { recursive: true, force: true });
   for (const [pid, v] of Object.entries(list)) {
     const [comm, cmdline] = Array.isArray(v) ? v : [path.basename(v.split(/[\0 ]/)[0]).slice(0, 15), v];
     fs.mkdirSync(path.join(proc, pid));
@@ -98,7 +99,7 @@ test('stremio: no server running, or no /proc, is nothing to do', async () => {
   s.check();
   await sleep(150);
   assert.deepEqual(s.killed, []);
-  fs.rmSync(proc, { recursive: true, force: true });
+  rmSync(proc, { recursive: true, force: true });
   const gone = server([]);
   gone.check();
   await sleep(150);

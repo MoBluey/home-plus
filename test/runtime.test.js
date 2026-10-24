@@ -1,5 +1,5 @@
-/* The shipped service must parse and remove its files on the TV's Node, independently of the
- * newer Node running node:test. CI selects the target with HOMEPLUS_SERVICE_NODE. */
+/* The shipped service must parse, remove its files and pass its in-process tests on the TV's Node,
+ * independently of the newer Node running node:test. CI selects the target with HOMEPLUS_SERVICE_NODE. */
 'use strict';
 
 const test = require('node:test');
@@ -14,7 +14,7 @@ const NODE = process.env.HOMEPLUS_SERVICE_NODE || process.execPath;
 const run = (args, options = {}, node = NODE) => {
   const r = spawnSync(node, args, { cwd: ROOT, encoding: 'utf8', timeout: 15000, ...options });
   assert.equal(r.error, undefined);
-  assert.equal(r.status, 0, r.stderr || r.stdout);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
 };
 
 /* Root can unlink despite mode 0500, so as root a fixture runs as nobody (65534). Nobody may not
@@ -49,5 +49,17 @@ for (const mode of ['sync', 'async']) {
   }, () => {
     if (process.getuid && process.getuid() === 0) runAsNobody('remove-errors.js', mode);
     else run([path.join(__dirname, 'fixtures', 'remove-errors.js'), mode]);
+  });
+}
+
+/* The tests that load service modules themselves run on the runner's Node: on another target, each runs
+ * again there, through a stand-in for the little of node:test they use (test/target/run.js). */
+const IN_PROCESS = fs.readdirSync(__dirname).filter((f) => f.endsWith('.test.js') &&
+  /require\('\.\.\/service\/|freshRequire\(/.test(fs.readFileSync(path.join(__dirname, f), 'utf8')));
+for (const file of IN_PROCESS) {
+  test(`runtime: ${file} passes on the target Node`, {
+    skip: NODE === process.execPath && 'the runner itself runs it'
+  }, () => {
+    run([path.join(__dirname, 'target', 'run.js'), path.join(__dirname, file)], { timeout: 120000 });
   });
 }
