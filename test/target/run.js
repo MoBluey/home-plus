@@ -3,7 +3,10 @@
  * assert/strict and no node: prefix, so this stands in for the little of them the tests use: test()
  * with skip and timeout, test.before/beforeEach/after, t.after, t.mock.method, and strict assert with
  * match and rejects. Only the test framework: the service and the tests get no polyfills, so a newer
- * API either of them calls fails here as it would on the TV. runtime.test.js runs each file with it. */
+ * API either of them calls fails here as it would on the TV (the service's own require('node:fs') too).
+ * A rejection nobody awaited fails the test it came in, as node:test does (Node 8 and 12 only warn).
+ * Its assert differs from node:assert/strict in corners no test relies on: deepEqual takes -0 for 0 and
+ * leaves out symbol keys, and finds [NaN] unequal to [NaN]. runtime.test.js runs each file with it. */
 'use strict';
 
 const Module = require('module');
@@ -13,7 +16,7 @@ const base = require('assert');
 
 function matches(e, want) {
   if (want === undefined) return;
-  if (want instanceof RegExp) return base.ok(want.test(String(e && e.message !== undefined ? e.message : e)), `${e && e.message} doesn't match ${want}`);
+  if (want instanceof RegExp) return base.ok(want.test(String(e)), `${String(e)} doesn't match ${want}`); /* (as Node: "TypeError: ...") */
   if (typeof want === 'function') {
     if (want.prototype !== undefined && e instanceof want) return;
     return base.ok(want(e) === true, `${e && e.message} isn't what was wanted`);
@@ -24,9 +27,12 @@ function matches(e, want) {
   }
 }
 
+const is = (a, b, message) => { if (!Object.is(a, b)) base.fail(a, b, message, 'Object.is', is); }; /* (strict's equal: NaN is NaN, -0 isn't 0) */
+const isNot = (a, b, message) => { if (Object.is(a, b)) base.fail(a, b, message, '!Object.is', isNot); };
+const string = (s) => base.ok(typeof s === 'string', `${util.inspect(s)} isn't a string`);
 const assert = (v, message) => base.ok(v, message);
 Object.assign(assert, {
-  ok: base.ok, fail: base.fail, equal: base.strictEqual, notEqual: base.notStrictEqual, strictEqual: base.strictEqual,
+  ok: base.ok, fail: base.fail, equal: is, notEqual: isNot, strictEqual: is,
   deepEqual: base.deepStrictEqual, deepStrictEqual: base.deepStrictEqual, notDeepEqual: base.notDeepStrictEqual,
   doesNotThrow: base.doesNotThrow,
   throws(f, want, message) {
@@ -43,8 +49,8 @@ Object.assign(assert, {
     base.ok(threw, message || 'it rejects');
     matches(error, want);
   },
-  match: (s, re, message) => base.ok(re.test(s), message || `${util.inspect(s)} doesn't match ${re}`),
-  doesNotMatch: (s, re, message) => base.ok(!re.test(s), message || `${util.inspect(s)} matches ${re}`)
+  match: (s, re, message) => { string(s); base.ok(re.test(s), message || `${util.inspect(s)} doesn't match ${re}`); },
+  doesNotMatch: (s, re, message) => { string(s); base.ok(!re.test(s), message || `${util.inspect(s)} matches ${re}`); }
 });
 assert.strict = assert;
 
@@ -56,12 +62,23 @@ function test(name, options, fn) {
 for (const k of Object.keys(hooks)) test[k] = (fn) => hooks[k].push(fn);
 test.test = test;
 
+const SERVICE = path.join(__dirname, '..', '..', 'service') + path.sep;
 const load = Module._load;
-Module._load = function (request, ...rest) {
+Module._load = function (request, parent, ...rest) {
   if (request === 'node:test') return test;
   if (request === 'node:assert/strict' || request === 'assert/strict') return assert;
-  return load.call(this, request.replace(/^node:/, ''), ...rest);
+  const fromService = parent && parent.filename && parent.filename.startsWith(SERVICE); /* (as on the TV) */
+  return load.call(this, fromService ? request : request.replace(/^node:/, ''), parent, ...rest);
 };
+
+let unhandled = [];
+process.on('unhandledRejection', (e) => unhandled.push(e));
+/* A rejection nobody awaited fails the test it came in (one turn of the loop for it to arrive). */
+const settle = () => new Promise((resolve) => setImmediate(resolve)).then(() => {
+  const e = unhandled[0];
+  unhandled = [];
+  if (e) throw new Error(`a rejection nobody awaited: ${(e && e.stack) || e}`);
+});
 
 async function main(file) {
   require(path.resolve(file));
@@ -80,16 +97,19 @@ async function main(file) {
       for (const h of hooks.beforeEach) await h(ctx);
       const ms = t.options.timeout || 60000;
       await Promise.race([t.fn(ctx), new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms); })]);
+      await settle();
       console.log(`ok ${t.name}`);
     } catch (e) {
-      failed++;
+      if (!t.options.todo) failed++; /* (a todo test's failure doesn't count, as in node:test) */
+      unhandled = [];
       console.log(`not ok ${t.name}\n  ${String((e && e.stack) || e).replace(/\n/g, '\n  ')}`);
     }
     clearTimeout(timer);
+    for (const f of afters.reverse()) await f(); /* as node:test: its after hooks, then the mocks go */
     for (const r of restores.reverse()) r();
-    for (const f of afters.reverse()) await f();
   }
   for (const h of hooks.after) await h();
+  await settle();
   console.log(`# ${tests.length - failed} of ${tests.length} passed`);
   return failed;
 }
