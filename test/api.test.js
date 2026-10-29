@@ -78,6 +78,7 @@ test('api: Continue Watching from Stremio, with every account\'s state for Setti
   assert.ok(r.json.items.length > 0);
   assert.ok(r.json.items.every((it) => it.source === 'stremio' && it.name));
   assert.ok(r.json.items.every((it) => !it.background || it.background.startsWith('/img/')), 'pictures go through the service');
+  assert.ok(r.json.items.every((it) => it.genre && it.year && it.rating && it.overview), 'Stremio titles include TMDB details');
   assert.equal(r.json.tmdb.configured, true);
   assert.equal(typeof r.json.jellyfin.connected, 'boolean');
   assert.equal(typeof r.json.plex.connected, 'boolean');

@@ -31,6 +31,8 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
   let providers = { at: 0, region: '', list: [] }; // [{ id, name, key, priority }]
   const lists = new Map(); // provider id (or 'trending') -> { at, items }
   const building = new Map(); // provider id -> Promise, so one list is fetched once at a time
+  const details = new Map(); // IMDb id and type -> { at, value }
+  const detailsBuilding = new Map();
   let genreLists = { until: 0, tv: new Map(), movie: new Map() };
   let genreBuilding = null;
 
@@ -198,6 +200,41 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     return items.length >= MIN_ITEMS ? { kind: 'trending', provider: '', items } : none;
   }
 
+  // Stremio and Trakt know the IMDb id of a paused title, but not its synopsis.
+  // The find response has the same genre ids, date, rating and overview as discover.
+  async function detailsByImdb(id, type) {
+    if (!key() || !/^tt\d+$/.test(id) || (type !== 'movie' && type !== 'series')) return null;
+    const cacheId = `${type}:${id}`;
+    const c = details.get(cacheId);
+    if (c && Date.now() - c.at < LIST_MS) return c.value;
+    if (!detailsBuilding.has(cacheId)) {
+      detailsBuilding.set(cacheId, (async () => {
+        const kind = type === 'series' ? 'tv' : 'movie';
+        const r = await get(`/find/${id}`, { external_source: 'imdb_id', language: 'en-US' });
+        if (r.status !== 200 || !r.json) throw new Error(`TMDB find failed (${r.status})`);
+        const m = (r.json[`${kind}_results`] || [])[0];
+        if (!m) return null;
+        const names = await genres();
+        return {
+          genre: (Array.isArray(m.genre_ids) ? m.genre_ids : []).map((g) => names[kind].get(g)).filter(Boolean)[0] || '',
+          year: parseInt(String(m.first_air_date || m.release_date || '').slice(0, 4), 10) || 0,
+          rating: Number(m.vote_average) > 0 && Number(m.vote_average) <= 10 ? Math.round(Number(m.vote_average) * 10) / 10 : 0,
+          overview: String(m.overview || '').replace(/\s+/g, ' ').trim()
+        };
+      })().then((value) => {
+        details.set(cacheId, { at: Date.now(), value });
+        detailsBuilding.delete(cacheId);
+        return value;
+      }, (e) => {
+        log('tmdb: IMDb details', e.message);
+        details.set(cacheId, { at: Date.now() - LIST_MS + GENRE_RETRY_MS, value: c ? c.value : null });
+        detailsBuilding.delete(cacheId);
+        return c ? c.value : null;
+      }));
+    }
+    return detailsBuilding.get(cacheId);
+  }
+
   function status() {
     return { configured: !!key(), region: readConfig().tmdbRegion || providers.region };
   }
@@ -211,6 +248,7 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     else delete cfg.tmdbRegion;
     writeConfig(cfg);
     lists.clear();
+    details.clear();
     providers = { at: 0, region: '', list: [] };
     return status();
   }
@@ -229,9 +267,10 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     }
     writeConfig(cfg);
     lists.clear();
+    details.clear();
     providers = { at: 0, region: '', list: [] };
     return status();
   }
 
-  return { featured, status, setKey, setRegion };
+  return { featured, detailsByImdb, status, setKey, setRegion };
 };
