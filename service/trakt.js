@@ -1,9 +1,9 @@
 /* Trakt.tv: device sign-in and "Continue Watching" (paused playback).
  *
  * Trakt needs an API app of your own (free): create one at
- * https://trakt.tv/oauth/applications/new with redirect URI
- * urn:ietf:wg:oauth:2.0:oob, then hand its Client ID and Secret to the
- * service (traktSetup). Sign-in is the device flow: the TV shows a code you
+ * https://developer.trakt.tv/apps with http://localhost as the reply URI,
+ * then hand its Client ID to the service (traktSetup). Older apps can also
+ * use a Client Secret. Sign-in is the device flow: the TV shows a code you
  * enter at trakt.tv/activate - no password ever touches the TV.
  */
 'use strict';
@@ -13,6 +13,7 @@ const { requestOptions } = require('./net');
 
 const API = 'https://api.trakt.tv';
 const OOB = 'urn:ietf:wg:oauth:2.0:oob';
+const LOCALHOST = 'http://localhost';
 const META = 'https://images.metahub.space';
 
 function request(method, path, { body, clientId, token } = {}) {
@@ -69,9 +70,10 @@ module.exports = function createTrakt({ readConfig, writeConfig, log }) {
     if (!cfg.traktAccess) return null;
     if (Date.now() < (cfg.traktExpires || 0) - 3600 * 1000) return cfg.traktAccess;
     // refresh an hour before expiry
-    const r = await request('POST', '/oauth/token', {
-      body: { refresh_token: cfg.traktRefresh, client_id: clientId, client_secret: secret, redirect_uri: OOB, grant_type: 'refresh_token' }
-    });
+    const body = { refresh_token: cfg.traktRefresh, client_id: clientId,
+      redirect_uri: secret ? OOB : LOCALHOST, grant_type: 'refresh_token' };
+    if (secret) body.client_secret = secret;
+    const r = await request('POST', '/oauth/token', { body });
     if (r.status === 200 && r.json && r.json.access_token) {
       saveTokens(r.json);
       log('trakt: token refreshed');
@@ -101,7 +103,7 @@ module.exports = function createTrakt({ readConfig, writeConfig, log }) {
 
   async function startDevice() {
     const { clientId, secret } = creds();
-    if (!clientId || !secret) throw new Error('Trakt is not set up: run traktSetup with your Client ID and Secret');
+    if (!clientId) throw new Error('Trakt is not set up: run traktSetup with your Client ID');
     const r = await request('POST', '/oauth/device/code', { body: { client_id: clientId } });
     if (r.status !== 200 || !r.json) throw new Error(`Trakt device code failed (${r.status})`);
     const d = r.json;
@@ -111,7 +113,9 @@ module.exports = function createTrakt({ readConfig, writeConfig, log }) {
     const poll = async () => {
       if (!pending || Date.now() > pending.expires_at) { pending = null; return; }
       try {
-        const t = await request('POST', '/oauth/device/token', { body: { code: d.device_code, client_id: clientId, client_secret: secret } });
+        const body = { code: d.device_code, client_id: clientId };
+        if (secret) body.client_secret = secret;
+        const t = await request('POST', '/oauth/device/token', { body });
         if (t.status === 200 && t.json && t.json.access_token) {
           saveTokens(t.json);
           pending = null;

@@ -195,7 +195,7 @@ appears in your own SSH command line** — it kills the session. Use:
   (apps on the TV), App Tiles, then a tip or two. Their choices are Settings' own actions. Done or skipped, they're
   `onboarded` in config.json (`POST /api/home {"onboarded":true}`; the Home answer sends `false` with it);
   without the field, `homeAsked` counts, so an update from before them doesn't show them.
-- TMDB's key and Trakt's Client ID/Secret are pasted on a phone (`service/keys.js`): `POST /api/keys/open` serves a
+- TMDB's key and Trakt's Client ID (plus an older app's optional Secret) are pasted on a phone (`service/keys.js`): `POST /api/keys/open` serves a
   form on the LAN (port 0, path of 128 random bits, closed on save, on the sheet's Cancel/Back or after 10 min) and
   the launcher shows its link as a QR code (`service/qr.js`, our own encoder: byte mode, level M, versions 1–10;
   `/api/keys/qr`). A save emits `keys` on `/api/events`. `HOMEPLUS_KEYS_HOST` names the address in the link
