@@ -1603,7 +1603,8 @@ const imageServer = http.createServer(async (req, res) => {
     return sendJSON(res, 200, {
       id: pkg.name, /* (the launcher checks it's its own: the old Home+'s, still installed, takes the same port) */
       version: pkg.version, elevated: isRoot(), token: tokenWritten,
-      bootScript: fs.existsSync(INITD), homeAsked: !!cfg.homeAsked, homeMode: homeMode(cfg), onboarded: onboarded(cfg)
+      bootScript: fs.existsSync(INITD), homeAsked: !!cfg.homeAsked, homeMode: homeMode(cfg), onboarded: onboarded(cfg),
+      tmdbConfigured: !!cfg.tmdbKey
     });
   }
   /* the launcher just had Homebrew Channel elevate us: exit so the next start runs as root.

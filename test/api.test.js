@@ -41,6 +41,7 @@ test('api: /api/status answers without the token (the launcher asks before it ha
   assert.equal(r.json.version, JSON.parse(fs.readFileSync(path.join(ROOT, 'service/package.json'), 'utf8')).version);
   assert.equal(r.json.token, true, 'the token file was written');
   assert.equal(r.json.id, 'com.github.pbalazaar.homeplus.service', 'which service this is: the old Home+\'s answers on the same port');
+  assert.equal(r.json.tmdbConfigured, true, 'the first status response lets the launcher load provider titles immediately');
 });
 
 test('api: the welcome steps: done once finished or skipped; an install that answered the Home question has had them', async () => {
