@@ -161,7 +161,9 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
   const NAMES = ['Northern Lights', 'The Long Orbit', 'Paper Moon', 'Severed Signals', 'Glass City', 'Midnight Kitchen', 'Harbor Lights'];
   const titles = (provider, kind) => NAMES.map((name, i) => ({ i, name })).filter(({ i }) => (i + provider) % 2 === (kind === 'tv' ? 0 : 1))
     .map(({ i, name }) => ({ id: provider * 100 + i, [kind === 'tv' ? 'name' : 'title']: name, popularity: 100 - i,
-      [kind === 'tv' ? 'first_air_date' : 'release_date']: `${2020 + i}-05-01`, backdrop_path: `/b${(i + provider) % 5}.jpg` }));
+      [kind === 'tv' ? 'first_air_date' : 'release_date']: `${2020 + i}-05-01`, backdrop_path: `/b${(i + provider) % 5}.jpg`,
+      vote_average: 8.4 - i / 10,
+      overview: `${name} follows a small group whose plans change after an unexpected discovery. They must decide what matters most as the story unfolds.` }));
   http.createServer((req, res) => {
     const p = new URL(req.url, BASE).pathname;
     if (/^\/tmdb\/watch\/providers\//.test(p)) return json(res, { results: PROVIDERS });
