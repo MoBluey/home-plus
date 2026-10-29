@@ -36,7 +36,7 @@ int pic_rail(int i)
     return (S.pic_under.kind == PIC_RAIL && S.pic_under.i == i) || (S.pic_top.kind == PIC_RAIL && S.pic_top.i == i);
 }
 
-/* Keep a synopsis to three lines; the final line shows an ellipsis if there is more. */
+/* Keep a synopsis to four lines; the final line shows an ellipsis if there is more. */
 static const char *overview_line(const char *from, char *line, size_t cap, int last)
 {
     while (*from == ' ') from++;
@@ -90,14 +90,14 @@ static void ensure_rail_texts(RailItem *it)
     }
     tex_free(&it->title_tex);
     tex_free(&it->meta_tex);
-    for (int l = 0; l < 3; l++) tex_free(&it->overview_tex[l]);
+    for (int l = 0; l < 4; l++) tex_free(&it->overview_tex[l]);
     it->title_tex = text_render(S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
     it->meta_tex = text_render(S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
     if (it->overview[0]) {
         char line[96];
         const char *next = it->overview;
-        for (int l = 0; l < 3 && *next; l++) {
-            next = overview_line(next, line, sizeof line, l == 2);
+        for (int l = 0; l < 4 && *next; l++) {
+            next = overview_line(next, line, sizeof line, l == 3);
             it->overview_tex[l] = text_render(S.f_medium, HINT_PX, line, 1100, &it->ow[l], &it->oh[l]);
         }
     }
@@ -161,7 +161,7 @@ void rail_clear(void)
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
         tex_free(&it->bg_tex); tex_free(&it->logo_tex); tex_free(&it->title_tex); tex_free(&it->meta_tex);
-        for (int l = 0; l < 3; l++) tex_free(&it->overview_tex[l]);
+        for (int l = 0; l < 4; l++) tex_free(&it->overview_tex[l]);
     }
     S.nrail = 0;
     net_drop(TAG_RAIL_BG, -1, S.rail_generation);
@@ -248,7 +248,7 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
                 !strcmp(it->genre, o->genre) && !strcmp(it->overview, o->overview)) {
                 it->title_tex = o->title_tex, it->tw = o->tw, it->th = o->th, o->title_tex = NULL;
                 it->meta_tex = o->meta_tex, it->mw = o->mw, it->mh = o->mh, o->meta_tex = NULL;
-                for (int l = 0; l < 3; l++) {
+                for (int l = 0; l < 4; l++) {
                     it->overview_tex[l] = o->overview_tex[l]; o->overview_tex[l] = NULL;
                     it->ow[l] = o->ow[l]; it->oh[l] = o->oh[l];
                 }
@@ -271,7 +271,7 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
     for (int k = 0; k < nold; k++) {
         RailItem *o = &old[k];
         tex_free(&o->bg_tex); tex_free(&o->logo_tex); tex_free(&o->title_tex); tex_free(&o->meta_tex);
-        for (int l = 0; l < 3; l++) tex_free(&o->overview_tex[l]);
+        for (int l = 0; l < 4; l++) tex_free(&o->overview_tex[l]);
     }
     rail_focus(at < S.nrail ? at : S.nrail - 1);
     if (!S.nrail && S.zone == ZONE_RAIL) S.zone = ZONE_GRID;
@@ -579,7 +579,7 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     float detail_h = S.rail_hint_h;
     if (overview) {
         detail_h = 0;
-        for (int l = 0; l < 3; l++) if (cur->overview_tex[l]) detail_h += cur->oh[l] + (l ? 3 : 0);
+        for (int l = 0; l < 4; l++) if (cur->overview_tex[l]) detail_h += cur->oh[l] + (l ? 3 : 0);
     }
     float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + detail_h + (n > 1 ? 32 : 0);
     Uint8 ta = (Uint8)(alpha * title);
@@ -607,7 +607,7 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     float cc = 1 - fminf(fmaxf(S.cc.t, 0), 1); /* the Control Center, open, says what OK does */
     if (overview) {
         float line_y = y;
-        for (int l = 0; l < 3; l++) if (cur->overview_tex[l]) {
+        for (int l = 0; l < 4; l++) if (cur->overview_tex[l]) {
             draw_text(cur->overview_tex[l], cur->ow[l], cur->oh[l], LEFT, line_y, (Uint8)(TEXT_SECONDARY * ta / 255));
             line_y += cur->oh[l] + 3;
         }
