@@ -5,6 +5,10 @@
 
 #include "home.h"
 
+#define FEATURED_TITLE_Y 250
+#define FEATURED_META_Y 455
+#define FEATURED_OVERVIEW_Y 505
+
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
 /* a layer lets go of its picture (a held one is freed) */
@@ -36,7 +40,7 @@ int pic_rail(int i)
     return (S.pic_under.kind == PIC_RAIL && S.pic_under.i == i) || (S.pic_top.kind == PIC_RAIL && S.pic_top.i == i);
 }
 
-/* Keep a synopsis to four lines; the final line shows an ellipsis if there is more. */
+/* Keep a synopsis to five lines; the final line shows an ellipsis if there is more. */
 static const char *overview_line(const char *from, char *line, size_t cap, int last)
 {
     while (*from == ' ') from++;
@@ -90,14 +94,14 @@ static void ensure_rail_texts(RailItem *it)
     }
     tex_free(&it->title_tex);
     tex_free(&it->meta_tex);
-    for (int l = 0; l < 4; l++) tex_free(&it->overview_tex[l]);
+    for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
     it->title_tex = text_render(S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
     it->meta_tex = text_render(S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
     if (it->overview[0]) {
         char line[96];
         const char *next = it->overview;
-        for (int l = 0; l < 4 && *next; l++) {
-            next = overview_line(next, line, sizeof line, l == 3);
+        for (int l = 0; l < OVERVIEW_LINES && *next; l++) {
+            next = overview_line(next, line, sizeof line, l == OVERVIEW_LINES - 1);
             it->overview_tex[l] = text_render(S.f_medium, HINT_PX, line, 1100, &it->ow[l], &it->oh[l]);
         }
     }
@@ -161,7 +165,7 @@ void rail_clear(void)
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
         tex_free(&it->bg_tex); tex_free(&it->logo_tex); tex_free(&it->title_tex); tex_free(&it->meta_tex);
-        for (int l = 0; l < 4; l++) tex_free(&it->overview_tex[l]);
+        for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
     }
     S.nrail = 0;
     net_drop(TAG_RAIL_BG, -1, S.rail_generation);
@@ -248,7 +252,7 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
                 !strcmp(it->genre, o->genre) && !strcmp(it->overview, o->overview)) {
                 it->title_tex = o->title_tex, it->tw = o->tw, it->th = o->th, o->title_tex = NULL;
                 it->meta_tex = o->meta_tex, it->mw = o->mw, it->mh = o->mh, o->meta_tex = NULL;
-                for (int l = 0; l < 4; l++) {
+                for (int l = 0; l < OVERVIEW_LINES; l++) {
                     it->overview_tex[l] = o->overview_tex[l]; o->overview_tex[l] = NULL;
                     it->ow[l] = o->ow[l]; it->oh[l] = o->oh[l];
                 }
@@ -271,7 +275,7 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
     for (int k = 0; k < nold; k++) {
         RailItem *o = &old[k];
         tex_free(&o->bg_tex); tex_free(&o->logo_tex); tex_free(&o->title_tex); tex_free(&o->meta_tex);
-        for (int l = 0; l < 4; l++) tex_free(&o->overview_tex[l]);
+        for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&o->overview_tex[l]);
     }
     rail_focus(at < S.nrail ? at : S.nrail - 1);
     if (!S.nrail && S.zone == ZONE_RAIL) S.zone = ZONE_GRID;
@@ -575,18 +579,17 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     int logo = cur->logo_tex && cur->lw > 0 && cur->lh > 0, n = S.nrail < MAX_DOTS ? S.nrail : MAX_DOTS;
     float k = logo ? fminf(fminf(560.0f / cur->lw, 190.0f / cur->lh), 1.6f) : 0;
     float title_h = logo ? cur->lh * k + 18 : cur->th + 8;
-    int overview = S.rail_source == SRC_FEATURED && cur->overview_tex[0];
+    int featured = S.rail_source == SRC_FEATURED;
+    int overview = featured && cur->overview_tex[0];
     float detail_h = S.rail_hint_h;
-    if (overview) {
-        detail_h = 0;
-        for (int l = 0; l < 4; l++) if (cur->overview_tex[l]) detail_h += cur->oh[l] + (l ? 3 : 0);
-    }
     float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + detail_h + (n > 1 ? 32 : 0);
     Uint8 ta = (Uint8)(alpha * title);
-    float y = DOCK_Y - 64 - total;
-    if (skel > 0.004f) { /* bottom-aligned with the title, then the line under it */
-        draw_skeleton(LEFT, y + title_h - 82, 400, 64, 14, alpha / 255.0f * skel);
-        draw_skeleton(LEFT, y + title_h + (cur->mh - 20) / 2, 250, 20, 10, alpha / 255.0f * skel);
+    float y = featured ? FEATURED_TITLE_Y : DOCK_Y - 64 - total;
+    if (skel > 0.004f) { /* placeholders follow the fixed featured anchors */
+        float title_skel_y = featured ? FEATURED_TITLE_Y : y + title_h - 82;
+        float meta_skel_y = featured ? FEATURED_META_Y : y + title_h;
+        draw_skeleton(LEFT, title_skel_y, 400, 64, 14, alpha / 255.0f * skel);
+        draw_skeleton(LEFT, meta_skel_y + (cur->mh - 20) / 2, 250, 20, 10, alpha / 255.0f * skel);
     }
     if (logo) {
         float lw = cur->lw * k, lh = cur->lh * k;
@@ -596,6 +599,7 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, y, ta);
         y += cur->th + 8;
     }
+    if (featured) y = FEATURED_META_Y;
     draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, y, (Uint8)(TEXT_STATIC * ta / 255));
     y += cur->mh + 14;
     if (cur->progress > 0) {
@@ -605,16 +609,17 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         y += bh + 16;
     }
     float cc = 1 - fminf(fmaxf(S.cc.t, 0), 1); /* the Control Center, open, says what OK does */
+    if (featured) y = FEATURED_OVERVIEW_Y;
     if (overview) {
         float line_y = y;
-        for (int l = 0; l < 4; l++) if (cur->overview_tex[l]) {
+        for (int l = 0; l < OVERVIEW_LINES; l++) if (cur->overview_tex[l]) {
             draw_text(cur->overview_tex[l], cur->ow[l], cur->oh[l], LEFT, line_y, (Uint8)(TEXT_SECONDARY * ta / 255));
             line_y += cur->oh[l] + 3;
         }
     } else if (S.zone == ZONE_RAIL && S.rail_browse)
         draw_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255));
     else draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255 * cc)); /* it can't resume from here */
-    y += detail_h + 22;
+    y = featured ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + detail_h + 22;
     int browsing = S.zone == ZONE_RAIL;
     for (int i = 0; n > 1 && i < n; i++) {
         int on = i == (S.rail_index < n ? S.rail_index : n - 1);
