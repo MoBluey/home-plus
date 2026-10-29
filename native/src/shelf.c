@@ -5,6 +5,10 @@
 
 #include "home.h"
 
+#define FEATURED_TITLE_Y 210
+#define FEATURED_META_Y 415
+#define FEATURED_OVERVIEW_Y 465
+
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
 /* a layer lets go of its picture (a held one is freed) */
@@ -36,7 +40,26 @@ int pic_rail(int i)
     return (S.pic_under.kind == PIC_RAIL && S.pic_under.i == i) || (S.pic_top.kind == PIC_RAIL && S.pic_top.i == i);
 }
 
-/* the big title and meta line, made only for the card on show (~0.4 MB each) */
+/* Keep a synopsis to five lines; the final line shows an ellipsis if there is more. */
+static const char *overview_line(const char *from, char *line, size_t cap, int last)
+{
+    while (*from == ' ') from++;
+    size_t n = strlen(from);
+    if (n > 80) {
+        n = 80;
+        while (n > 50 && from[n] != ' ') n--;
+        while (n > 0 && ((unsigned char)from[n] & 0xc0) == 0x80) n--;
+    }
+    if (n >= cap) n = cap - 1;
+    memcpy(line, from, n);
+    line[n] = 0;
+    const char *next = from + n;
+    while (*next == ' ') next++;
+    if (last && *next) append(line, cap, "\xE2\x80\xA6");
+    return next;
+}
+
+/* the big title and details, made only for the card on show */
 static void ensure_rail_texts(RailItem *it)
 {
     if (it->texts_made) return; /* (not title_tex: a name that renders to nothing made them every frame) */
@@ -50,10 +73,19 @@ static void ensure_rail_texts(RailItem *it)
         snprintf(meta, sizeof meta, "Movie");
     else if (!strcmp(it->type, "series"))
         snprintf(meta, sizeof meta, "Series");
+    if (it->genre[0]) {
+        if (meta[0]) append(meta, sizeof meta, "  \xC2\xB7  ");
+        append(meta, sizeof meta, it->genre);
+    }
     if (it->year) { /* popular titles: "Series · 2026" */
         char yr[24];
         snprintf(yr, sizeof yr, "%s%d", meta[0] ? "  \xC2\xB7  " : "", it->year);
         append(meta, sizeof meta, yr);
+    }
+    if (it->rating > 0) {
+        char rated[48];
+        snprintf(rated, sizeof rated, "%sTMDB %.1f/10", meta[0] ? "  \xC2\xB7  " : "", it->rating);
+        append(meta, sizeof meta, rated);
     }
     if (it->remaining) {
         char left[48];
@@ -62,8 +94,17 @@ static void ensure_rail_texts(RailItem *it)
     }
     tex_free(&it->title_tex);
     tex_free(&it->meta_tex);
+    for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
     it->title_tex = text_render(S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
     it->meta_tex = text_render(S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
+    if (it->overview[0]) {
+        char line[96];
+        const char *next = it->overview;
+        for (int l = 0; l < OVERVIEW_LINES && *next; l++) {
+            next = overview_line(next, line, sizeof line, l == OVERVIEW_LINES - 1);
+            it->overview_tex[l] = text_render(S.f_medium, HINT_PX, line, 1100, &it->ow[l], &it->oh[l]);
+        }
+    }
     it->texts_made = 1;
 }
 
@@ -124,6 +165,7 @@ void rail_clear(void)
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
         tex_free(&it->bg_tex); tex_free(&it->logo_tex); tex_free(&it->title_tex); tex_free(&it->meta_tex);
+        for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
     }
     S.nrail = 0;
     net_drop(TAG_RAIL_BG, -1, S.rail_generation);
@@ -154,8 +196,12 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
     cJSON *v;
     char sig[2048] = "";
     cJSON_ArrayForEach(v, arr) {
-        char part[96];
-        snprintf(part, sizeof part, "%s:%.3f,", jstr(v, "id"), jnum(v, "progress"));
+        unsigned hash = 2166136261u;
+        for (const unsigned char *p = (const unsigned char *)jstr(v, "overview"); *p; p++) hash = (hash ^ *p) * 16777619u;
+        hash = (hash ^ 255u) * 16777619u;
+        for (const unsigned char *p = (const unsigned char *)jstr(v, "genre"); *p; p++) hash = (hash ^ *p) * 16777619u;
+        char part[120];
+        snprintf(part, sizeof part, "%s:%.3f:%.1f:%08x,", jstr(v, "id"), jnum(v, "progress"), jnum(v, "rating"), hash);
         append(sig, sizeof sig, part);
     }
     if (!strcmp(sig, S.rail_sig) && S.nrail) return;
@@ -178,10 +224,13 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
         snprintf(it->id, sizeof it->id, "%s", jstr(v, "id"));
         snprintf(it->type, sizeof it->type, "%s", jstr(v, "type"));
         snprintf(it->name, sizeof it->name, "%s", jstr(v, "name"));
+        snprintf(it->genre, sizeof it->genre, "%s", jstr(v, "genre"));
+        snprintf(it->overview, sizeof it->overview, "%s", jstr(v, "overview"));
         const char *bg = jstr(v, "background");
         snprintf(it->bg, sizeof it->bg, "%s", bg[0] ? bg : jstr(v, "thumbnail"));
         snprintf(it->logo, sizeof it->logo, "%s", jstr(v, "logo"));
         it->progress = (float)jnum(v, "progress");
+        it->rating = (float)jnum(v, "rating");
         it->season = (int)jnum(v, "season");
         it->episode = (int)jnum(v, "episode");
         it->remaining = (int)jnum(v, "remainingMin");
@@ -198,9 +247,15 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
             if (strcmp(o->bg, it->bg) || strcmp(o->logo, it->logo)) break;
             if (o->bg_state == 2) it->bg_tex = o->bg_tex, it->bg_state = 2, o->bg_tex = NULL, pic_to[k] = i;
             if (o->logo_state == 2) it->logo_tex = o->logo_tex, it->logo_state = 2, it->lw = o->lw, it->lh = o->lh, o->logo_tex = NULL;
-            if (it->progress == o->progress && it->remaining == o->remaining) {
+            if (it->progress == o->progress && it->remaining == o->remaining && it->rating == o->rating &&
+                it->year == o->year && !strcmp(it->name, o->name) && !strcmp(it->type, o->type) &&
+                !strcmp(it->genre, o->genre) && !strcmp(it->overview, o->overview)) {
                 it->title_tex = o->title_tex, it->tw = o->tw, it->th = o->th, o->title_tex = NULL;
                 it->meta_tex = o->meta_tex, it->mw = o->mw, it->mh = o->mh, o->meta_tex = NULL;
+                for (int l = 0; l < OVERVIEW_LINES; l++) {
+                    it->overview_tex[l] = o->overview_tex[l]; o->overview_tex[l] = NULL;
+                    it->ow[l] = o->ow[l]; it->oh[l] = o->oh[l];
+                }
                 it->texts_made = o->texts_made;
             }
             break;
@@ -220,6 +275,7 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
     for (int k = 0; k < nold; k++) {
         RailItem *o = &old[k];
         tex_free(&o->bg_tex); tex_free(&o->logo_tex); tex_free(&o->title_tex); tex_free(&o->meta_tex);
+        for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&o->overview_tex[l]);
     }
     rail_focus(at < S.nrail ? at : S.nrail - 1);
     if (!S.nrail && S.zone == ZONE_RAIL) S.zone = ZONE_GRID;
@@ -523,12 +579,17 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     int logo = cur->logo_tex && cur->lw > 0 && cur->lh > 0, n = S.nrail < MAX_DOTS ? S.nrail : MAX_DOTS;
     float k = logo ? fminf(fminf(560.0f / cur->lw, 190.0f / cur->lh), 1.6f) : 0;
     float title_h = logo ? cur->lh * k + 18 : cur->th + 8;
-    float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + S.rail_hint_h + (n > 1 ? 32 : 0);
+    int featured = S.rail_source == SRC_FEATURED;
+    int overview = featured && cur->overview_tex[0];
+    float detail_h = S.rail_hint_h;
+    float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + detail_h + (n > 1 ? 32 : 0);
     Uint8 ta = (Uint8)(alpha * title);
-    float y = DOCK_Y - 64 - total;
-    if (skel > 0.004f) { /* bottom-aligned with the title, then the line under it */
-        draw_skeleton(LEFT, y + title_h - 82, 400, 64, 14, alpha / 255.0f * skel);
-        draw_skeleton(LEFT, y + title_h + (cur->mh - 20) / 2, 250, 20, 10, alpha / 255.0f * skel);
+    float y = featured ? FEATURED_TITLE_Y : DOCK_Y - 64 - total;
+    if (skel > 0.004f) { /* placeholders follow the fixed featured anchors */
+        float title_skel_y = featured ? FEATURED_TITLE_Y : y + title_h - 82;
+        float meta_skel_y = featured ? FEATURED_META_Y : y + title_h;
+        draw_skeleton(LEFT, title_skel_y, 400, 64, 14, alpha / 255.0f * skel);
+        draw_skeleton(LEFT, meta_skel_y + (cur->mh - 20) / 2, 250, 20, 10, alpha / 255.0f * skel);
     }
     if (logo) {
         float lw = cur->lw * k, lh = cur->lh * k;
@@ -538,6 +599,7 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, y, ta);
         y += cur->th + 8;
     }
+    if (featured) y = FEATURED_META_Y;
     draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, y, (Uint8)(TEXT_STATIC * ta / 255));
     y += cur->mh + 14;
     if (cur->progress > 0) {
@@ -547,9 +609,17 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         y += bh + 16;
     }
     float cc = 1 - fminf(fmaxf(S.cc.t, 0), 1); /* the Control Center, open, says what OK does */
-    if (S.zone == ZONE_RAIL && S.rail_browse) draw_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255));
+    if (featured) y = FEATURED_OVERVIEW_Y;
+    if (overview) {
+        float line_y = y;
+        for (int l = 0; l < OVERVIEW_LINES; l++) if (cur->overview_tex[l]) {
+            draw_text(cur->overview_tex[l], cur->ow[l], cur->oh[l], LEFT, line_y, (Uint8)(TEXT_SECONDARY * ta / 255));
+            line_y += cur->oh[l] + 3;
+        }
+    } else if (S.zone == ZONE_RAIL && S.rail_browse)
+        draw_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255));
     else draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255 * cc)); /* it can't resume from here */
-    y += S.rail_hint_h + 22;
+    y = featured ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + detail_h + 22;
     int browsing = S.zone == ZONE_RAIL;
     for (int i = 0; n > 1 && i < n; i++) {
         int on = i == (S.rail_index < n ? S.rail_index : n - 1);

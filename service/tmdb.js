@@ -19,6 +19,7 @@ const API = process.env.HOMEPLUS_TMDB || 'https://api.themoviedb.org/3';
 const IMG = process.env.HOMEPLUS_TMDB_IMAGES || 'https://image.tmdb.org/t/p';
 const LIST_MS = 12 * 3600 * 1000;
 const PROVIDERS_MS = 24 * 3600 * 1000;
+const GENRE_RETRY_MS = 5 * 60 * 1000;
 const MIN_ITEMS = 3; // fewer than this, and the app keeps its glow
 
 // "Disney+" is "Disney Plus", "RaiPlay" is "Rai Play": compared without spaces
@@ -30,6 +31,8 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
   let providers = { at: 0, region: '', list: [] }; // [{ id, name, key, priority }]
   const lists = new Map(); // provider id (or 'trending') -> { at, items }
   const building = new Map(); // provider id -> Promise, so one list is fetched once at a time
+  let genreLists = { until: 0, tv: new Map(), movie: new Map() };
+  let genreBuilding = null;
 
   function key() {
     return readConfig().tmdbKey || '';
@@ -87,6 +90,27 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     }
   }
 
+  async function genres() {
+    if (Date.now() < genreLists.until) return genreLists;
+    if (!genreBuilding) {
+      genreBuilding = Promise.all(['tv', 'movie'].map(async (kind) => {
+        const r = await get(`/genre/${kind}/list`, { language: 'en-US' });
+        if (r.status !== 200 || !r.json) throw new Error(`TMDB genres failed (${r.status})`);
+        return new Map((r.json.genres || []).map((g) => [g.id, g.name]));
+      })).then(([tv, movie]) => {
+        genreLists = { until: Date.now() + PROVIDERS_MS, tv, movie };
+        return genreLists;
+      }, (e) => {
+        log('tmdb:', e.message);
+        genreLists.until = Date.now() + GENRE_RETRY_MS;
+        return genreLists;
+      });
+    }
+    const result = await genreBuilding;
+    genreBuilding = null;
+    return result;
+  }
+
   // the 10 most popular titles on a service (series and films by popularity), or
   // trending overall (p null), with backdrops
   async function build(p) {
@@ -120,12 +144,16 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
       for (const m of r.json.results || []) if (m.backdrop_path && (m.media_type === 'tv' || m.media_type === 'movie')) found.push({ kind: m.media_type, m });
     }
     const top = found.slice(0, 10);
+    const names = await genres();
     const logos = await Promise.all(top.map(({ kind, m }) => logoFor(kind, m.id)));
     return top.map(({ kind, m }, i) => ({
       id: `${kind}:${m.id}`,
       type: kind === 'tv' ? 'series' : 'movie',
       name: m.name || m.title || '',
+      genre: (Array.isArray(m.genre_ids) ? m.genre_ids : []).map((id) => names[kind].get(id)).filter(Boolean)[0] || '',
       year: parseInt(String(m.first_air_date || m.release_date || '').slice(0, 4), 10) || 0,
+      rating: Number(m.vote_average) > 0 && Number(m.vote_average) <= 10 ? Math.round(Number(m.vote_average) * 10) / 10 : 0,
+      overview: String(m.overview || '').replace(/\s+/g, ' ').trim(),
       background: `${IMG}/w1280${m.backdrop_path}`,
       logo: logos[i]
     }));
