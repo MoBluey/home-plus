@@ -8,6 +8,9 @@
 #define FEATURED_TITLE_Y 210
 #define FEATURED_META_Y 415
 #define FEATURED_OVERVIEW_Y 465
+#define CONTINUE_RESUME_Y 665
+#define CONTINUE_PROGRESS_Y 710
+#define CONTINUE_DOTS_Y 748
 
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
@@ -63,9 +66,14 @@ static const char *overview_line(const char *from, char *line, size_t cap, int l
 static void ensure_rail_texts(RailItem *it)
 {
     if (it->texts_made) return; /* (not title_tex: a name that renders to nothing made them every frame) */
-    /* "Season 2 · Episode 5 · 31 min left" / "Episode 5 · ..." (anime) / "Movie · 48 min left" */
+    /* Streaming titles lead with type, genre, year and rating; a paused title
+     * keeps its episode and time left on a separate line below the synopsis. */
     char meta[200] = "";
-    if (!strcmp(it->type, "series") && it->season)
+    if (S.rail_source == SRC_STREMIO && !strcmp(it->type, "series"))
+        snprintf(meta, sizeof meta, "Series");
+    else if (S.rail_source == SRC_STREMIO && !strcmp(it->type, "movie"))
+        snprintf(meta, sizeof meta, "Movie");
+    else if (!strcmp(it->type, "series") && it->season)
         snprintf(meta, sizeof meta, "Season %d  \xC2\xB7  Episode %d", it->season, it->episode);
     else if (it->episode)
         snprintf(meta, sizeof meta, "Episode %d", it->episode);
@@ -87,16 +95,29 @@ static void ensure_rail_texts(RailItem *it)
         snprintf(rated, sizeof rated, "%sTMDB %.1f/10", meta[0] ? "  \xC2\xB7  " : "", it->rating);
         append(meta, sizeof meta, rated);
     }
+    char resume[96] = "";
+    if (S.rail_source == SRC_STREMIO && it->episode) {
+        if (it->season)
+            snprintf(resume, sizeof resume, "Season %d  \xC2\xB7  Episode %d", it->season, it->episode);
+        else snprintf(resume, sizeof resume, "Episode %d", it->episode);
+    }
     if (it->remaining) {
         char left[48];
-        snprintf(left, sizeof left, "%s%d min left", meta[0] ? "  \xC2\xB7  " : "", it->remaining);
-        append(meta, sizeof meta, left);
+        if (S.rail_source == SRC_STREMIO) {
+            snprintf(left, sizeof left, "%s%d min left", resume[0] ? "  \xC2\xB7  " : "", it->remaining);
+            append(resume, sizeof resume, left);
+        } else {
+            snprintf(left, sizeof left, "%s%d min left", meta[0] ? "  \xC2\xB7  " : "", it->remaining);
+            append(meta, sizeof meta, left);
+        }
     }
     tex_free(&it->title_tex);
     tex_free(&it->meta_tex);
+    tex_free(&it->resume_tex);
     for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
     it->title_tex = text_render(S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
     it->meta_tex = text_render(S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
+    if (resume[0]) it->resume_tex = text_render(S.f_medium, HINT_PX, resume, 1100, &it->rw, &it->rh);
     if (it->overview[0]) {
         char line[96];
         const char *next = it->overview;
@@ -164,7 +185,7 @@ void rail_clear(void)
     }
     for (int i = 0; i < S.nrail; i++) {
         RailItem *it = &S.rail[i];
-        tex_free(&it->bg_tex); tex_free(&it->logo_tex); tex_free(&it->title_tex); tex_free(&it->meta_tex);
+        tex_free(&it->bg_tex); tex_free(&it->logo_tex); tex_free(&it->title_tex); tex_free(&it->meta_tex); tex_free(&it->resume_tex);
         for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
     }
     S.nrail = 0;
@@ -200,8 +221,11 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
         for (const unsigned char *p = (const unsigned char *)jstr(v, "overview"); *p; p++) hash = (hash ^ *p) * 16777619u;
         hash = (hash ^ 255u) * 16777619u;
         for (const unsigned char *p = (const unsigned char *)jstr(v, "genre"); *p; p++) hash = (hash ^ *p) * 16777619u;
+        hash = (hash ^ 255u) * 16777619u;
+        for (const unsigned char *p = (const unsigned char *)jstr(v, "overview"); *p; p++) hash = (hash ^ *p) * 16777619u;
         char part[120];
-        snprintf(part, sizeof part, "%s:%.3f:%.1f:%08x,", jstr(v, "id"), jnum(v, "progress"), jnum(v, "rating"), hash);
+        snprintf(part, sizeof part, "%s:%.3f:%.1f:%d:%d:%d:%d:%08x,", jstr(v, "id"), jnum(v, "progress"), jnum(v, "rating"),
+                 (int)jnum(v, "season"), (int)jnum(v, "episode"), (int)jnum(v, "remainingMin"), (int)jnum(v, "year"), hash);
         append(sig, sizeof sig, part);
     }
     if (!strcmp(sig, S.rail_sig) && S.nrail) return;
@@ -248,10 +272,12 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
             if (o->bg_state == 2) it->bg_tex = o->bg_tex, it->bg_state = 2, o->bg_tex = NULL, pic_to[k] = i;
             if (o->logo_state == 2) it->logo_tex = o->logo_tex, it->logo_state = 2, it->lw = o->lw, it->lh = o->lh, o->logo_tex = NULL;
             if (it->progress == o->progress && it->remaining == o->remaining && it->rating == o->rating &&
+                it->season == o->season && it->episode == o->episode &&
                 it->year == o->year && !strcmp(it->name, o->name) && !strcmp(it->type, o->type) &&
                 !strcmp(it->genre, o->genre) && !strcmp(it->overview, o->overview)) {
                 it->title_tex = o->title_tex, it->tw = o->tw, it->th = o->th, o->title_tex = NULL;
                 it->meta_tex = o->meta_tex, it->mw = o->mw, it->mh = o->mh, o->meta_tex = NULL;
+                it->resume_tex = o->resume_tex, it->rw = o->rw, it->rh = o->rh, o->resume_tex = NULL;
                 for (int l = 0; l < OVERVIEW_LINES; l++) {
                     it->overview_tex[l] = o->overview_tex[l]; o->overview_tex[l] = NULL;
                     it->ow[l] = o->ow[l]; it->oh[l] = o->oh[l];
@@ -274,7 +300,7 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
     if (S.prev_rail >= 0) S.prev_rail = S.prev_rail < nold && moved[S.prev_rail] >= 0 ? moved[S.prev_rail] : -2;
     for (int k = 0; k < nold; k++) {
         RailItem *o = &old[k];
-        tex_free(&o->bg_tex); tex_free(&o->logo_tex); tex_free(&o->title_tex); tex_free(&o->meta_tex);
+        tex_free(&o->bg_tex); tex_free(&o->logo_tex); tex_free(&o->title_tex); tex_free(&o->meta_tex); tex_free(&o->resume_tex);
         for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&o->overview_tex[l]);
     }
     rail_focus(at < S.nrail ? at : S.nrail - 1);
@@ -422,6 +448,8 @@ void shelf_load(void)
             if (it->logo_tex) tex_free(&it->logo_tex), it->logo_state = 0;
             tex_free(&it->title_tex);
             tex_free(&it->meta_tex);
+            tex_free(&it->resume_tex);
+            for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
             it->texts_made = 0;
         }
     } else {
@@ -571,6 +599,8 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
 {
     if (!cur || !alpha) return;
     ensure_rail_texts(cur);
+    if (S.rail_source == SRC_STREMIO) /* a bright backdrop must not wash out the synopsis */
+        r_shape(LEFT - 24, FEATURED_TITLE_Y - 20, 1150, 570, 28, 0, 0, 0, (Uint8)(155 * alpha / 255), 0, 1, 1);
     /* the heading mirrors the clock: same height and top, on the dock's left edge as the
      * clock is on its right; the title sits low on the left, just above the chevron, like
      * the Apple TV app, so the picture's top stays clear */
@@ -580,14 +610,15 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     float k = logo ? fminf(fminf(560.0f / cur->lw, 190.0f / cur->lh), 1.6f) : 0;
     float title_h = logo ? cur->lh * k + 18 : cur->th + 8;
     int featured = S.rail_source == SRC_FEATURED;
-    int overview = featured && cur->overview_tex[0];
+    int details = featured || S.rail_source == SRC_STREMIO;
+    int overview = details && cur->overview_tex[0];
     float detail_h = S.rail_hint_h;
     float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + detail_h + (n > 1 ? 32 : 0);
     Uint8 ta = (Uint8)(alpha * title);
-    float y = featured ? FEATURED_TITLE_Y : DOCK_Y - 64 - total;
+    float y = details ? FEATURED_TITLE_Y : DOCK_Y - 64 - total;
     if (skel > 0.004f) { /* placeholders follow the fixed featured anchors */
-        float title_skel_y = featured ? FEATURED_TITLE_Y : y + title_h - 82;
-        float meta_skel_y = featured ? FEATURED_META_Y : y + title_h;
+        float title_skel_y = details ? FEATURED_TITLE_Y : y + title_h - 82;
+        float meta_skel_y = details ? FEATURED_META_Y : y + title_h;
         draw_skeleton(LEFT, title_skel_y, 400, 64, 14, alpha / 255.0f * skel);
         draw_skeleton(LEFT, meta_skel_y + (cur->mh - 20) / 2, 250, 20, 10, alpha / 255.0f * skel);
     }
@@ -599,27 +630,38 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         draw_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, y, ta);
         y += cur->th + 8;
     }
-    if (featured) y = FEATURED_META_Y;
+    if (details) y = FEATURED_META_Y;
     draw_text(cur->meta_tex, cur->mw, cur->mh, LEFT, y, (Uint8)(TEXT_STATIC * ta / 255));
     y += cur->mh + 14;
-    if (cur->progress > 0) {
+    if (cur->progress > 0 && !details) {
         const float bw = 240, bh = 5;
         r_shape(LEFT, y, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ta * 0.28f), 0, 1, 1);
         r_shape(LEFT, y, bw * cur->progress, bh, bh / 2, 255, 255, 255, ta, 0, 1, 1);
         y += bh + 16;
     }
     float cc = 1 - fminf(fmaxf(S.cc.t, 0), 1); /* the Control Center, open, says what OK does */
-    if (featured) y = FEATURED_OVERVIEW_Y;
+    if (details) y = FEATURED_OVERVIEW_Y;
+    float resume_y = CONTINUE_RESUME_Y;
     if (overview) {
         float line_y = y;
         for (int l = 0; l < OVERVIEW_LINES; l++) if (cur->overview_tex[l]) {
             draw_text(cur->overview_tex[l], cur->ow[l], cur->oh[l], LEFT, line_y, (Uint8)(TEXT_SECONDARY * ta / 255));
             line_y += cur->oh[l] + 3;
         }
-    } else if (S.zone == ZONE_RAIL && S.rail_browse)
-        draw_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255));
-    else draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255 * cc)); /* it can't resume from here */
-    y = featured ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + detail_h + 22;
+        resume_y = fmaxf(resume_y, line_y + 5);
+    } else if (S.rail_source != SRC_STREMIO) {
+        if (S.zone == ZONE_RAIL && S.rail_browse)
+            draw_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255));
+        else draw_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255 * cc)); /* it can't resume from here */
+    }
+    if (S.rail_source == SRC_STREMIO && cur->resume_tex)
+        draw_text(cur->resume_tex, cur->rw, cur->rh, LEFT, resume_y, (Uint8)(TEXT_SECONDARY * ta / 255));
+    if (S.rail_source == SRC_STREMIO && cur->progress > 0) {
+        const float bw = 240, bh = 5;
+        r_shape(LEFT, CONTINUE_PROGRESS_Y, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ta * 0.28f), 0, 1, 1);
+        r_shape(LEFT, CONTINUE_PROGRESS_Y, bw * cur->progress, bh, bh / 2, 255, 255, 255, ta, 0, 1, 1);
+    }
+    y = S.rail_source == SRC_STREMIO ? CONTINUE_DOTS_Y : details ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + detail_h + 22;
     int browsing = S.zone == ZONE_RAIL;
     for (int i = 0; n > 1 && i < n; i++) {
         int on = i == (S.rail_index < n ? S.rail_index : n - 1);
