@@ -126,6 +126,8 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
       type: kind === 'tv' ? 'series' : 'movie',
       name: m.name || m.title || '',
       year: parseInt(String(m.first_air_date || m.release_date || '').slice(0, 4), 10) || 0,
+      rating: Number(m.vote_average) > 0 && Number(m.vote_average) <= 10 ? Math.round(Number(m.vote_average) * 10) / 10 : 0,
+      overview: String(m.overview || '').replace(/\s+/g, ' ').trim(),
       background: `${IMG}/w1280${m.backdrop_path}`,
       logo: logos[i]
     }));

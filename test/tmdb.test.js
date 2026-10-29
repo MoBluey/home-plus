@@ -17,6 +17,8 @@ const titles = (provider, kind, n = 4) => Array.from({ length: n }, (_, i) => ({
   [kind === 'tv' ? 'name' : 'title']: `${kind} ${provider}-${i}`,
   [kind === 'tv' ? 'first_air_date' : 'release_date']: `202${i}-05-01`,
   popularity: 100 - i - (kind === 'movie' ? 0.5 : 0),
+  vote_average: 8.49 - i / 10,
+  overview: `A ${kind} story about people who discover an unexpected world.`,
   backdrop_path: `/b${provider}-${kind}-${i}.jpg`
 }));
 
@@ -90,7 +92,7 @@ test('tmdb: "YouTube" isn\'t YouTube Premium: with no picture of its own it gets
   assert.equal((await tmdb.featured({ id: 'youtube', title: 'YouTube' }, true)).kind, '');
 });
 
-test('tmdb: titles have a backdrop, an English logo, a type and a year, most popular first', async () => {
+test('tmdb: titles have artwork, type, year, rating and synopsis, most popular first', async () => {
   const { tmdb } = makeTmdb();
   const { items } = await tmdb.featured({ id: 'netflix', title: 'Netflix' }, true);
   assert.ok(items.length > 0 && items.length <= 10);
@@ -98,6 +100,8 @@ test('tmdb: titles have a backdrop, an English logo, a type and a year, most pop
   assert.ok(items.every((it) => it.logo === `${tmdbServer.base}/img/w500/en.png`), 'the English logo wins');
   assert.equal(items[0].type, 'series');
   assert.equal(items[0].year, 2020);
+  assert.equal(items[0].rating, 8.5);
+  assert.equal(items[0].overview, 'A tv story about people who discover an unexpected world.');
   assert.ok(!items.some((it) => it.name === 'no picture'));
 });
 
