@@ -47,6 +47,14 @@ test.before(async () => {
     if (/^\/3\/(tv|movie)\/\d+\/images$/.test(url.pathname)) {
       return { json: { logos: [{ file_path: '/fr.png', iso_639_1: 'fr', vote_average: 9 }, { file_path: '/en.png', iso_639_1: 'en', vote_average: 5 }] } };
     }
+    const found = /^\/3\/find\/(tt\d+)$/.exec(url.pathname);
+    if (found) {
+      const movie = found[1] === 'tt1234567' ? [{ genre_ids: [35], release_date: '2024-02-01', vote_average: 7.56,
+        overview: 'A film  about people\nwho discover an unexpected world.' }] : [];
+      const tv = found[1] === 'tt7654321' ? [{ genre_ids: [18], first_air_date: '2012-03-01', vote_average: 8.34,
+        overview: 'A series  about people\nwho discover an unexpected world.' }] : [];
+      return { json: { movie_results: movie, tv_results: tv } };
+    }
     return null;
   });
   process.env.HOMEPLUS_TMDB = `${tmdbServer.base}/3`;
@@ -118,6 +126,21 @@ test('tmdb: titles still appear if genre names are unavailable', async () => {
   assert.ok(items.length > 0);
   assert.equal(items[0].genre, '');
   assert.equal(items[0].rating, 8.5);
+});
+
+test('tmdb: paused IMDb titles have genre, year, rating and synopsis', async () => {
+  const { tmdb } = makeTmdb();
+  const [movie, duplicate] = await Promise.all([
+    tmdb.detailsByImdb('tt1234567', 'movie'), tmdb.detailsByImdb('tt1234567', 'movie')
+  ]);
+  assert.deepEqual(movie, { genre: 'Comedy', year: 2024, rating: 7.6,
+    overview: 'A film about people who discover an unexpected world.' });
+  assert.deepEqual(duplicate, movie);
+  assert.equal(tmdbServer.hits.filter((h) => h.path === '/3/find/tt1234567').length, 1, 'one lookup for simultaneous requests');
+  assert.deepEqual(await tmdb.detailsByImdb('tt7654321', 'series'), { genre: 'Drama', year: 2012, rating: 8.3,
+    overview: 'A series about people who discover an unexpected world.' });
+  assert.equal(await tmdb.detailsByImdb('tt0000000', 'movie'), null, 'unmatched titles remain usable');
+  assert.equal(await tmdb.detailsByImdb('kitsu:123', 'series'), null, 'non-IMDb ids are not looked up');
 });
 
 test('tmdb: a list is fetched once, then kept', async () => {

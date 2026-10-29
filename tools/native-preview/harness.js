@@ -170,6 +170,14 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
     if (/^\/tmdb\/watch\/providers\//.test(p)) return json(res, { results: PROVIDERS });
     if (p === '/tmdb/genre/tv/list') return json(res, { genres: [{ id: 18, name: 'Drama' }] });
     if (p === '/tmdb/genre/movie/list') return json(res, { genres: [{ id: 12, name: 'Adventure' }] });
+    const found = /^\/tmdb\/find\/tt000000(\d)$/.exec(p);
+    if (found) {
+      const i = Number(found[1]), kind = i % 2 ? 'movie' : 'tv';
+      const m = { genre_ids: [kind === 'tv' ? 18 : 12], vote_average: 8.3 - i / 10,
+        overview: `${NAMES[i]} follows a small group whose plans change after an unexpected discovery. They must decide what matters most as the story unfolds.`,
+        [kind === 'tv' ? 'first_air_date' : 'release_date']: `${2020 + i}-05-01` };
+      return json(res, { movie_results: kind === 'movie' ? [m] : [], tv_results: kind === 'tv' ? [m] : [] });
+    }
     const d = /^\/tmdb\/discover\/(tv|movie)$/.exec(p);
     if (d) return json(res, { results: titles(Number(new URL(req.url, BASE).searchParams.get('with_watch_providers')), d[1]) });
     if (p === '/tmdb/trending/all/day') {
