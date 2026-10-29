@@ -19,10 +19,11 @@ const titles = (provider, kind, n = 4) => Array.from({ length: n }, (_, i) => ({
   popularity: 100 - i - (kind === 'movie' ? 0.5 : 0),
   vote_average: i === 3 ? 0 : 8.49 - i / 10,
   overview: i === 3 ? '' : `A ${kind} story  about people\nwho discover an unexpected world.`,
+  genre_ids: i === 3 ? [] : [kind === 'tv' ? 18 : 35],
   backdrop_path: `/b${provider}-${kind}-${i}.jpg`
 }));
 
-let tmdbServer, down = false;
+let tmdbServer, down = false, genreDown = false;
 test.before(async () => {
   tmdbServer = await mockServer((req, url) => {
     if (down) return { status: 500, json: {} };
@@ -30,6 +31,8 @@ test.before(async () => {
     if (url.pathname === '/3/configuration') return auth ? { json: { images: {} } } : { status: 401, json: {} };
     if (!auth) return { status: 401, json: {} };
     if (url.pathname.startsWith('/3/watch/providers/')) return { json: { results: PROVIDERS } };
+    if (url.pathname === '/3/genre/tv/list') return genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 18, name: 'Drama' }] } };
+    if (url.pathname === '/3/genre/movie/list') return genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 35, name: 'Comedy' }] } };
     const d = /^\/3\/discover\/(tv|movie)$/.exec(url.pathname);
     if (d) {
       const list = titles(Number(url.searchParams.get('with_watch_providers')), d[1]);
@@ -50,7 +53,7 @@ test.before(async () => {
   process.env.HOMEPLUS_TMDB_IMAGES = `${tmdbServer.base}/img`;
 });
 test.after(() => tmdbServer.close());
-test.beforeEach(() => { down = false; });
+test.beforeEach(() => { down = genreDown = false; });
 
 function makeTmdb(cfg = { tmdbKey: 'goodkey' }) {
   const store = configStore(cfg);
@@ -99,11 +102,22 @@ test('tmdb: titles have artwork, type, year, rating and synopsis, most popular f
   assert.ok(items.every((it) => it.background.startsWith(`${tmdbServer.base}/img/w1280/`)), 'every title has a backdrop');
   assert.ok(items.every((it) => it.logo === `${tmdbServer.base}/img/w500/en.png`), 'the English logo wins');
   assert.equal(items[0].type, 'series');
+  assert.equal(items[0].genre, 'Drama');
+  assert.equal(items.find((it) => it.type === 'movie').genre, 'Comedy');
   assert.equal(items[0].year, 2020);
   assert.equal(items[0].rating, 8.5);
   assert.equal(items[0].overview, 'A tv story about people who discover an unexpected world.');
-  assert.ok(items.some((it) => it.rating === 0 && it.overview === ''), 'unrated titles with no synopsis stay usable');
+  assert.ok(items.some((it) => it.rating === 0 && it.overview === '' && it.genre === ''), 'titles with missing metadata stay usable');
   assert.ok(!items.some((it) => it.name === 'no picture'));
+});
+
+test('tmdb: titles still appear if genre names are unavailable', async () => {
+  genreDown = true;
+  const { tmdb } = makeTmdb();
+  const { items } = await tmdb.featured({ id: 'netflix', title: 'Netflix' }, true);
+  assert.ok(items.length > 0);
+  assert.equal(items[0].genre, '');
+  assert.equal(items[0].rating, 8.5);
 });
 
 test('tmdb: a list is fetched once, then kept', async () => {
