@@ -5,9 +5,9 @@
 
 #include "home.h"
 
-#define FEATURED_TITLE_Y 250
-#define FEATURED_META_Y 455
-#define FEATURED_OVERVIEW_Y 505
+#define FEATURED_TITLE_Y 210
+#define FEATURED_META_Y 415
+#define FEATURED_OVERVIEW_Y 465
 
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
