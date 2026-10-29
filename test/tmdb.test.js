@@ -17,8 +17,8 @@ const titles = (provider, kind, n = 4) => Array.from({ length: n }, (_, i) => ({
   [kind === 'tv' ? 'name' : 'title']: `${kind} ${provider}-${i}`,
   [kind === 'tv' ? 'first_air_date' : 'release_date']: `202${i}-05-01`,
   popularity: 100 - i - (kind === 'movie' ? 0.5 : 0),
-  vote_average: 8.49 - i / 10,
-  overview: `A ${kind} story about people who discover an unexpected world.`,
+  vote_average: i === 3 ? 0 : 8.49 - i / 10,
+  overview: i === 3 ? '' : `A ${kind} story  about people\nwho discover an unexpected world.`,
   backdrop_path: `/b${provider}-${kind}-${i}.jpg`
 }));
 
@@ -102,6 +102,7 @@ test('tmdb: titles have artwork, type, year, rating and synopsis, most popular f
   assert.equal(items[0].year, 2020);
   assert.equal(items[0].rating, 8.5);
   assert.equal(items[0].overview, 'A tv story about people who discover an unexpected world.');
+  assert.ok(items.some((it) => it.rating === 0 && it.overview === ''), 'unrated titles with no synopsis stay usable');
   assert.ok(!items.some((it) => it.name === 'no picture'));
 });
 
