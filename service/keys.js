@@ -1,4 +1,4 @@
-// The keys page: TMDB's key and Trakt's Client ID and Secret, pasted on a phone rather than typed with
+// The keys page: TMDB's key and Trakt's Client ID (and an older app's optional Secret), pasted on a phone rather than typed with
 // the remote. The TV shows a QR code (qr.js) for a link to this page, served on the local network
 // while it's asked for: on a port of its own, at a path no one can guess (128 random bits), and only
 // until the keys are saved or KEYS_TTL_MS goes by. The service's own API stays on 127.0.0.1.
@@ -37,10 +37,10 @@ function page({ tmdbSet, traktSet, notes = [], done = false }) {
   <label>API key or Read Access Token<input name="tmdbKey" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
   <h2>Trakt <span>${traktSet ? 'set up' : 'not set up'}</span></h2>
   <p>Your Trakt progress in Continue Watching. Create an app at
-  <a href="https://trakt.tv/oauth/applications/new">trakt.tv/oauth/applications/new</a> with
-  <code>urn:ietf:wg:oauth:2.0:oob</code> as its redirect URI, then copy its Client ID and Client Secret.</p>
+  <a href="https://developer.trakt.tv/apps">developer.trakt.tv/apps</a> with
+  <code>http://localhost</code> as its reply URI, then copy its Client ID.</p>
   <label>Client ID<input name="traktClientId" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-  <label>Client Secret<input name="traktClientSecret" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+  <label>Client Secret (optional, for older apps)<input name="traktClientSecret" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
   <p class="small">Leave a field empty to keep what's there.</p>
   <button>Save</button>
 </form>`;
@@ -109,9 +109,9 @@ module.exports = function createKeysPage({ tmdb, trakt, log, emit }) {
       }
     }
     if (f.traktClientId || f.traktClientSecret) {
-      if (!f.traktClientId || !f.traktClientSecret) {
+      if (!f.traktClientId) {
         failed = true;
-        notes.push({ ok: false, text: 'Trakt needs both the Client ID and the Client Secret.' });
+        notes.push({ ok: false, text: 'Trakt needs a Client ID.' });
       } else {
         trakt.setup(f.traktClientId, f.traktClientSecret);
         notes.push({ ok: true, text: 'Trakt saved. On the TV, sign in from Settings → Accounts → Trakt.' });

@@ -101,7 +101,7 @@ void on_trakt_signin(Result *r)
         S.trakt_poll = SDL_GetTicks() + 3000;
     } else {
         S.trakt_poll = 0;
-        if (r->tag == TAG_TRAKT_LINK) toast("Trakt sign-in didn\xE2\x80\x99t start. Check the Client ID/Secret (see README).", 6000);
+        if (r->tag == TAG_TRAKT_LINK) toast("Trakt sign-in didn\xE2\x80\x99t start. Check the Client ID (see README).", 6000);
     }
     cJSON_Delete(o);
 }
@@ -133,7 +133,7 @@ void on_keys(Result *r)
     int parent = S.at_page == PAGE_ACCOUNTS || S.at_page == PAGE_WELCOME ? S.at_page : 0, parent_index = S.at_index;
     sheet_open("Add Keys on Your Phone");
     sheet_body("Scan this with your phone, on the same network as the TV,\n"
-               "and paste your TMDB key, or Trakt\xE2\x80\x99s Client ID and Secret.");
+               "and paste your TMDB key, or Trakt\xE2\x80\x99s Client ID.");
     S.qr_gen++;
     S.sheet_qr_s = 360;
     net_get_image("/api/keys/qr", TAG_QR, 0, S.qr_gen, 0, 0, 0, PRIO_NOW);

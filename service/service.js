@@ -1727,8 +1727,8 @@ register('tmdbSetup', async (msg) => {
 
 register('traktSetup', (msg) => {
   const p = msg.payload || {};
-  if (!p.clientId || !p.clientSecret) return fail(msg, 'clientId and clientSecret are required');
-  msg.respond(Object.assign({ returnValue: true }, trakt.setup(p.clientId, p.clientSecret)));
+  if (!p.clientId) return fail(msg, 'clientId is required');
+  msg.respond(Object.assign({ returnValue: true }, trakt.setup(p.clientId, p.clientSecret || '')));
 });
 register('traktStatus', (msg) => msg.respond(Object.assign({ returnValue: true }, trakt.status())));
 register('traktLink', async (msg) => {

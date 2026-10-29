@@ -78,12 +78,12 @@ test('keys: closed until the launcher opens it; then a link with 128 random bits
   assert.match(page.html, /name="traktClientSecret"/);
 });
 
-test('keys: a key TMDB turns down, or half of Trakt\'s, isn\'t kept, and the page stays open', async () => {
+test('keys: a key TMDB turns down, or a Trakt Secret without an ID, isn\'t kept, and the page stays open', async () => {
   const { url } = (await call('GET', '/api/keys')).json;
   let r = await fetchPage(url, { tmdbKey: 'bad' });
   assert.match(r.html, /TMDB didn(&#39;|')t accept that key/);
-  r = await fetchPage(url, { traktClientId: 'abc' });
-  assert.match(r.html, /needs both/);
+  r = await fetchPage(url, { traktClientSecret: 'old-secret' });
+  assert.match(r.html, /needs a Client ID/);
   r = await fetchPage(url, {});
   assert.match(r.html, /Nothing to save/);
   assert.deepEqual((await call('GET', '/api/keys')).json, { open: true, url, tmdb: false, trakt: false });
@@ -92,7 +92,7 @@ test('keys: a key TMDB turns down, or half of Trakt\'s, isn\'t kept, and the pag
 test('keys: saved, the launcher hears of it, and the link stops working', async () => {
   const { url } = (await call('GET', '/api/keys')).json;
   const waiting = call('GET', '/api/events');
-  const r = await fetchPage(url, { tmdbKey: ' good-key ', traktClientId: 'id<script>', traktClientSecret: 'secret' });
+  const r = await fetchPage(url, { tmdbKey: ' good-key ', traktClientId: 'id<script>' });
   assert.match(r.html, /TMDB key saved/);
   assert.match(r.html, /Trakt saved/);
   assert.ok(!r.html.toLowerCase().includes('<script'), 'what was pasted isn\'t put in the page');
@@ -100,7 +100,17 @@ test('keys: saved, the launcher hears of it, and the link stops working', async 
   const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config', 'config.json'), 'utf8'));
   assert.equal(cfg.tmdbKey, 'good-key');
   assert.equal(cfg.traktClientId, 'id<script>');
+  assert.equal(cfg.traktClientSecret, '');
   await new Promise((res) => setTimeout(res, 800));
   assert.deepEqual((await call('GET', '/api/keys')).json, { open: false, url: '', tmdb: true, trakt: true });
   await assert.rejects(fetchPage(url), 'closed');
+});
+
+test('keys: older Trakt apps can still save a Client Secret', async () => {
+  const { url } = (await call('POST', '/api/keys/open')).json;
+  const r = await fetchPage(url, { traktClientId: 'old-id', traktClientSecret: 'old-secret' });
+  assert.match(r.html, /Trakt saved/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config', 'config.json'), 'utf8'));
+  assert.equal(cfg.traktClientId, 'old-id');
+  assert.equal(cfg.traktClientSecret, 'old-secret');
 });

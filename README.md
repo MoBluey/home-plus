@@ -156,12 +156,12 @@ The password goes only to `api.strem.io`. Either way, the TV keeps only the sess
 Trakt's paused playback joins the same row. Stremio also reports to Trakt, so a title can appear in both; Home+ shows it once. Trakt doesn't record which app played something, so its titles open in Stremio.
 
 Trakt needs an API app of your own (it's free):
-1. Create one at <https://trakt.tv/oauth/applications/new>, with `urn:ietf:wg:oauth:2.0:oob` as the redirect URI.
+1. Create a Development app at <https://developer.trakt.tv/apps>, with `http://localhost` as the reply URI. Copy its Client ID. Older apps with a Client Secret still work.
 2. On the TV, go to **Settings → Accounts → Trakt** (or the welcome steps' Continue Watching) and scan the QR code
-   with your phone, on the same network as the TV. Paste the Client ID and Secret into the page it opens.
+   with your phone, on the same network as the TV. Paste the Client ID into the page it opens.
    Or, over SSH:
    ```sh
-   luna-send -n 1 luna://com.github.pbalazaar.homeplus.service/traktSetup '{"clientId":"…","clientSecret":"…"}'
+   luna-send -n 1 luna://com.github.pbalazaar.homeplus.service/traktSetup '{"clientId":"…"}'
    ```
 3. Go to **Settings → Accounts → Trakt** again, then enter the code it shows at <https://trakt.tv/activate>.
 
@@ -288,7 +288,7 @@ If the TV ever has trouble booting, the Homebrew Channel's failsafe skips boot s
 - **Signing out:** Settings → Accounts signs out of Stremio and ends Home+'s session on your Jellyfin server. Plex lists Home+ under your account's **Authorized Devices**; remove it there to revoke its access.
 - **What's stored:** sign-ins, your layout and preferences, in `/var/lib/homeplus/config.json`, and the Top Shelf's pictures, so they show at once the next time, in `/var/lib/homeplus/images` (up to 64 MB). Both are readable only by root, and **Remove Home+** deletes them.
 - **The local API:** the service runs as root and answers only on `127.0.0.1`. Every request needs a token the service writes into Home+'s app folder, and requests from web pages and other hosts are refused.
-- **The keys page:** while the TV shows its QR code (Settings → Accounts → TMDB or Trakt), the service also answers on your local network, on a port of its own, at a link with 128 random bits in it that only the TV shows. It takes TMDB's key and Trakt's Client ID and Secret, nothing else, and closes once they're saved, when you close the QR code, or after 10 minutes.
+- **The keys page:** while the TV shows its QR code (Settings → Accounts → TMDB or Trakt), the service also answers on your local network, on a port of its own, at a link with 128 random bits in it that only the TV shows. It takes TMDB's key and Trakt's Client ID (and an optional older app's Client Secret), nothing else, and closes once they're saved, when you close the QR code, or after 10 minutes.
 - **The Control Center over other apps:** its glass is made from frames of the video, which only exist while it's open. They're kept in memory (`/tmp/homeplus-cc`), readable only by root, and deleted when it closes. Nothing is saved or sent anywhere. LG's compositor runs it from Home+'s app folder.
 
 ## Building from source
