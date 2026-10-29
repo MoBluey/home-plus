@@ -11,6 +11,7 @@
 #define CONTINUE_RESUME_Y 665
 #define CONTINUE_PROGRESS_Y 710
 #define CONTINUE_DOTS_Y 748
+#define BACKDROP_IMAGE_OPACITY 0.9f
 
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
@@ -574,18 +575,19 @@ static void draw_pic(Pic p, Uint8 alpha)
 {
     if (!alpha) return;
     App *a = p.kind == PIC_ART || p.kind == PIC_GLOW || p.kind == PIC_COVER ? &S.apps[p.i] : NULL;
-    if (p.kind == PIC_ART) r_cover(a->art_tex, 0, 0, W, H, alpha, 0);
-    else if (a && a->cover_tex) r_cover(a->cover_tex, 0, 0, W, H, alpha, 0);
+    Uint8 image_alpha = (Uint8)(alpha * BACKDROP_IMAGE_OPACITY);
+    if (p.kind == PIC_ART) r_cover(a->art_tex, 0, 0, W, H, image_alpha, 0);
+    else if (a && a->cover_tex) r_cover(a->cover_tex, 0, 0, W, H, image_alpha, 0);
     else if (a) {
         Uint8 r, g, b;
         app_color(a, &r, &g, &b);
         r_shape(0, 0, W, H, 0, r, g, b, (Uint8)(alpha * 0.25f), 0, 1, 1);
-    } else if (p.kind == PIC_RAIL && p.i < S.nrail) r_cover(S.rail[p.i].bg_tex, 0, 0, W, H, alpha, 0);
-    else if (p.kind == PIC_HELD) r_cover(S.pic_held[p.i], 0, 0, W, H, alpha, 0);
+    } else if (p.kind == PIC_RAIL && p.i < S.nrail) r_cover(S.rail[p.i].bg_tex, 0, 0, W, H, image_alpha, 0);
+    else if (p.kind == PIC_HELD) r_cover(S.pic_held[p.i], 0, 0, W, H, image_alpha, 0);
 }
 
-/* covers what's under it (a plain colour glow doesn't) */
-static int pic_opaque(Pic p)
+/* A picture, rather than an app's plain colour glow. */
+static int pic_has_image(Pic p)
 {
     return p.kind == PIC_ART || p.kind == PIC_RAIL || p.kind == PIC_HELD || ((p.kind == PIC_GLOW || p.kind == PIC_COVER) && S.apps[p.i].cover_tex);
 }
@@ -599,8 +601,6 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
 {
     if (!cur || !alpha) return;
     ensure_rail_texts(cur);
-    if (S.rail_source == SRC_STREMIO) /* a bright backdrop must not wash out the synopsis */
-        r_shape(LEFT - 24, FEATURED_TITLE_Y - 20, 1150, 570, 28, 0, 0, 0, (Uint8)(155 * alpha / 255), 0, 1, 1);
     /* the heading mirrors the clock: same height and top, on the dock's left edge as the
      * clock is on its right; the title sits low on the left, just above the chevron, like
      * the Apple TV app, so the picture's top stays clear */
@@ -670,14 +670,19 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     }
 }
 
-/* The new picture fades in over the one on show, which stays at full strength underneath
- * (two half-faded pictures let the dark background show through), and the scrims are
- * drawn once over both. */
+/* Pictures sit at 90% opacity on black. During a crossfade, their combined opacity
+ * stays at 90% too, so the old picture disappears without a dark dip or a ghost. */
 void draw_shelf_art(Uint8 alpha, int backdrop)
 {
     if (!alpha) return;
     float t = S.pic_a;
-    if (t < 1) draw_pic(S.pic_under, pic_opaque(S.pic_top) ? alpha : (Uint8)(alpha * (1 - t)));
+    r_fill(0, 0, 0, alpha);
+    if (t < 1) {
+        float under = 1 - t;
+        if (pic_has_image(S.pic_under) && pic_has_image(S.pic_top))
+            under /= 1 - BACKDROP_IMAGE_OPACITY * t;
+        draw_pic(S.pic_under, (Uint8)(alpha * under));
+    }
     draw_pic(S.pic_top, (Uint8)(alpha * t));
     draw_scrims(alpha);
     if (t < 1 && S.pic_under.kind == PIC_GLOW) draw_app_bigtile(&S.apps[S.pic_under.i], (Uint8)(alpha * (1 - smooth01(0, 0.5f, t))), backdrop);
