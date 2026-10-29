@@ -185,10 +185,10 @@ typedef struct {
     char id[64], type[16], name[200], bg[40], logo[40], genre[64], overview[512];
     float progress, rating;
     int season, episode, remaining, year;
-    Tex *bg_tex, *logo_tex, *title_tex, *meta_tex, *overview_tex[3];
+    Tex *bg_tex, *logo_tex, *title_tex, *meta_tex, *overview_tex[4];
     int texts_made; /* title and detail textures are made (either can be NULL: a name with nothing to draw) */
     int bg_state, logo_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
-    int tw, th, mw, mh, ow[3], oh[3], lw, lh;
+    int tw, th, mw, mh, ow[4], oh[4], lw, lh;
 } RailItem;
 
 /* A picture the Top Shelf can show: app i's artwork, its glow (its icon blurred, with its
