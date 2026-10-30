@@ -13,6 +13,7 @@
 #define CONTINUE_DOTS_Y 748
 #define BACKDROP_IMAGE_OPACITY 0.8f
 #define RAIL_TEXT_MAX_W (W / 2 - LEFT - 5) /* keep the text and its shadow in the left half */
+#define SHELF_DETAIL_ALPHA 230 /* readable over bright artwork without a text panel */
 
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
@@ -568,7 +569,7 @@ static void draw_app_bigtile(App *a, Uint8 alpha, int backdrop)
 static void draw_shelf_text(Tex *t, int w, int h, float x, float y, Uint8 alpha)
 {
     if (!t || !alpha) return;
-    r_image(t, x + 1, y + 2, (float)w, (float)h, 0, 0, 0, (Uint8)(alpha * 0.45f), 0);
+    r_image(t, x + 1, y + 2, (float)w, (float)h, 0, 0, 0, (Uint8)(alpha * 0.75f), 0);
     draw_text(t, w, h, x, y, alpha);
 }
 
@@ -595,7 +596,7 @@ static void draw_app_text(App *a, Uint8 alpha, float dy)
     }
     if (S.moving) return; /* moving it: the capsule at the top says what the keys do */
     draw_shelf_text(sub, sw, sh, LEFT, 340 + a->bh + 10 + dy,
-                    (Uint8)(TEXT_SECONDARY * alpha / 255 * (1 - fminf(fmaxf(S.cc.t, 0), 1)))); /* the Control Center says what OK does */
+                    (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255 * (1 - fminf(fmaxf(S.cc.t, 0), 1)))); /* the Control Center says what OK does */
 }
 
 static void draw_pic(Pic p, Uint8 alpha)
@@ -658,7 +659,7 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         y += cur->th + 8;
     }
     if (details) y = FEATURED_META_Y;
-    draw_shelf_text(cur->meta_tex, cur->mw, cur->mh, LEFT, y, (Uint8)(TEXT_STATIC * ta / 255));
+    draw_shelf_text(cur->meta_tex, cur->mw, cur->mh, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
     y += cur->mh + 14;
     if (cur->progress > 0 && !details) {
         const float bw = 240, bh = 5;
@@ -672,17 +673,17 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     if (overview) {
         float line_y = y;
         for (int l = 0; l < OVERVIEW_LINES; l++) if (cur->overview_tex[l]) {
-            draw_shelf_text(cur->overview_tex[l], cur->ow[l], cur->oh[l], LEFT, line_y, (Uint8)(TEXT_SECONDARY * ta / 255));
+            draw_shelf_text(cur->overview_tex[l], cur->ow[l], cur->oh[l], LEFT, line_y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
             line_y += cur->oh[l] + 3;
         }
         resume_y = fmaxf(resume_y, line_y + 5);
     } else if (S.rail_source != SRC_STREMIO) {
         if (S.zone == ZONE_RAIL && S.rail_browse)
-            draw_shelf_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255));
-        else draw_shelf_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(TEXT_SECONDARY * alpha / 255 * cc)); /* it can't resume from here */
+            draw_shelf_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255));
+        else draw_shelf_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255 * cc)); /* it can't resume from here */
     }
     if (S.rail_source == SRC_STREMIO && cur->resume_tex)
-        draw_shelf_text(cur->resume_tex, cur->rw, cur->rh, LEFT, resume_y, (Uint8)(TEXT_SECONDARY * ta / 255));
+        draw_shelf_text(cur->resume_tex, cur->rw, cur->rh, LEFT, resume_y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
     if (S.rail_source == SRC_STREMIO && cur->progress > 0) {
         const float bw = 240, bh = 5;
         r_shape(LEFT, CONTINUE_PROGRESS_Y, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ta * 0.28f), 0, 1, 1);
