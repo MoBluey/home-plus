@@ -668,6 +668,7 @@ void parse_layout(const char *json);
 int parse_apps(const char *json);
 void request_icons(void);
 void launch_app(const char *id, const char *params, const char *hint);
+void launch_recommendation(const char *id, const char *recommendation_id, const char *hint);
 void launch(const char *id, const char *hint);
 void close_apps(const char *id);
 App *app_by_id(const char *id);

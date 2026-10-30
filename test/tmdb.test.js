@@ -55,6 +55,16 @@ test.before(async () => {
         overview: 'A series  about people\nwho discover an unexpected world.' }] : [];
       return { json: { movie_results: movie, tv_results: tv } };
     }
+    if (url.pathname === '/3/search/multi') {
+      const query = url.searchParams.get('query');
+      if (query === 'Just Add Magic') return { json: { results: [{ id: 123, media_type: 'tv', name: query,
+        genre_ids: [18], first_air_date: '2015-01-01', vote_average: 7.86,
+        overview: 'Three friends  find a cookbook.', backdrop_path: '/magic.jpg' }] } };
+      if (query === 'Same Title') return { json: { results: [
+        { id: 1, media_type: 'movie', title: query }, { id: 2, media_type: 'tv', name: query }
+      ] } };
+      return { json: { results: [] } };
+    }
     return null;
   });
   process.env.HOMEPLUS_TMDB = `${tmdbServer.base}/3`;
@@ -76,6 +86,18 @@ test('tmdb: without a key nothing is fetched', async () => {
   assert.deepEqual(await tmdb.featured({ id: 'netflix', title: 'Netflix' }, false), { kind: '', provider: '', items: [] });
   assert.equal(tmdbServer.hits.length, before);
   assert.equal(tmdb.status().configured, false);
+});
+
+test('tmdb: a unique provider title gets details; an ambiguous title stays plain', async () => {
+  const { tmdb } = makeTmdb();
+  const info = await tmdb.detailsByTitle('Just Add Magic - Season 1');
+  assert.deepEqual(info, { type: 'series', genre: 'Drama', year: 2015, rating: 7.9,
+    overview: 'Three friends find a cookbook.', background: `${tmdbServer.base}/img/w1280/magic.jpg`,
+    logo: `${tmdbServer.base}/img/w500/en.png` });
+  assert.equal(await tmdb.detailsByTitle('Same Title'), null);
+  const hits = tmdbServer.hits.filter((h) => h.path.startsWith('/3/search/multi')).length;
+  await tmdb.detailsByTitle('Just Add Magic - Season 1');
+  assert.equal(tmdbServer.hits.filter((h) => h.path.startsWith('/3/search/multi')).length, hits, 'details are cached');
 });
 
 test('tmdb: "Netflix" is Netflix, not "Netflix basic with Ads"', async () => {

@@ -33,6 +33,8 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
   const building = new Map(); // provider id -> Promise, so one list is fetched once at a time
   const details = new Map(); // IMDb id and type -> { at, value }
   const detailsBuilding = new Map();
+  const titleDetails = new Map(); // provider recommendation title -> { at, value }
+  const titleBuilding = new Map();
   let genreLists = { until: 0, tv: new Map(), movie: new Map() };
   let genreBuilding = null;
 
@@ -235,6 +237,45 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     return detailsBuilding.get(cacheId);
   }
 
+  // Apps publish their own recommendations with title links, but no synopsis or
+  // rating. Match a unique TMDB title; an ambiguous match is better left plain.
+  async function detailsByTitle(input) {
+    const title = String(input || '').trim().replace(/\s+-\s+Season\s+\d+$/i, '');
+    const cacheId = norm(title);
+    if (!key() || cacheId.length < 2) return null;
+    const c = titleDetails.get(cacheId);
+    if (c && Date.now() - c.at < LIST_MS) return c.value;
+    if (!titleBuilding.has(cacheId)) {
+      titleBuilding.set(cacheId, (async () => {
+        const r = await get('/search/multi', { query: title, include_adult: 'false', language: 'en-US', page: 1 });
+        if (r.status !== 200 || !r.json) throw new Error(`TMDB search failed (${r.status})`);
+        const matches = (r.json.results || []).filter((m) => (m.media_type === 'tv' || m.media_type === 'movie') &&
+          norm(m.name || m.title) === cacheId);
+        if (matches.length !== 1) return null;
+        const m = matches[0], kind = m.media_type, names = await genres();
+        return {
+          type: kind === 'tv' ? 'series' : 'movie',
+          genre: (Array.isArray(m.genre_ids) ? m.genre_ids : []).map((g) => names[kind].get(g)).filter(Boolean)[0] || '',
+          year: parseInt(String(m.first_air_date || m.release_date || '').slice(0, 4), 10) || 0,
+          rating: Number(m.vote_average) > 0 && Number(m.vote_average) <= 10 ? Math.round(Number(m.vote_average) * 10) / 10 : 0,
+          overview: String(m.overview || '').replace(/\s+/g, ' ').trim(),
+          background: m.backdrop_path ? `${IMG}/w1280${m.backdrop_path}` : '',
+          logo: (await logoFor(kind, m.id)) || ''
+        };
+      })().then((value) => {
+        titleDetails.set(cacheId, { at: Date.now(), value });
+        titleBuilding.delete(cacheId);
+        return value;
+      }, (e) => {
+        log('tmdb: title details', e.message);
+        titleDetails.set(cacheId, { at: Date.now() - LIST_MS + GENRE_RETRY_MS, value: c ? c.value : null });
+        titleBuilding.delete(cacheId);
+        return c ? c.value : null;
+      }));
+    }
+    return titleBuilding.get(cacheId);
+  }
+
   function status() {
     return { configured: !!key(), region: readConfig().tmdbRegion || providers.region };
   }
@@ -249,6 +290,7 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     writeConfig(cfg);
     lists.clear();
     details.clear();
+    titleDetails.clear();
     providers = { at: 0, region: '', list: [] };
     return status();
   }
@@ -268,9 +310,10 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     writeConfig(cfg);
     lists.clear();
     details.clear();
+    titleDetails.clear();
     providers = { at: 0, region: '', list: [] };
     return status();
   }
 
-  return { featured, detailsByImdb, status, setKey, setRegion };
+  return { featured, detailsByImdb, detailsByTitle, status, setKey, setRegion };
 };
