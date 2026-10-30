@@ -95,6 +95,9 @@ shot plex "R" 4500
 # signing out asks first, and the question opens on Cancel: a stray OK keeps the sign-in (Up twice: Jellyfin's
 # Continue Watching, then the clock)
 shot signout-ask "UUODDDDRODDDDDOO" 6400
+# Stremio's Continue Watching enriched by TMDB, through the real service and launcher together.
+service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_MEDIA=1 HOMEPLUS_PREVIEW_TMDB=1
+shot stremio-details "RRUR" 5500
 # streaming apps: what's popular on them (a mock TMDB), turning, and stepping through with Up
 service HOMEPLUS_PREVIEW=1 HOMEPLUS_PREVIEW_TMDB=1
 shot popular "" 5200
