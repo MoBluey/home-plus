@@ -60,8 +60,14 @@ test.before(async () => {
       if (query === 'Just Add Magic') return { json: { results: [{ id: 123, media_type: 'tv', name: query,
         genre_ids: [18], first_air_date: '2015-01-01', vote_average: 7.86,
         overview: 'Three friends  find a cookbook.', backdrop_path: '/magic.jpg' }] } };
+      if (query === 'Crystal Lake') return { json: { results: [
+        { id: 213562, media_type: 'tv', name: query, popularity: 141, genre_ids: [18],
+          first_air_date: '2026-01-01', vote_average: 7.23, overview: 'A series  story.', backdrop_path: '/lake.jpg' },
+        { id: 1267470, media_type: 'movie', title: query, popularity: 1.7 }
+      ] } };
       if (query === 'Same Title') return { json: { results: [
-        { id: 1, media_type: 'movie', title: query }, { id: 2, media_type: 'tv', name: query }
+        { id: 1, media_type: 'movie', title: query, popularity: 25 },
+        { id: 2, media_type: 'tv', name: query, popularity: 20 }
       ] } };
       return { json: { results: [] } };
     }
@@ -88,11 +94,14 @@ test('tmdb: without a key nothing is fetched', async () => {
   assert.equal(tmdb.status().configured, false);
 });
 
-test('tmdb: a unique provider title gets details; an ambiguous title stays plain', async () => {
+test('tmdb: an exact or clearly dominant provider title gets details; close namesakes stay plain', async () => {
   const { tmdb } = makeTmdb();
   const info = await tmdb.detailsByTitle('Just Add Magic - Season 1');
   assert.deepEqual(info, { type: 'series', genre: 'Drama', year: 2015, rating: 7.9,
     overview: 'Three friends find a cookbook.', background: `${tmdbServer.base}/img/w1280/magic.jpg`,
+    logo: `${tmdbServer.base}/img/w500/en.png` });
+  assert.deepEqual(await tmdb.detailsByTitle('Crystal Lake'), { type: 'series', genre: 'Drama', year: 2026, rating: 7.2,
+    overview: 'A series story.', background: `${tmdbServer.base}/img/w1280/lake.jpg`,
     logo: `${tmdbServer.base}/img/w500/en.png` });
   assert.equal(await tmdb.detailsByTitle('Same Title'), null);
   const hits = tmdbServer.hits.filter((h) => h.path.startsWith('/3/search/multi')).length;

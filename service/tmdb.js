@@ -238,7 +238,7 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
   }
 
   // Apps publish their own recommendations with title links, but no synopsis or
-  // rating. Match a unique TMDB title; an ambiguous match is better left plain.
+  // rating. Accept a unique TMDB title, or one far more popular than its namesakes.
   async function detailsByTitle(input) {
     const title = String(input || '').trim().replace(/\s+-\s+Season\s+\d+$/i, '');
     const cacheId = norm(title);
@@ -250,8 +250,10 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
         const r = await get('/search/multi', { query: title, include_adult: 'false', language: 'en-US', page: 1 });
         if (r.status !== 200 || !r.json) throw new Error(`TMDB search failed (${r.status})`);
         const matches = (r.json.results || []).filter((m) => (m.media_type === 'tv' || m.media_type === 'movie') &&
-          norm(m.name || m.title) === cacheId);
-        if (matches.length !== 1) return null;
+          norm(m.name || m.title) === cacheId).sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
+        if (!matches.length) return null;
+        if (matches.length > 1 && ((Number(matches[0].popularity) || 0) < 20 ||
+          (Number(matches[0].popularity) || 0) < 10 * (Number(matches[1].popularity) || 0))) return null;
         const m = matches[0], kind = m.media_type, names = await genres();
         return {
           type: kind === 'tv' ? 'series' : 'movie',
