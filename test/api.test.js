@@ -84,6 +84,24 @@ test('api: Continue Watching from Stremio, with every account\'s state for Setti
   assert.equal(typeof r.json.plex.connected, 'boolean');
 });
 
+test('api: Top Shelf detail preference keeps the original Stremio list when off', async () => {
+  try {
+    const off = await call('POST', '/api/prefs', { body: { topShelfDetails: 'off' } });
+    assert.equal(off.json.topShelfDetails, 'off');
+    const plain = (await call('GET', '/api/continue')).json.items.filter((it) => it.source === 'stremio');
+    assert.ok(plain.length > 0);
+    assert.ok(plain.every((it) => !it.genre && !it.rating && !it.overview));
+
+    const compact = await call('POST', '/api/prefs', { body: { topShelfDetails: 'compact' } });
+    assert.equal(compact.json.topShelfDetails, 'compact');
+    const enriched = (await call('GET', '/api/continue')).json.items.filter((it) => it.source === 'stremio');
+    assert.ok(enriched.every((it) => it.genre && it.rating && it.overview));
+  } finally {
+    await call('POST', '/api/prefs', { body: { topShelfDetails: 'full' } });
+  }
+  assert.equal((await call('GET', '/api/prefs')).json.topShelfDetails, 'full');
+});
+
 test('api: what\'s popular on a streaming app, and what\'s trending for an app with no picture', async () => {
   const netflix = await call('GET', '/api/featured?app=netflix');
   assert.equal(netflix.json.kind, 'popular');

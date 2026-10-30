@@ -87,12 +87,13 @@ static const char *overview_line(const char *from, char *line, size_t cap, int l
 static void ensure_rail_texts(RailItem *it)
 {
     if (it->texts_made) return; /* (not title_tex: a name that renders to nothing made them every frame) */
+    int enriched = S.shelf_details != SHELF_DETAILS_OFF;
     /* Streaming titles lead with type, genre, year and rating; a paused title
      * keeps its episode and time left on a separate line below the synopsis. */
     char meta[200] = "";
-    if (S.rail_source == SRC_STREMIO && !strcmp(it->type, "series"))
+    if (enriched && S.rail_source == SRC_STREMIO && !strcmp(it->type, "series"))
         snprintf(meta, sizeof meta, "Series");
-    else if (S.rail_source == SRC_STREMIO && !strcmp(it->type, "movie"))
+    else if (enriched && S.rail_source == SRC_STREMIO && !strcmp(it->type, "movie"))
         snprintf(meta, sizeof meta, "Movie");
     else if (!strcmp(it->type, "series") && it->season)
         snprintf(meta, sizeof meta, "Season %d  \xC2\xB7  Episode %d", it->season, it->episode);
@@ -102,7 +103,7 @@ static void ensure_rail_texts(RailItem *it)
         snprintf(meta, sizeof meta, "Movie");
     else if (!strcmp(it->type, "series"))
         snprintf(meta, sizeof meta, "Series");
-    if (it->genre[0]) {
+    if (enriched && it->genre[0]) {
         if (meta[0]) append(meta, sizeof meta, "  \xC2\xB7  ");
         append(meta, sizeof meta, it->genre);
     }
@@ -111,20 +112,20 @@ static void ensure_rail_texts(RailItem *it)
         snprintf(yr, sizeof yr, "%s%d", meta[0] ? "  \xC2\xB7  " : "", it->year);
         append(meta, sizeof meta, yr);
     }
-    if (it->rating > 0) {
+    if (enriched && it->rating > 0) {
         char rated[48];
         snprintf(rated, sizeof rated, "%sTMDB %.1f/10", meta[0] ? "  \xC2\xB7  " : "", it->rating);
         append(meta, sizeof meta, rated);
     }
     char resume[96] = "";
-    if (S.rail_source == SRC_STREMIO && it->episode) {
+    if (enriched && S.rail_source == SRC_STREMIO && it->episode) {
         if (it->season)
             snprintf(resume, sizeof resume, "Season %d  \xC2\xB7  Episode %d", it->season, it->episode);
         else snprintf(resume, sizeof resume, "Episode %d", it->episode);
     }
     if (it->remaining) {
         char left[48];
-        if (S.rail_source == SRC_STREMIO) {
+        if (enriched && S.rail_source == SRC_STREMIO) {
             snprintf(left, sizeof left, "%s%d min left", resume[0] ? "  \xC2\xB7  " : "", it->remaining);
             append(resume, sizeof resume, left);
         } else {
@@ -139,7 +140,7 @@ static void ensure_rail_texts(RailItem *it)
     it->title_tex = text_render(S.f_bold, 66, it->name, RAIL_TEXT_MAX_W, &it->tw, &it->th);
     it->meta_tex = text_render(S.f_medium, 27, meta, RAIL_TEXT_MAX_W, &it->mw, &it->mh);
     if (resume[0]) it->resume_tex = text_render(S.f_medium, HINT_PX, resume, RAIL_TEXT_MAX_W, &it->rw, &it->rh);
-    if (it->overview[0]) {
+    if (S.shelf_details == SHELF_DETAILS_FULL && it->overview[0]) {
         char line[96];
         const char *next = it->overview;
         for (int l = 0; l < OVERVIEW_LINES && *next; l++) {
@@ -213,6 +214,19 @@ void rail_clear(void)
     net_drop(TAG_RAIL_BG, -1, S.rail_generation);
     net_drop(TAG_RAIL_LOGO, -1, S.rail_generation);
     S.rail_generation++; /* pictures on the way are for titles gone */
+}
+
+/* A setting change redraws only the text. Pictures and the current carousel stay in place. */
+void shelf_set_details(int mode)
+{
+    if (mode == S.shelf_details) return;
+    S.shelf_details = mode;
+    for (int i = 0; i < S.nrail; i++) {
+        RailItem *it = &S.rail[i];
+        tex_free(&it->title_tex); tex_free(&it->meta_tex); tex_free(&it->resume_tex);
+        for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
+        it->texts_made = 0;
+    }
 }
 
 /* Puts titles (a JSON array) in the Top Shelf carousel: source src's, and for
@@ -638,15 +652,16 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     float k = logo ? fminf(fminf(560.0f / cur->lw, 190.0f / cur->lh), 1.6f) : 0;
     float title_h = logo ? cur->lh * k + 18 : cur->th + 8;
     int featured = S.rail_source == SRC_FEATURED;
-    int details = featured || S.rail_source == SRC_STREMIO;
-    int overview = details && cur->overview_tex[0];
-    float detail_h = S.rail_hint_h;
+    int enriched = S.shelf_details != SHELF_DETAILS_OFF && (featured || S.rail_source == SRC_STREMIO);
+    int full = enriched && S.shelf_details == SHELF_DETAILS_FULL;
+    int overview = full && cur->overview_tex[0];
+    float detail_h = !enriched ? S.rail_hint_h : S.rail_source == SRC_STREMIO && cur->resume_tex ? cur->rh + 14 : 0;
     float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + detail_h + (n > 1 ? 32 : 0);
     Uint8 ta = (Uint8)(alpha * title);
-    float y = details ? FEATURED_TITLE_Y : DOCK_Y - 64 - total;
+    float y = full ? FEATURED_TITLE_Y : DOCK_Y - 64 - total;
     if (skel > 0.004f) { /* placeholders follow the fixed featured anchors */
-        float title_skel_y = details ? FEATURED_TITLE_Y : y + title_h - 82;
-        float meta_skel_y = details ? FEATURED_META_Y : y + title_h;
+        float title_skel_y = full ? FEATURED_TITLE_Y : y + title_h - 82;
+        float meta_skel_y = full ? FEATURED_META_Y : y + title_h;
         draw_skeleton(LEFT, title_skel_y, 400, 64, 14, alpha / 255.0f * skel);
         draw_skeleton(LEFT, meta_skel_y + (cur->mh - 20) / 2, 250, 20, 10, alpha / 255.0f * skel);
     }
@@ -658,17 +673,21 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         draw_shelf_text(cur->title_tex, cur->tw, cur->th, LEFT - 3, y, ta);
         y += cur->th + 8;
     }
-    if (details) y = FEATURED_META_Y;
+    if (full) y = FEATURED_META_Y;
     draw_shelf_text(cur->meta_tex, cur->mw, cur->mh, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
     y += cur->mh + 14;
-    if (cur->progress > 0 && !details) {
+    if (enriched && !full && S.rail_source == SRC_STREMIO && cur->resume_tex) {
+        draw_shelf_text(cur->resume_tex, cur->rw, cur->rh, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
+        y += cur->rh + 14;
+    }
+    if (cur->progress > 0 && !full) {
         const float bw = 240, bh = 5;
         r_shape(LEFT, y, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ta * 0.28f), 0, 1, 1);
         r_shape(LEFT, y, bw * cur->progress, bh, bh / 2, 255, 255, 255, ta, 0, 1, 1);
         y += bh + 16;
     }
     float cc = 1 - fminf(fmaxf(S.cc.t, 0), 1); /* the Control Center, open, says what OK does */
-    if (details) y = FEATURED_OVERVIEW_Y;
+    if (full) y = FEATURED_OVERVIEW_Y;
     float resume_y = CONTINUE_RESUME_Y;
     if (overview) {
         float line_y = y;
@@ -677,19 +696,20 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
             line_y += cur->oh[l] + 3;
         }
         resume_y = fmaxf(resume_y, line_y + 5);
-    } else if (S.rail_source != SRC_STREMIO) {
+    } else if (!enriched || (full && S.rail_source != SRC_STREMIO)) {
         if (S.zone == ZONE_RAIL && S.rail_browse)
             draw_shelf_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255));
         else draw_shelf_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255 * cc)); /* it can't resume from here */
     }
-    if (S.rail_source == SRC_STREMIO && cur->resume_tex)
+    if (full && S.rail_source == SRC_STREMIO && cur->resume_tex)
         draw_shelf_text(cur->resume_tex, cur->rw, cur->rh, LEFT, resume_y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
-    if (S.rail_source == SRC_STREMIO && cur->progress > 0) {
+    if (full && S.rail_source == SRC_STREMIO && cur->progress > 0) {
         const float bw = 240, bh = 5;
         r_shape(LEFT, CONTINUE_PROGRESS_Y, bw, bh, bh / 2, 255, 255, 255, (Uint8)(ta * 0.28f), 0, 1, 1);
         r_shape(LEFT, CONTINUE_PROGRESS_Y, bw * cur->progress, bh, bh / 2, 255, 255, 255, ta, 0, 1, 1);
     }
-    y = S.rail_source == SRC_STREMIO ? CONTINUE_DOTS_Y : details ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + detail_h + 22;
+    y = full && S.rail_source == SRC_STREMIO ? CONTINUE_DOTS_Y :
+        full ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + (enriched ? 0 : detail_h) + 22;
     int browsing = S.zone == ZONE_RAIL;
     for (int i = 0; n > 1 && i < n; i++) {
         int on = i == (S.rail_index < n ? S.rail_index : n - 1);
