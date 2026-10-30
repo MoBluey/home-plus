@@ -147,6 +147,7 @@ enum { ZONE_GRID, ZONE_RAIL, ZONE_TOP };
 /* how app tiles look (Settings -> App Tiles): their own colours; dark tiles;
  * glass with white logos; glass in a colour */
 enum { LOOK_DEFAULT, LOOK_DARK, LOOK_CLEAR, LOOK_TINTED };
+enum { SHELF_DETAILS_OFF, SHELF_DETAILS_COMPACT, SHELF_DETAILS_FULL };
 /* Tinted's colours: Apple's system colours, as on a dark screen */
 static const struct {
     const char *name;
@@ -200,7 +201,7 @@ typedef struct { int kind, i; } Pic;
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_DELETE_ASK, ACT_DELETE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
                ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_KEYS, ACT_SHELF,
-               ACT_HOME_MODE, ACT_SOUNDS,
+               ACT_HOME_MODE, ACT_SOUNDS, ACT_SHELF_DETAILS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_WELCOME_NEXT, ACT_WELCOME_SKIP, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY, ACT_CC_BLUR_VIDEO,
                ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN, ACT_SETTINGS_KEY, ACT_INPUT_KEY,
@@ -365,6 +366,7 @@ typedef struct {
     int reduce_motion, reduce_transparency; /* Settings -> Accessibility (tvOS's names) */
     int clock24, orbit_off, vivid_covers;    /* Settings: 24-hour clock, no pixel shift, brand-colour covers */
     int shelf_still;                         /* Settings: the Top Shelf doesn't turn pages by itself */
+    int shelf_details;                       /* Settings: original hint, metadata, or metadata and synopsis */
     int icon_look;                           /* Settings: how app tiles look (LOOK_*) */
     int icon_tint;                           /* ...and the colour Tinted gives them (TINTS) */
     int click_x;                             /* where the pointer last clicked (-1: the keys' OK) */
@@ -652,6 +654,7 @@ int rail_active(void);
 int rail_ready(int i);
 int carousel_coming(const App *a);
 void shelf_load(void);
+void shelf_set_details(int mode);
 int shelf_jump(void);
 int shelf_complete(void);
 void update_page(float dt, int *anim);

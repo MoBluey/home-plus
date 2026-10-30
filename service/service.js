@@ -1486,7 +1486,7 @@ async function apiContinue() {
   }
   const selected = sortStable([...byId.values()], (a, b) => String(b.lastWatched).localeCompare(String(a.lastWatched))).slice(0, 16);
   const items = await Promise.all(selected.map(async (it) => {
-    const details = await tmdb.detailsByImdb(it.id, it.type);
+    const details = cfg.prefs && cfg.prefs.topShelfDetails === 'off' ? null : await tmdb.detailsByImdb(it.id, it.type);
     return Object.assign({}, it, details || {}, {
       background: proxied(it.background), thumbnail: proxied(it.thumbnail), logo: proxied(it.logo), poster: proxied(it.poster)
     });
