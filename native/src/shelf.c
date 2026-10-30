@@ -12,6 +12,7 @@
 #define CONTINUE_PROGRESS_Y 710
 #define CONTINUE_DOTS_Y 748
 #define BACKDROP_IMAGE_OPACITY 0.8f
+#define RAIL_TEXT_MAX_W (W / 2 - LEFT - 5) /* keep the text and its shadow in the left half */
 
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
@@ -44,20 +45,38 @@ int pic_rail(int i)
     return (S.pic_under.kind == PIC_RAIL && S.pic_under.i == i) || (S.pic_top.kind == PIC_RAIL && S.pic_top.i == i);
 }
 
-/* Keep a synopsis to five lines; the final line shows an ellipsis if there is more. */
+/* Wrap the synopsis at the left half of the screen; the fifth line shows an ellipsis if needed. */
 static const char *overview_line(const char *from, char *line, size_t cap, int last)
 {
     while (*from == ' ') from++;
-    size_t n = strlen(from);
-    if (n > 80) {
-        n = 80;
-        while (n > 50 && from[n] != ' ') n--;
-        while (n > 0 && ((unsigned char)from[n] & 0xc0) == 0x80) n--;
+    const char *best = NULL, *word = from;
+    while (*word) {
+        const char *end = strchr(word, ' ');
+        if (!end) end = word + strlen(word);
+        size_t n = (size_t)(end - from);
+        if (n > cap - 4) break; /* leave room for an ellipsis */
+        memcpy(line, from, n);
+        line[n] = 0;
+        const char *next = end;
+        while (*next == ' ') next++;
+        if (last && *next) append(line, cap, "\xE2\x80\xA6");
+        if (text_width(S.f_medium, HINT_PX, line) > RAIL_TEXT_MAX_W) break;
+        best = end;
+        if (!*next) break;
+        word = next;
     }
-    if (n >= cap) n = cap - 1;
+    if (!best) { /* a single word may need text_render's own ellipsis */
+        best = strchr(from, ' ');
+        if (!best) best = from + strlen(from);
+    }
+    size_t n = (size_t)(best - from);
+    if (n > cap - 4) {
+        n = cap - 4;
+        while (n && ((unsigned char)from[n] & 0xc0) == 0x80) n--;
+    }
     memcpy(line, from, n);
     line[n] = 0;
-    const char *next = from + n;
+    const char *next = best;
     while (*next == ' ') next++;
     if (last && *next) append(line, cap, "\xE2\x80\xA6");
     return next;
@@ -116,15 +135,15 @@ static void ensure_rail_texts(RailItem *it)
     tex_free(&it->meta_tex);
     tex_free(&it->resume_tex);
     for (int l = 0; l < OVERVIEW_LINES; l++) tex_free(&it->overview_tex[l]);
-    it->title_tex = text_render(S.f_bold, 66, it->name, 1100, &it->tw, &it->th);
-    it->meta_tex = text_render(S.f_medium, 27, meta, 1100, &it->mw, &it->mh);
-    if (resume[0]) it->resume_tex = text_render(S.f_medium, HINT_PX, resume, 1100, &it->rw, &it->rh);
+    it->title_tex = text_render(S.f_bold, 66, it->name, RAIL_TEXT_MAX_W, &it->tw, &it->th);
+    it->meta_tex = text_render(S.f_medium, 27, meta, RAIL_TEXT_MAX_W, &it->mw, &it->mh);
+    if (resume[0]) it->resume_tex = text_render(S.f_medium, HINT_PX, resume, RAIL_TEXT_MAX_W, &it->rw, &it->rh);
     if (it->overview[0]) {
         char line[96];
         const char *next = it->overview;
         for (int l = 0; l < OVERVIEW_LINES && *next; l++) {
             next = overview_line(next, line, sizeof line, l == OVERVIEW_LINES - 1);
-            it->overview_tex[l] = text_render(S.f_medium, HINT_PX, line, 1100, &it->ow[l], &it->oh[l]);
+            it->overview_tex[l] = text_render(S.f_medium, HINT_PX, line, RAIL_TEXT_MAX_W, &it->ow[l], &it->oh[l]);
         }
     }
     it->texts_made = 1;
