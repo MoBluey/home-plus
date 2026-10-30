@@ -11,7 +11,7 @@
 #define CONTINUE_RESUME_Y 665
 #define CONTINUE_PROGRESS_Y 710
 #define CONTINUE_DOTS_Y 748
-#define BACKDROP_IMAGE_OPACITY 0.9f
+#define BACKDROP_IMAGE_OPACITY 0.8f
 
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
@@ -670,8 +670,8 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     }
 }
 
-/* Pictures sit at 90% opacity on black. During a crossfade, their combined opacity
- * stays at 90% too, so the old picture disappears without a dark dip or a ghost. */
+/* Pictures sit at 80% opacity on black. During a crossfade, their combined opacity
+ * stays at 80% too, so the old picture disappears without a dark dip or a ghost. */
 void draw_shelf_art(Uint8 alpha, int backdrop)
 {
     if (!alpha) return;
