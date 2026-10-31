@@ -1440,7 +1440,7 @@ const picCapture = ambient.find((c) => c.id === 'screenCapture'); /* Blur Over V
 async function apiFeatured(id) {
   if (!titles[id]) await listApps();
   const hasArt = !!(images[id] && images[id].art && images[id].art.length); /* else: what's trending */
-  const f = await recommendations.featured(id) || await tmdb.featured(titles[id] ? { id, title: titles[id] } : null, hasArt);
+  const f = await recommendations.featured(id, titles[id]) || await tmdb.featured(titles[id] ? { id, title: titles[id] } : null, hasArt);
   return { kind: f.kind, provider: f.provider, items: f.items.map((it) => Object.assign({}, it, { background: proxied(it.background), logo: proxied(it.logo) })) };
 }
 // Media servers: each one's Continue Watching shows in its own app's Top Shelf.

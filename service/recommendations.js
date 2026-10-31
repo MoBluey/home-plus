@@ -39,7 +39,7 @@ module.exports = function createRecommendations({ luna, tmdb, log }) {
     return `rec:${crypto.createHash('sha1').update(`${appId}\n${title}`).digest('hex')}`;
   }
 
-  async function featured(appId) {
+  async function featured(appId, appTitle) {
     const all = await rows();
     const list = cards(all, appId);
     if (!list.length || !(await canOpen(appId))) return null;
@@ -51,7 +51,7 @@ module.exports = function createRecommendations({ luna, tmdb, log }) {
       return true;
     }).slice(0, MAX_ITEMS);
     return { kind: 'recommendations', provider: '', items: await Promise.all(items.map(async (c) => {
-      const info = await tmdb.detailsByTitle(c.titleText);
+      const info = await tmdb.detailsByTitle(c.titleText, appTitle);
       const picture = (c.image_4k && c.image_4k.url) || (c.image && c.image.url) || '';
       return Object.assign({
         id: itemId(appId, c.titleText), name: c.titleText, type: '', genre: '', year: 0, rating: 0, overview: '',

@@ -6,6 +6,7 @@ const createRecommendations = require('../service/recommendations');
 
 test('provider recommendations keep title IDs private and launch the selected title', async () => {
   const calls = [];
+  const lookups = [];
   const rows = [{ launchPointId: 'stan.webos2_default', contents: [
     { type: 'content', titleText: 'Crystal Lake', image: { url: 'https://example.com/card.jpg' },
       onClick: { targetAppId: 'stan.webos2', contentId: '186547' } },
@@ -19,13 +20,15 @@ test('provider recommendations keep title IDs private and launch the selected ti
     if (uri.endsWith('/launch')) return { returnValue: true };
     throw new Error(uri);
   };
-  const recommendations = createRecommendations({ luna, tmdb: { detailsByTitle: async () => ({
-    type: 'series', genre: 'Horror', year: 2026, rating: 7.4, overview: 'The story.', background: '', logo: ''
-  }) }, log: () => {} });
-  const shelf = await recommendations.featured('stan.webos2');
+  const recommendations = createRecommendations({ luna, tmdb: { detailsByTitle: async (title, provider) => {
+    lookups.push([title, provider]);
+    return { type: 'series', genre: 'Horror', year: 2026, rating: 7.4, overview: 'The story.', background: '', logo: '' };
+  } }, log: () => {} });
+  const shelf = await recommendations.featured('stan.webos2', 'Stan');
   assert.equal(shelf.kind, 'recommendations');
   assert.equal(shelf.items.length, 1);
   assert.equal(shelf.items[0].name, 'Crystal Lake');
+  assert.deepEqual(lookups, [['Crystal Lake', 'Stan']]);
   assert.equal(shelf.items[0].genre, 'Horror');
   assert.equal(shelf.items[0].background, 'https://example.com/card.jpg');
   assert.match(shelf.items[0].id, /^rec:[0-9a-f]{40}$/);
