@@ -3,13 +3,15 @@
 'use strict';
 
 const crypto = require('crypto');
+const createProviderDetails = require('./provider-details');
 
 const APPMGR = 'luna://com.webos.applicationManager';
 const CONTENTS = 'luna://com.webos.service.applicationmanager/getAllContents';
 const MAX_ITEMS = 10;
 
-module.exports = function createRecommendations({ luna, tmdb, log }) {
+module.exports = function createRecommendations({ luna, tmdb, log, region, providerDetails }) {
   const supported = new Map();
+  const nativeDetails = providerDetails || createProviderDetails({ tmdb, log, region });
 
   async function rows() {
     const r = await luna(CONTENTS, {});
@@ -51,7 +53,7 @@ module.exports = function createRecommendations({ luna, tmdb, log }) {
       return true;
     }).slice(0, MAX_ITEMS);
     return { kind: 'recommendations', provider: '', items: await Promise.all(items.map(async (c) => {
-      const info = await tmdb.detailsByTitle(c.titleText, appTitle);
+      const info = await tmdb.detailsByTitle(c.titleText, appTitle) || await nativeDetails.details(appId, c, appTitle);
       const picture = (c.image_4k && c.image_4k.url) || (c.image && c.image.url) || '';
       return Object.assign({
         id: itemId(appId, c.titleText), name: c.titleText, type: '', genre: '', year: 0, rating: 0, overview: '',

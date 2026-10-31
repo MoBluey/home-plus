@@ -52,3 +52,23 @@ test('recommendations use only apps with a compatible title-link template', asyn
   assert.equal(await recommendations.featured('youtube.leanback.v4'), null);
   assert.equal(await recommendations.launch('youtube.leanback.v4', 'rec:0000000000000000000000000000000000000000'), null);
 });
+
+test('unmatched recommendations use provider details without changing their launch ID', async () => {
+  const card = { type: 'content', titleText: 'Spike', image: { url: 'https://example.com/spike.jpg' },
+    onClick: { targetAppId: 'netflix', contentId: 'private-provider-id' } };
+  const calls = [];
+  const luna = async (uri, params) => {
+    if (uri.endsWith('/getAllContents')) return { returnValue: true, allContents: [{ launchPointId: 'netflix_default', contents: [card] }] };
+    if (uri.endsWith('/getAppInfo')) return { appInfo: { deeplinkingParams: '{"contentTarget":"$CONTENTID"}' } };
+    if (uri.endsWith('/launch')) { calls.push(params); return { returnValue: true }; }
+    throw new Error(uri);
+  };
+  const providerDetails = { details: async () => ({ type: 'series', genre: 'Kids', year: 2024, rating: 0, overview: 'Friends learn together.' }) };
+  const recommendations = createRecommendations({ luna, tmdb: { detailsByTitle: async () => null }, providerDetails, log: () => {} });
+  const shelf = await recommendations.featured('netflix', 'Netflix');
+  assert.equal(shelf.items[0].overview, 'Friends learn together.');
+  assert.equal(shelf.items[0].background, 'https://example.com/spike.jpg');
+  assert.equal(JSON.stringify(shelf).includes('private-provider-id'), false);
+  await recommendations.launch('netflix', shelf.items[0].id);
+  assert.equal(calls[0].replaceParams.deeplinkingParams.value, 'private-provider-id');
+});
