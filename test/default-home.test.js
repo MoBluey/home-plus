@@ -12,7 +12,7 @@ const STOCK = 'com.webos.app.home';
 /* SAM's registry and default setting, with the documented category check. The trial uses
  * the package's real manifest; accepting a setting does not make a non-home app launchable. */
 function sam(options = {}) {
-  const state = { home: options.alreadyDefault ? APP : STOCK, foreground: options.alreadyInFront ? APP : 'netflix', launched: false, calls: [] };
+  const state = { home: options.noDefault ? undefined : options.alreadyDefault ? APP : STOCK, browser: 'browser', foreground: options.alreadyInFront ? APP : 'netflix', launched: false, calls: [] };
   const luna = async (uri, params) => {
     state.calls.push({ uri, params });
     const method = uri.slice(uri.lastIndexOf('/') + 1);
@@ -21,7 +21,12 @@ function sam(options = {}) {
       assert.deepEqual(params.keys, ['defaultApps']);
       if (options.unreadable || (options.unreadableAfterSet && state.home === APP) ||
           (options.unreadableAfterLaunch && state.launched)) return { returnValue: false };
-      return { returnValue: true, settings: { defaultApps: { home: state.home, browser: 'browser' } } };
+      return { returnValue: true, settings: { defaultApps: Object.assign({ browser: state.browser }, state.home === undefined ? {} : { home: state.home }) } };
+    }
+    if (method === 'setSystemSettings') {
+      state.home = params.settings.defaultApps.home;
+      state.browser = params.settings.defaultApps.browser;
+      return { returnValue: true };
     }
     if (method === 'getAppInfo') {
       if (params.id === STOCK) return { returnValue: !options.noStock, appInfo: { id: STOCK, appCategory: ['home'] } };
@@ -39,6 +44,7 @@ function sam(options = {}) {
       state.launched = true;
       if (options.launchFails) return { returnValue: false, errorText: 'Launch failed' };
       if (options.otherHome) state.home = 'another.launcher';
+      if (options.changeBrowser) state.browser = 'another.browser';
       if (!options.wrongTarget) state.foreground = APP;
       return { returnValue: true };
     }
@@ -114,5 +120,12 @@ describe('local default Home trial (not a firmware compatibility check)', () => 
     await trial(s.luna);
     assert.equal(s.state.home, APP);
     assert.equal(s.changed().length, 0);
+  });
+  test('restores an originally absent Home entry and keeps other live defaults', async () => {
+    const s = sam({ noDefault: true, changeBrowser: true });
+    await trial(s.luna);
+    assert.equal(s.state.home, undefined);
+    assert.equal(s.state.browser, 'another.browser');
+    assert.ok(s.state.calls.some((c) => c.uri.endsWith('/setSystemSettings')));
   });
 });

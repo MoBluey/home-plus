@@ -1090,9 +1090,11 @@ function onNoForeground() {
 function homeAfterQuit() {
   const left = emptied.app, now = Date.now();
   if (!left || lastForeground || now - emptied.at > 900 || !(now - (quit.get(left) || 0) < 3000)) return;
-  emptied.app = '';
   const cfg = readConfig();
   const target = homeTarget(cfg);
+  // Keep the recent Home+ exit while power-off processing reaches standby.
+  if (left === target && !tvOn) return;
+  emptied.app = '';
   if (left === target || homeApps(cfg).includes(left) || cfg.homeOverride === false || redirectTarget || !tvOn) return;
   for (const [id, at] of coming) if (id !== target && now - at < 10000) return; /* (it'll be in front) */
   takeover(target, ` (${left} quit)`).catch((e) => log('home takeover failed', e.message));
