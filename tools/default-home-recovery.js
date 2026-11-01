@@ -1,6 +1,7 @@
 /* Standalone recovery for the opt-in developer trial. Copy outside the app/service.
  * --watch survives a disconnected controller; --boot restores before a trial continues
- * after reboot. No package files, accounts, inputs or firmware paths are written here. */
+ * after reboot. Optional watchConfig disables trial Watch on rollback, preserving other
+ * config values. No package files, inputs or firmware paths are written here. */
 'use strict';
 const fs = require('fs');
 const { execFile, spawn } = require('child_process');
@@ -68,7 +69,8 @@ function load(file) {
   if (state.version !== 1 || typeof state.active !== 'boolean' || !Number.isFinite(state.deadline) ||
       typeof state.applicationDir !== 'string' || state.applicationDir[0] !== '/' || !state.before ||
       typeof state.before !== 'object' || Array.isArray(state.before) ||
-      (own(state.before, 'home') && !validId(state.before.home))) {
+      (own(state.before, 'home') && !validId(state.before.home)) ||
+      (state.watchConfig !== undefined && (typeof state.watchConfig !== 'string' || state.watchConfig[0] !== '/'))) {
     throw new Error('Invalid recovery state');
   }
   return state;
@@ -76,8 +78,20 @@ function load(file) {
 function save(file, state) {
   const tmp = file + '.' + process.pid + '.tmp';
   try { fs.unlinkSync(tmp); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600, flag: 'wx' });
+  const fd = fs.openSync(tmp, 'wx', 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(state, null, 2));
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
+}
+function restoreWatch(file) {
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('Invalid Watch config');
+  if (cfg.homeMode !== 'watch' || cfg.homeOverride !== true) return 'unchanged';
+  cfg.homeOverride = false;
+  save(file, cfg);
+  return 'disabled';
 }
 async function main(mode, file) {
   if (['--start', '--start-boot'].includes(mode) && file) {
@@ -109,6 +123,7 @@ async function main(mode, file) {
     try {
       const result = await restore(luna, state.before);
       state = load(file);
+      if (state.watchConfig) result.watch = restoreWatch(state.watchConfig);
       state.active = false;
       state.result = result;
       state.recoveredAt = Date.now();

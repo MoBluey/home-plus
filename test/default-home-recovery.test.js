@@ -133,6 +133,48 @@ describe('independent recovery process', { skip: process.platform !== 'linux' },
       assert.equal(t.read(t.stateFile).active, false);
     } finally { await t.close(); }
   });
+  test('rollback disables trial Watch without resetting account or later display changes', async () => {
+    const t = await setup();
+    try {
+      const config = path.join(t.dir, 'config.json');
+      const current = { homeMode: 'watch', homeOverride: true, account: { token: 'retained' }, brightness: 80 };
+      fs.writeFileSync(config, JSON.stringify(current));
+      t.update(t.stateFile, (s) => { s.deadline = 0; s.watchConfig = config; });
+      t.update(t.modelFile, (m) => { m.defaults.home = APP; });
+      await t.guard('--watch').exited;
+      assert.deepEqual(t.read(config), Object.assign({}, current, { homeOverride: false }));
+      assert.deepEqual(t.read(t.modelFile).defaults, t.before);
+    } finally { await t.close(); }
+  });
+  test('rollback leaves an explicitly selected different Home mode alone', async () => {
+    const t = await setup();
+    try {
+      const config = path.join(t.dir, 'config.json');
+      const current = { homeMode: 'redirect', homeOverride: true };
+      fs.writeFileSync(config, JSON.stringify(current));
+      t.update(t.stateFile, (s) => { s.deadline = 0; s.watchConfig = config; });
+      await t.guard('--watch').exited;
+      assert.deepEqual(t.read(config), current);
+    } finally { await t.close(); }
+  });
+  test('an unreadable Watch config keeps recovery pending after the default is restored', async () => {
+    const t = await setup();
+    try {
+      const config = path.join(t.dir, 'config.json');
+      fs.writeFileSync(config, '{');
+      t.update(t.stateFile, (s) => { s.deadline = 0; s.watchConfig = config; });
+      t.update(t.modelFile, (m) => { m.defaults.home = APP; });
+      const g = t.guard('--watch');
+      await until(() => t.read(t.modelFile).defaults.home !== APP);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(t.read(t.stateFile).active, true);
+      fs.writeFileSync(config, JSON.stringify({ homeMode: 'watch', homeOverride: true, account: 'kept' }));
+      await g.exited;
+      assert.deepEqual(t.read(config), { homeMode: 'watch', homeOverride: false, account: 'kept' });
+      assert.equal(t.read(t.stateFile).active, false);
+    } finally { await t.close(); }
+  });
+
   test('a removed launcher triggers recovery before the trial deadline', async () => {
     const t = await setup();
     try {

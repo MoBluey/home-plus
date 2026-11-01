@@ -8,18 +8,20 @@ This spike checks the default-Home API lifecycle and independent recovery. It is
 - An unreadable cleanup setting or refused restoration is an error, not a successful trial.
 - tools/default-home-recovery.js is the standalone guard. Its persisted snapshot and copied code live outside Home+'s app/service. Controller failure is covered by a deadline, an unavailable launcher triggers early restoration, and a separate boot hook invokes recovery after reboot. Failed settings reads retry with backoff capped at five seconds.
 - An originally absent Home entry is restored as absent, while keeping other current default categories.
+- For a trial that enables Watch from Off, state.watchConfig can name the absolute config path. Recovery disables only that trial Watch flag when the mode is still Watch, keeping account and other current values. A different mode is preserved; unreadable config keeps recovery pending. Atomic writes flush the temporary file before rename.
 - The helper and its checks are development files; neither is included in the IPK.
 
 ## Run the local checks
 
 ```sh
 node --test test/default-home.test.js
+node --test test/default-home-recovery.test.js
 node --test test/home-return.test.js
 node tools/build.mjs
 node tools/check-package.mjs
 ```
 
-The local SAM model checks the real package manifest. A desktop integration probe also started the real Home+ native launcher with the existing preview service, captured its rendered window, and restored the modelled default. That is not LG's SAM, compositor, bootd or CEC running locally.
+The recovery subprocess cases run on Linux, including the existing homeplus-preview image. The local SAM model checks the real package manifest. A desktop integration probe also started the real Home+ native launcher with the existing preview service, captured its rendered window, and restored the modelled default. That is not LG's SAM, compositor, bootd or CEC running locally.
 
 ## Required before a TV trial
 
@@ -35,6 +37,8 @@ node default-home-recovery.js --restore /absolute/path/state.json
 
 Start detaches a watcher that runs until the deadline or unavailable launcher, then restores only Home. Start-boot detaches immediate recovery, retrying while settings are unavailable. Restore is the manual path. An observed different launcher is preserved. This is trial tooling, not a permanent Home Button mode or packaged uninstall supervisor.
 
+For an explicitly authorised cold-start trial, the temporary boot hook uses --start instead of --start-boot. It continues the original bounded lease across power loss, without renewing its deadline, so the default can be observed after startup. Arm and verify recovery before enabling Watch or changing the default. The ordinary immediate-restore boot policy above cannot establish persistent default registration across reboot.
+
 Existing HomeBack hooks, foreground watching and No Flash must not mask the default route during that check.
 
 Do not enable this through an install or create an upstream PR from local checks alone.
@@ -47,7 +51,18 @@ Do not enable this through an install or create an upstream PR from local checks
 - With a trial mapping active, a TV reboot ran the independent boot recovery and restored the exact original map. Reset uptime and a fresh boot-hook log confirmed the restart; the TV's kernel boot ID did not change. This checks recovery across reboot, not persistent replacement of every boot route.
 - Adding the category exposed a wake race: app-exit cleanup erased recent Home+ history before standby used it. Preserve that history only during power-off processing. Local checks cover manual close, stale history and HDMI/explicit-launch cancellation. The TV event capture confirms power-off processing precedes Home+'s close.
 - With the correction, Home+ returned after standby when previously in front; Live TV and an HDMI 1 input with no device connected retained their foregrounds. Power was controlled through the paired remote and Wake-on-Wi-Fi. Connected-HDMI picture/audio, ARC/eARC and CEC remain unverified.
-- A full mains-off cold boot, physical-button routing without the existing HomeBack hook, and a permanent default mode/uninstall supervisor remain separate acceptance work. Do not claim a complete launcher replacement from these results.
+- At the end of the 1 November trial, a full mains-off cold boot was still pending; the next section records its later result. Physical-button routing without the existing HomeBack hook and a permanent default mode/uninstall supervisor remain separate acceptance work. Do not claim a complete launcher replacement from these results.
+
+## Mains-off startup trial, 2 November 2026
+
+The same C4 was switched off with its remote, disconnected from mains for 30 seconds and switched on again. Default Home+ plus Watch and the existing startup hooks were enabled; Home Auto Launch stayed off and LG Home remained installed.
+
+- Bootd logged Live TV foreground at 17.258 seconds of uptime and Home+ at 26.122 seconds. The SSH observer first saw Home+ at 26.89 seconds. Neither is a first-paint or power-button stopwatch measurement.
+- The owner confirmed Home+ opened automatically without pressing Home, with no LG Home seen. Physical long Home opened LG Home with its apps/settings, then short Home returned to Home+.
+- The Home+ default survived the power cut. A new independent watcher started from the temporary boot hook with the original deadline; it did not restore the mapping before this observation. All 67 candidate package files matched; the only parsed configuration change at boot was homeOverride.
+- This validates the combination. The startup hook launches Home+ by ID; registration alone has not been shown to cause startup or reduce its delay. Connected-HDMI audio/video and CEC remain unverified.
+
+Older-version advice and evidence are in [default-home-compatibility.md](default-home-compatibility.md). A production mode and uninstall recovery remain separate work; this is a reversible developer trial.
 
 ## API reference
 
