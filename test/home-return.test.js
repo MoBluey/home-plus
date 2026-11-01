@@ -17,16 +17,16 @@ const IN_FRONT = [[1500, { appId: 'netflix' }], [2000, { appId: '' }]];
 const CLOSED = [[1930, { event: 'close', appId: 'netflix' }], [1940, { event: 'stop', appId: 'netflix' }]];
 
 /* the service, with subscriptions saying subs ({"<method>": [[ms, payload], ...]}, from when it subscribed) */
-async function start(subs) {
+async function start(subs, env = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-return-'));
   fs.writeFileSync(path.join(dir, 'apps.txt'), 'netflix|Netflix,youtube|YouTube,com.webos.app.livetv|Live TV');
   const luna = path.join(dir, 'luna.log');
-  const svc = await startService(dir, {
+  const svc = await startService(dir, Object.assign({
     HOMEPLUS_PREVIEW_LUNA_LOG: luna,
     HOMEPLUS_PREVIEW_SUBSCRIPTIONS: JSON.stringify(subs),
     HOMEPLUS_LOG: path.join(dir, 'service.log'),
     HOMEPLUS_RECENTS_FILE: path.join(dir, 'recents.json')
-  });
+  }, env));
   const lines = () => (fs.existsSync(luna) ? fs.readFileSync(luna, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
   return {
     svc,
@@ -285,6 +285,28 @@ describe('getting back to Home+', { concurrency: true }, () => {
       assert.equal(result.status, 200);
       await sleep(1100);
       assert.equal(tv.launches().length, 0);
+    } finally {
+      await tv.stop();
+    }
+  });
+
+  test('a title lookup still waiting after wake cannot bring Home+ over the selected app', async () => {
+    const tv = await start({
+      getPowerState: [[100, { state: 'Active' }], [250, { state: 'Active Standby' }], [500, { state: 'Active' }]],
+      getForegroundAppInfo: [[120, { appId: HP }], [600, { appId: 'com.webos.app.livetv' }]]
+    }, { HOMEPLUS_PREVIEW_LUNA_SILENT: '/getAppInfo$' });
+    try {
+      await until(() => tv.said('getForegroundAppInfo', 'com.webos.app.livetv'), 2000, 'Live TV after wake');
+      const opening = tv.svc.call('POST', '/api/launch', {
+        body: { id: 'netflix', recommendationId: 'rec:' + '0'.repeat(40) }
+      });
+      await until(() => tv.lines().some((l) => l.uri.endsWith('/getAppInfo') && l.params.id === 'netflix'),
+        2000, 'the title launch waiting for app support');
+      await sleep(1100);
+      assert.equal(tv.launches().length, 0, 'the launch request cancels wake return before awaiting the title');
+      assert.equal((await opening).status, 200);
+      assert.ok(tv.lines().some((l) => l.uri.endsWith('/launch') && l.params.id === 'netflix'),
+        'the app still opens when its title cannot be verified');
     } finally {
       await tv.stop();
     }
