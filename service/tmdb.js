@@ -41,10 +41,12 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
   }
 
   // a Read Access Token is a JWT (three dot-separated parts); a v3 key goes in the query
-  function get(path, params = {}, k = key()) {
+  function get(path, params = {}, k = key(), timeout = 10000) {
     const bearer = k.split('.').length === 3;
     const q = new URLSearchParams(Object.assign({}, params, bearer ? {} : { api_key: k })).toString();
-    return requestJSON('GET', `${API}${path}${q ? `?${q}` : ''}`, { headers: bearer ? { Authorization: `Bearer ${k}` } : {} });
+    return requestJSON('GET', `${API}${path}${q ? `?${q}` : ''}`, {
+      headers: bearer ? { Authorization: `Bearer ${k}` } : {}, timeout
+    });
   }
 
   async function region() {
@@ -92,11 +94,11 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     }
   }
 
-  async function genres() {
+  async function genres(timeout = 10000) {
     if (Date.now() < genreLists.until) return genreLists;
     if (!genreBuilding) {
       genreBuilding = Promise.all(['tv', 'movie'].map(async (kind) => {
-        const r = await get(`/genre/${kind}/list`, { language: 'en-US' });
+        const r = await get(`/genre/${kind}/list`, { language: 'en-US' }, key(), timeout);
         if (r.status !== 200 || !r.json) throw new Error(`TMDB genres failed (${r.status})`);
         return new Map((r.json.genres || []).map((g) => [g.id, g.name]));
       })).then(([tv, movie]) => {
@@ -210,11 +212,13 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
     if (!detailsBuilding.has(cacheId)) {
       detailsBuilding.set(cacheId, (async () => {
         const kind = type === 'series' ? 'tv' : 'movie';
-        const r = await get(`/find/${id}`, { external_source: 'imdb_id', language: 'en-US' });
+        const [r, names] = await Promise.all([
+          get(`/find/${id}`, { external_source: 'imdb_id', language: 'en-US' }, key(), 2500),
+          genres(2500)
+        ]);
         if (r.status !== 200 || !r.json) throw new Error(`TMDB find failed (${r.status})`);
         const m = (r.json[`${kind}_results`] || [])[0];
         if (!m) return null;
-        const names = await genres();
         return {
           genre: (Array.isArray(m.genre_ids) ? m.genre_ids : []).map((g) => names[kind].get(g)).filter(Boolean)[0] || '',
           year: parseInt(String(m.first_air_date || m.release_date || '').slice(0, 4), 10) || 0,

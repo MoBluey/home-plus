@@ -23,7 +23,7 @@ const titles = (provider, kind, n = 4) => Array.from({ length: n }, (_, i) => ({
   backdrop_path: `/b${provider}-${kind}-${i}.jpg`
 }));
 
-let tmdbServer, down = false, genreDown = false;
+let tmdbServer, down = false, genreDown = false, findHang = false, genreHang = false;
 test.before(async () => {
   tmdbServer = await mockServer((req, url) => {
     if (down) return { status: 500, json: {} };
@@ -31,8 +31,8 @@ test.before(async () => {
     if (url.pathname === '/3/configuration') return auth ? { json: { images: {} } } : { status: 401, json: {} };
     if (!auth) return { status: 401, json: {} };
     if (url.pathname.startsWith('/3/watch/providers/')) return { json: { results: PROVIDERS } };
-    if (url.pathname === '/3/genre/tv/list') return genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 18, name: 'Drama' }] } };
-    if (url.pathname === '/3/genre/movie/list') return genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 35, name: 'Comedy' }] } };
+    if (url.pathname === '/3/genre/tv/list') return genreHang ? { hang: true } : genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 18, name: 'Drama' }] } };
+    if (url.pathname === '/3/genre/movie/list') return genreHang ? { hang: true } : genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 35, name: 'Comedy' }] } };
     const d = /^\/3\/discover\/(tv|movie)$/.exec(url.pathname);
     if (d) {
       const list = titles(Number(url.searchParams.get('with_watch_providers')), d[1]);
@@ -49,6 +49,7 @@ test.before(async () => {
     }
     const found = /^\/3\/find\/(tt\d+)$/.exec(url.pathname);
     if (found) {
+      if (findHang) return { hang: true };
       const movie = found[1] === 'tt1234567' ? [{ genre_ids: [35], release_date: '2024-02-01', vote_average: 7.56,
         overview: 'A film  about people\nwho discover an unexpected world.' }] : [];
       const tv = found[1] === 'tt7654321' ? [{ genre_ids: [18], first_air_date: '2012-03-01', vote_average: 8.34,
@@ -61,7 +62,7 @@ test.before(async () => {
   process.env.HOMEPLUS_TMDB_IMAGES = `${tmdbServer.base}/img`;
 });
 test.after(() => tmdbServer.close());
-test.beforeEach(() => { down = genreDown = false; });
+test.beforeEach(() => { down = genreDown = findHang = genreHang = false; });
 
 function makeTmdb(cfg = { tmdbKey: 'goodkey' }) {
   const store = configStore(cfg);
@@ -141,6 +142,14 @@ test('tmdb: paused IMDb titles have genre, year, rating and synopsis', async () 
     overview: 'A series about people who discover an unexpected world.' });
   assert.equal(await tmdb.detailsByImdb('tt0000000', 'movie'), null, 'unmatched titles remain usable');
   assert.equal(await tmdb.detailsByImdb('kitsu:123', 'series'), null, 'non-IMDb ids are not looked up');
+});
+
+test('tmdb: a stalled IMDb and genre lookup cannot hold the Continue Watching shelf', async () => {
+  findHang = genreHang = true;
+  const { tmdb } = makeTmdb();
+  const started = Date.now();
+  assert.equal(await tmdb.detailsByImdb('tt1234567', 'movie'), null);
+  assert.ok(Date.now() - started < 3200, 'both requests must time out together, not one after the other');
 });
 
 test('tmdb: a list is fetched once, then kept', async () => {
