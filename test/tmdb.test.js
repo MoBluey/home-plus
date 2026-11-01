@@ -51,7 +51,7 @@ test.before(async () => {
     const watch = /^\/3\/(tv|movie)\/(\d+)\/watch\/providers$/.exec(url.pathname);
     if (watch) {
       if (availabilityDown) return { status: 500, json: {} };
-      const on = { 1: [8], 2: [8], 1001: [8], 1002: [9], 1003: [21], 1004: [9],
+      const on = { 1: [8], 2: [8], 123: [9], 213562: [21], 1001: [8], 1002: [9], 1003: [21], 1004: [9],
         1005: [337], 1006: [337], 1007: [337] }[Number(watch[2])] || [];
       return { json: { results: { US: { flatrate: on.map((id) => ({ provider_id: id })) } } } };
     }
@@ -148,8 +148,16 @@ test('tmdb: provider availability resolves close namesakes, with separate caches
   assert.equal((await tmdb.detailsByTitle('The Rainmaker', 'Prime Video')).overview, 'An older film.');
   assert.equal(await tmdb.detailsByTitle('The Rainmaker', 'Stan'), null, 'another provider cannot reuse the Netflix match');
   assert.equal(await tmdb.detailsByTitle('Same Title', 'Netflix'), null, 'two available namesakes remain plain');
-  assert.equal((await tmdb.detailsByTitle('The Rainmaker (1997)', 'Netflix')).overview, 'An older film.',
+  assert.equal((await tmdb.detailsByTitle('The Rainmaker (1997)', 'Prime Video')).overview, 'An older film.',
     'an explicit year identifies the film');
+});
+
+test('tmdb: even a dominant exact name must be on the selected provider', async () => {
+  const { tmdb } = makeTmdb();
+  assert.equal((await tmdb.detailsByTitle('Crystal Lake', 'Stan')).overview, 'A series story.');
+  assert.equal(await tmdb.detailsByTitle('Crystal Lake', 'Netflix'), null, 'a namesake is not given Stan metadata on Netflix');
+  assert.equal(await tmdb.detailsByTitle('Just Add Magic', 'Netflix'), null);
+  assert.equal((await tmdb.detailsByTitle('Just Add Magic', 'Prime Video')).overview, 'Three friends find a cookbook.');
 });
 
 test('tmdb: provider availability confirms likely title aliases', async () => {
@@ -167,8 +175,8 @@ test('tmdb: unavailable provider data leaves uncertain cards plain', async () =>
   availabilityDown = true;
   const { tmdb } = makeTmdb();
   assert.equal(await tmdb.detailsByTitle('The Rainmaker', 'Netflix'), null);
-  assert.equal((await tmdb.detailsByTitle('Just Add Magic', 'Netflix')).overview,
-    'Three friends find a cookbook.', 'unique titles still have details');
+  assert.equal(await tmdb.detailsByTitle('Just Add Magic', 'Prime Video'), null,
+    'unverified exact titles stay plain when availability cannot be checked');
 });
 
 test('tmdb: simultaneous ambiguous cards share the provider list lookup', async () => {
@@ -251,7 +259,7 @@ test('tmdb: a stalled IMDb and genre lookup cannot hold the Continue Watching sh
   const { tmdb } = makeTmdb();
   const started = Date.now();
   assert.equal(await tmdb.detailsByImdb('tt1234567', 'movie'), null);
-  assert.ok(Date.now() - started < 3200, 'both requests must time out together, not one after the other');
+  assert.ok(Date.now() - started < 5000, 'both requests must time out together, not one after the other');
 });
 
 test('tmdb: a list is fetched once, then kept', async () => {

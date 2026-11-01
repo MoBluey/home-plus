@@ -296,8 +296,8 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
   }
 
   // Apps publish their own recommendations with title links, but no synopsis or
-  // rating. Keep exact or dominant matches; check the TV's provider availability
-  // when namesakes or a provider's wording make the title uncertain.
+  // rating. Match the TV's provider before showing details for one of its cards;
+  // a matching name alone can describe a different film or series.
   async function detailsByTitle(input, providerTitle = '') {
     let title = String(input || '').trim();
     const dated = /\s+\(((?:19|20)\d{2})\)$/.exec(title);
@@ -317,11 +317,13 @@ module.exports = function createTmdb({ readConfig, writeConfig, log, region: tvR
           (!dated || parseInt(String(m.first_air_date || m.release_date || '').slice(0, 4), 10) === Number(dated[1])));
         const matches = choices.filter((m) => namesFor(m).includes(titleKey))
           .sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
-        let m = matches[0];
-        if (matches.length > 1 && ((Number(m.popularity) || 0) < 20 ||
-          (Number(m.popularity) || 0) < 10 * (Number(matches[1].popularity) || 0))) {
+        let m = null;
+        if (matches.length && providerTitle) {
           m = await providerMatch(matches, providerTitle, reg);
-        } else if (!matches.length) {
+        } else if (matches.length) {
+          m = matches.length === 1 || ((Number(matches[0].popularity) || 0) >= 20 &&
+            (Number(matches[0].popularity) || 0) >= 10 * (Number(matches[1].popularity) || 0)) ? matches[0] : null;
+        } else if (providerTitle) {
           m = await providerMatch(choices.filter((c) => plausibleAlias(c, titleVariants(title))), providerTitle, reg);
         }
         if (!m) return null;
