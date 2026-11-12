@@ -20,8 +20,20 @@ const COLORS = { netflix: '#E50914', prime: '#00A8E1', disney: '#113CCF', hdmi1:
 const CONFIG_DIR = process.env.HOMEPLUS_CONFIG_DIR || '/var/lib/homeplus';
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 mkdirSync(CONFIG_DIR);
+// A modeled newer TV for the default-Home scenes and API integration checks. No production switch.
+const HOME_MODEL = process.env.HOMEPLUS_PREVIEW_DEFAULT_HOME;
+const HOME_APP = 'com.github.pbalazaar.homeplus', STOCK_HOME = 'com.webos.app.home';
+if (HOME_MODEL) {
+  process.env.HOMEPLUS_APP_DIR = process.env.HOMEPLUS_APP_DIR || path.join(CONFIG_DIR, 'app');
+  process.env.HOMEPLUS_DEFAULT_HOME_DIR = process.env.HOMEPLUS_DEFAULT_HOME_DIR || path.join(CONFIG_DIR, 'default-home');
+  process.env.HOMEPLUS_INITD_DIR = process.env.HOMEPLUS_INITD_DIR || path.join(CONFIG_DIR, 'init.d');
+  process.env.HOMEPLUS_RUNTIME_DIR = process.env.HOMEPLUS_RUNTIME_DIR || path.join(CONFIG_DIR, 'runtime');
+  mkdirSync(process.env.HOMEPLUS_APP_DIR); mkdirSync(process.env.HOMEPLUS_RUNTIME_DIR);
+  fs.writeFileSync(path.join(process.env.HOMEPLUS_APP_DIR, 'appinfo.json'), JSON.stringify({ id: HOME_APP, appCategory: ['home'] }));
+  fs.writeFileSync(path.join(process.env.HOMEPLUS_APP_DIR, 'homeplus'), 'preview native app');
+}
 // HOMEPLUS_PREVIEW_FRESH: a first install (the welcome steps not done yet)
-fs.writeFileSync(CONFIG_FILE, JSON.stringify(
+if (!process.env.HOMEPLUS_PREVIEW_KEEP_CONFIG || !fs.existsSync(CONFIG_FILE)) fs.writeFileSync(CONFIG_FILE, JSON.stringify(
   process.env.HOMEPLUS_PREVIEW_FRESH ? { stremioAuthKey: 'preview' } : { stremioAuthKey: 'preview', homeAsked: true, homeMode: 'watch' }));
 // HOMEPLUS_PREVIEW_PREFS: launcher preferences to start with, as JSON
 if (process.env.HOMEPLUS_PREVIEW_PREFS) {
@@ -103,6 +115,11 @@ if (process.env.HOMEPLUS_PREVIEW_MEDIA) {
     { ratingKey: '202', type: 'movie', title: 'Paper Planes', viewOffset: 3100000, duration: 6400000,
       thumb: '/library/metadata/202/thumb', art: '/library/metadata/202/art', lastViewedAt: 1760900000 }
   ];
+  // Jellyfin's sessions: Home+ once it has registered, and the TV's app, whose playback is reported on a second
+  // session it can't be sent commands on (as on the C3)
+  const TV = { DeviceName: 'LG Smart TV', Client: 'Jellyfin Web', RemoteEndPoint: '127.0.0.1' };
+  let jfHome = null, jfPlaying = null;
+  const noContent = (res) => { res.writeHead(204); res.end(); };
   http.createServer((req, res) => {
     const u = new URL(req.url, BASE);
     const p = u.pathname;
@@ -112,6 +129,19 @@ if (process.env.HOMEPLUS_PREVIEW_MEDIA) {
     if (p === '/Users/AuthenticateWithQuickConnect') return json(res, 200, { AccessToken: 'jf-token', User: { Id: 'u1', Name: 'Paolo' }, ServerId: 's1' });
     if (p === '/UserItems/Resume') return json(res, 200, { Items: JF.slice(0, 2) });
     if (p === '/Shows/NextUp') return json(res, 200, { Items: JF.slice(2) });
+    if (p === '/Sessions/Capabilities') {
+      jfHome = { Id: 'home', DeviceName: 'LG TV', Client: 'Home+', RemoteEndPoint: '127.0.0.1', SupportsRemoteControl: false,
+        DeviceId: (/DeviceId="([^"]*)"/.exec(req.headers.authorization) || [])[1] };
+      return noContent(res);
+    }
+    if (p === '/Sessions') {
+      return json(res, 200, [jfHome, Object.assign({ Id: 'tv', DeviceId: 'tv-1', SupportsRemoteControl: true }, TV),
+        Object.assign({ Id: 'tv-playing', DeviceId: 'tv-2', SupportsRemoteControl: false, NowPlayingItem: jfPlaying }, TV)].filter(Boolean));
+    }
+    if (/^\/Sessions\/[^/]+\/Playing$/.test(p)) {
+      jfPlaying = { Id: u.searchParams.get('itemIds') };
+      return noContent(res);
+    }
     if (/^\/Items\/[^/]+\/Images\//.test(p)) return image(res, `show${pick(p)}.jpg`, 'image/jpeg');
     // Plex: plex.tv, clients.plex.tv and the server, all here
     if (p === '/api/v2/pins' && req.method === 'POST') return json(res, 201, { id: 7, code: 'QGVR', qr: `${BASE}/qr-plex.png`, expiresIn: 900 });
@@ -166,8 +196,17 @@ if (process.env.HOMEPLUS_PREVIEW_TMDB) {
       genre_ids: [kind === 'tv' ? 18 : 12],
       overview: `${name} follows a small group whose plans change after an unexpected discovery. They must decide what matters most as the story unfolds.` }));
   http.createServer((req, res) => {
-    const p = new URL(req.url, BASE).pathname;
+    const url = new URL(req.url, BASE), p = url.pathname;
     if (/^\/tmdb\/watch\/providers\//.test(p)) return json(res, { results: PROVIDERS });
+    if (p === '/tmdb/search/multi') {
+      const name = url.searchParams.get('query'), i = NAMES.indexOf(name);
+      return json(res, { results: i < 0 ? [] : [{ id: 800 + i, media_type: 'tv', name, genre_ids: [18],
+        first_air_date: '2025-01-01', vote_average: 8.4,
+        overview: name + ' follows a small group whose plans change after an unexpected discovery.',
+        backdrop_path: '/b' + i + '.jpg' }] });
+    }
+    if (/^\/tmdb\/tv\/80\d\/watch\/providers$/.exec(p))
+      return json(res, { results: { US: { flatrate: [{ provider_id: 8 }] } } });
     if (p === '/tmdb/genre/tv/list') return json(res, { genres: [{ id: 18, name: 'Drama' }] });
     if (p === '/tmdb/genre/movie/list') return json(res, { genres: [{ id: 12, name: 'Adventure' }] });
     const found = /^\/tmdb\/find\/tt000000(\d)$/.exec(p);
@@ -240,6 +279,17 @@ const DESC = {
 };
 let moved = 0; /* frames of moving video so far (capture.json, below) */
 global.__stubLuna = (uri, params) => {
+  // Real recommendation cards through the service, including Details Off -> On.
+  if (process.env.HOMEPLUS_PREVIEW_RECOMMENDATIONS) {
+    if (uri.endsWith('/getAllContents')) return { returnValue: true, allContents: [{
+      launchPointId: 'netflix_default', contents: ['Northern Lights', 'The Long Orbit'].map((titleText, i) => ({
+        type: 'content', titleText, image: { url: process.env.HOMEPLUS_TMDB_IMAGES + '/w1280/b' + i + '.jpg' },
+        onClick: { targetAppId: 'netflix', contentId: 'preview-title-' + i }
+      }))
+    }] };
+    if (uri.endsWith('/getAppInfo') && params.id === 'netflix')
+      return { returnValue: true, appInfo: { deeplinkingParams: '{"contentTarget":"$CONTENTID"}' } };
+  }
   if (uri.endsWith('/getAllInputStatus')) {
     return { returnValue: true, arcDevice: true, devices: [
       { id: 'HDMI_1', appId: 'com.webos.app.hdmi1', label: 'HDMI 1', hdmiPlugIn: false },
@@ -313,6 +363,45 @@ global.__stubLuna = (uri, params) => {
   if (uri.endsWith('/running')) return { returnValue: true, running: ['netflix', 'youtube', 'spotify', 'disney'].map((id) => ({ id })) };
   return null;
 };
+if (HOME_MODEL) {
+  const home = { defaults: { home: STOCK_HOME, browser: 'browser' }, foreground: HOME_APP };
+  global.__stubHomeCall = (uri, params, service) => {
+    const front = (id) => {
+      home.foreground = id;
+      if (service.front) setImmediate(() => service.front.emit('response', { payload: { appId: id } }));
+      return { returnValue: true };
+    };
+    if (uri === 'luna://com.webos.service.systemprofile/getProfiles') return {
+      returnValue: true, profiles: { defaultApps: { support: HOME_MODEL !== 'unsupported', categories: { home: STOCK_HOME } } }
+    };
+    if (uri.endsWith('/getAppInfo') && [HOME_APP, STOCK_HOME].includes(params.id)) return {
+      returnValue: true, appInfo: { id: params.id, appCategory: ['home'] }
+    };
+    if (uri.endsWith('/getSystemSettings') && (params.keys || []).includes('defaultApps')) return {
+      returnValue: true, settings: { defaultApps: Object.assign({}, home.defaults) }
+    };
+    if (uri.endsWith('/setSystemSettings') && params.settings.defaultApps) {
+      home.defaults = Object.assign({}, params.settings.defaultApps); return { returnValue: true };
+    }
+    if (uri.endsWith('/setDefaultApp')) {
+      if (HOME_MODEL === 'failure') return { returnValue: false, errorText: 'This TV refused the default Home change' };
+      if (HOME_MODEL === 'pending' && params.appId === HOME_APP) {
+        fs.writeFileSync(path.join(CONFIG_DIR, 'default-pending'), '');
+        return new Promise((resolve) => {
+          const timer = setInterval(() => {
+            if (!fs.existsSync(path.join(CONFIG_DIR, 'release-default'))) return;
+            clearInterval(timer); home.defaults.home = params.appId; resolve({ returnValue: true });
+          }, 25);
+        });
+      }
+      home.defaults.home = params.appId; return { returnValue: true };
+    }
+    if (uri.endsWith('/getForegroundAppInfo')) return { returnValue: true, appId: home.foreground };
+    if (uri.endsWith('/launchDefaultApp')) return front(home.defaults.home || STOCK_HOME);
+    if (uri.endsWith('/launch')) return front(params.id);
+    return null;
+  };
+}
 if (!process.env.HOMEPLUS_RECENTS_FILE) { /* (tests may give one of their own) */
   process.env.HOMEPLUS_RECENTS_FILE = path.join(CONFIG_DIR, 'recents.json');
   fs.writeFileSync(process.env.HOMEPLUS_RECENTS_FILE, JSON.stringify({ youtube: Date.now() - 60000, netflix: Date.now() - 120000, spotify: Date.now() - 600000 }));
@@ -324,6 +413,23 @@ global.__stubApps = process.env.HOMEPLUS_PREVIEW_NO_APPS ? [] : APPS.map(([id, t
   id, title, version: '1.0', folderPath: assets, icon: `${id}.png`, iconColor: COLORS[id] || '',
   removable: !BUILT_IN.includes(id), systemApp: BUILT_IN.includes(id)
 }));
+// Test-only fake web LG Home and mount commands; never mount on the host.
+if (process.env.HOMEPLUS_PREVIEW_REDIRECT) {
+  const folder = path.join(assets, 'lg-home');
+  mkdirSync(folder);
+  fs.writeFileSync(path.join(folder, 'appinfo.json'), JSON.stringify({ type: 'web', main: 'index.html' }));
+  fs.writeFileSync(path.join(folder, 'index.html'), 'LG Home');
+  global.__stubApps.push({ id: 'com.webos.app.home', folderPath: folder });
+  const read = fs.readFileSync;
+  fs.readFileSync = (file, ...args) => file === '/proc/mounts' ? '' : read(file, ...args);
+  const cp = require('child_process'), exec = cp.execFile;
+  cp.execFile = (cmd, args, cb) => {
+    if (cmd !== 'mount' && cmd !== 'umount') return exec(cmd, args, cb);
+    fs.appendFileSync(path.join(assets, 'mount-calls'), JSON.stringify({ cmd, args }) + '\n');
+    const fail = cmd === 'umount' && fs.existsSync(path.join(assets, 'fail-umount'));
+    setImmediate(() => cb(fail ? new Error('simulated unmount failure') : null, '', ''));
+  };
+}
 // HOMEPLUS_PREVIEW_OLD: the old Home+'s service on Home+'s port (com.github.pmiraka.homeplus, its id up to
 // 0.14.0, installed beside the new one)
 if (process.env.HOMEPLUS_PREVIEW_OLD) require(path.join(serviceDir, 'package.json')).name = 'com.github.pmiraka.homeplus.service';

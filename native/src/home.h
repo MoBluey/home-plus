@@ -102,7 +102,7 @@
 #define MAX_SHEET 64
 #define ID_LEN 160
 
-enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, TAG_QR, TAG_ICON, TAG_ART, TAG_RAIL_LOGO, TAG_RAIL_BG, TAG_FEATURED, TAG_CONTROL, TAG_LAUNCH, TAG_WAKE,
+enum { TAG_APPS = 1, TAG_LAYOUT, TAG_STREMIO, TAG_MEDIA_LINK, TAG_MEDIA_STATUS, TAG_QR, TAG_ICON, TAG_ART, TAG_RAIL_LOGO, TAG_RAIL_BG, TAG_FEATURED, TAG_CONTROL, TAG_LAUNCH, TAG_RESUME, TAG_WAKE,
        TAG_SYSTEM, TAG_TRAKT_LINK, TAG_TRAKT_STATUS, TAG_RUNNING, TAG_CLOSED, TAG_HOME, TAG_HOME_SET, TAG_KEY_SET,
        TAG_STATUS, TAG_ELEVATE, TAG_RESTART, TAG_UNINSTALL,
        TAG_PREFS, TAG_EVENTS, TAG_DELETED, TAG_KEYS, TAG_KEYS_STATUS };
@@ -177,6 +177,7 @@ typedef struct {
     float ink_tint;               /* its logo is grey or white on a coloured icon: on a dark tile it takes that colour */
     int icon_state, art_state; /* 0 idle, 1 loading, 2 ready, 3 failed */
     int feat; /* a streaming service with popular titles (TMDB): 0 not asked, 1 asking, 2 yes, 3 no */
+    int feat_refresh; /* saved detail preferences need fresh cards, after any request already on its way */
     int removable, deleted; /* it can be deleted from the TV; it was, and the app list hasn't caught up */
     int lw, lh, bw, bh;
     float s, sv; /* focus animation 0..1, and its spring velocity */
@@ -200,8 +201,8 @@ enum { PIC_NONE, PIC_ART, PIC_GLOW, PIC_COVER, PIC_RAIL, PIC_HELD };
 typedef struct { int kind, i; } Pic;
 
 typedef enum { ACT_NONE, ACT_MOVE, ACT_FRONT, ACT_HIDE, ACT_DELETE_ASK, ACT_DELETE, ACT_UNHIDE, ACT_UNHIDE_ALL, ACT_CANCEL,
-               ACT_LAUNCH_ID, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_KEYS, ACT_SHELF,
-               ACT_HOME_MODE, ACT_SOUNDS, ACT_SHELF_DETAILS,
+               ACT_LAUNCH_ID, ACT_PLAY_START, ACT_TRAKT_LINK, ACT_TRAKT_UNLINK, ACT_MEDIA_LINK, ACT_MEDIA_UNLINK, ACT_ACCOUNT_ASK, ACT_UP, ACT_KEYS, ACT_SHELF,
+               ACT_HOME_MODE, ACT_DEFAULT_HOME, ACT_STARTUP, ACT_SOUNDS, ACT_SHELF_DETAILS,
                ACT_SETUP_RETRY, ACT_HOME_YES, ACT_HOME_NO, ACT_WELCOME_NEXT, ACT_WELCOME_SKIP, ACT_HOME_TOGGLE, ACT_REMOVE_ASK, ACT_REMOVE,
                ACT_ACCESSIBILITY, ACT_REDUCE_MOTION, ACT_REDUCE_TRANSPARENCY, ACT_CC_BLUR_VIDEO,
                ACT_PAGE, ACT_CLOCK, ACT_DIM, ACT_OFF, ACT_ORBIT, ACT_CALM, ACT_HIDDEN, ACT_SETTINGS_KEY, ACT_INPUT_KEY,
@@ -224,7 +225,7 @@ typedef struct {
     Action act;
     int arg;
     int destructive;
-    char id[ID_LEN]; /* ACT_LAUNCH_ID's app; the app of ACT_DELETE_ASK, ACT_DELETE and ACT_UNHIDE */
+    char id[ID_LEN]; /* ACT_LAUNCH_ID's app; the app of ACT_DELETE_ASK, ACT_DELETE and ACT_UNHIDE; ACT_PLAY_START's title */
     Tex *tex;
     int w, h;
     Tex *val; /* Settings rows: the current value, drawn on the right */
@@ -268,6 +269,7 @@ typedef struct {
     int feat_req, tmdb_configured; /* the app whose titles are on the way (-1: none); TMDB set up */
     int rail_trending;            /* SRC_FEATURED: what's trending, not what's on the app */
     char rail_sig[2048];
+    char resume_app[ID_LEN], resume_hint[300]; /* the card OK played last: its app, and what that app's toast says if the service doesn't know it */
 
     int focus, zone; /* ZONE_* */
     int top_index, top_col; /* the top bar's focus; the column it was entered from */
@@ -286,7 +288,11 @@ typedef struct {
     Uint32 media_poll;                /* and when to ask again whether it was approved */
     Tex *connect_tex[SRC_COUNT];      /* "Connect … to see Continue Watching" */
     int connect_w[SRC_COUNT], connect_h[SRC_COUNT];
-    char home_mode[16]; /* "redirect" (no-flash), "watch" or "off" */
+    char home_mode[16]; /* "system", "redirect" (no-flash), "watch" or "off" */
+    int default_home_enabled, default_home_available, startup_enabled;
+    char default_home_reason[256];
+    char home_error[400];
+    int home_pending, home_welcome_next; /* Home changes wait for the service before changing the rows */
     int sounds_off; /* focus sounds switched off in Settings (saved by the service) */
     Uint32 idle_dim_ms, idle_off_ms; /* OLED idle stages (0 = default) */
     int noflash_active, noflash_available; /* available: LG's home page can be replaced, or the key filter can take Home */
@@ -457,7 +463,10 @@ static const char *const SRC_ID[SRC_COUNT] = { "", "stremio", "jellyfin", "plex"
 static const char *const SRC_NAME[SRC_COUNT] = { "", "Stremio", "Jellyfin", "Plex" };
 
 /* what the Control Center over another app can ask Home+ to open */
-enum { OPEN_SETTINGS = 1, OPEN_RECENTS, OPEN_ACCESSIBILITY };
+enum { OPEN_SETTINGS = 1, OPEN_RECENTS, OPEN_ACCESSIBILITY, OPEN_GENERAL, OPEN_ACCOUNTS, OPEN_ABOUT };
+
+/* OK on a card: an app can't be sent to its title, so a toast over it says where the title is (its name, the app's) */
+#define CONTINUE_HINT "\xE2\x80\x9C%s\xE2\x80\x9D is in %s\xE2\x80\x99s Continue Watching"
 
 /* Tinted's colours on their row in App Tiles: swatch i's centre, the row's right end like a value's */
 #define SWATCH_D 34
@@ -670,9 +679,11 @@ void request_icons(void);
 void launch_app(const char *id, const char *params, const char *hint);
 void launch_recommendation(const char *id, const char *recommendation_id, const char *hint);
 void launch(const char *id, const char *hint);
+void resume_title(const App *a, const char *id, int from_start);
 void close_apps(const char *id);
 App *app_by_id(const char *id);
 void open_app_sheet(void);
+void open_card_sheet(void);
 void open_hidden_sheet(void);
 void move_item_to(int to);
 int apps_loading(void);

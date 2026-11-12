@@ -266,6 +266,7 @@ const NATIVE_ID = 'com.github.pbalazaar.homeplus'; // the launcher; this service
 // the app list, and Remove Home+ takes what it left too.
 const OLD_ID = 'com.github.pmiraka.homeplus';
 let lastForeground = '';
+let resumeRun = null; // the title OK last asked to play: { app, seen }, seen once its app has been in front; null when dropped
 let lastTakeover = 0;
 let takeoverLanded = true; // did the launcher reach the front after our last takeover?
 
@@ -353,7 +354,8 @@ async function mountRedirect() {
 async function unmountRedirect() {
   if (!redirectTarget) return;
   const r = await run('umount', [redirectTarget]);
-  log('no-flash mode off', r.err ? r.out.trim() : '');
+  if (r.err) throw new Error('could not unmount LG Home redirect: ' + (r.out.trim() || r.err.message));
+  log('no-flash mode off');
   redirectTarget = null;
   await luna(APPMGR + '/closeByAppId', { id: LG_HOME });
 }
@@ -361,6 +363,7 @@ async function unmountRedirect() {
 // Until the launcher has asked "Use Home+ as your home screen?", the Home button is left alone.
 function homeMode(cfg) {
   if (cfg.homeOverride === false || (!cfg.homeAsked && !cfg.homeMode)) return 'off';
+  if (cfg.defaultHomeEnabled) return 'system';
   return cfg.homeMode || 'watch';
 }
 
@@ -376,7 +379,8 @@ async function applyHomeMode() {
   } else {
     await unmountRedirect();
   }
-  await applyKeyFilter(); /* (No Flash without the redirect: the key filter's) */
+  const took = await applyKeyFilter(); /* (No Flash without the redirect: the key filter's) */
+  if (took !== true) throw new Error(`the TV didn't take Home+'s key filter: ${took}`);
 }
 setTimeout(() => applyHomeMode().catch((e) => log('home mode error', e.message)), 1500);
 
@@ -388,6 +392,22 @@ const APP_DIR = process.env.HOMEPLUS_APP_DIR || path.join(__dirname, '..', '..',
 const INITD_DIR = '/var/lib/webosbrew/init.d';
 const INITD = path.join(process.env.HOMEPLUS_INITD_DIR || INITD_DIR, '50-homeplus'); /* tests: elsewhere */
 const BOOT_LOG = path.join(path.dirname(INITD), '..', 'homeplus-boot.log'); /* the boot script's */
+
+const systemHome = require('./default-home')({
+  luna, readConfig, writeConfig, configPath: findConfigPath, appDir: APP_DIR, initDir: path.dirname(INITD),
+  stateDir: process.env.HOMEPLUS_DEFAULT_HOME_DIR || '/var/lib/webosbrew/homeplus-default-home',
+  runtimeDir: process.env.HOMEPLUS_RUNTIME_DIR || '/tmp', isRoot, log,
+  suspend: async () => {
+    const cfg = readConfig(); cfg.homeOverride = false; writeConfig(cfg);
+    await unmountRedirect(); await applyKeyFilter();
+  },
+  resume: applyHomeMode
+});
+setTimeout(() => systemHome.recover().catch((e) => log('default Home recovery:', e.message)), 0);
+register('startup', async (msg) => {
+  try { msg.respond(Object.assign({ returnValue: true }, await systemHome.startup())); }
+  catch (e) { fail(msg, e.message); }
+});
 
 function installBootScript() {
   if (!isRoot()) return false;
@@ -420,6 +440,15 @@ const OUR_IDS = [NATIVE_ID, OLD_ID, 'com.atvlauncher.native', 'com.atvlauncher.a
 // (OLD_BINDS). Matched whole: a bind of yours that only mentions Home+ stays yours.
 const ourBind = (b, key) => !!b && !!OUR_BINDS[key] &&
   ((b.action === OUR_BINDS[key].action && b.command === OUR_BINDS[key].command) || OLD_BINDS[key](b));
+
+function dropHomeBind() {
+  const binds = readBinds();
+  if (!binds) throw new Error("LG Input Hook's keybinds.json isn't valid JSON");
+  if (ourBind(binds[HOME_KEY], HOME_KEY)) {
+    delete binds[HOME_KEY];
+    writeBinds(binds);
+  }
+}
 
 function dropInputhookBinds() {
   // lginputhook keybinds that are Home+'s are removed; other binds stay
@@ -669,6 +698,7 @@ let overlayBusy = false; /* an open on its way */
 let overlayAsked = 0; /* when it was asked for: how long it takes to show is logged */
 let overlayInputs = []; /* the inputs it offered: the only apps it may open */
 let overlayList = ''; /* opened on a list of its own ('inputs': the Input key): if it fails, LG's picker for it */
+let overlayFrames = ''; /* the open panel's frames' folder (none with Reduce Transparency on) */
 
 // false: cancelled on the way (another app came to the front). list: 'inputs' opens it on them alone
 async function openOverlay(list = '') {
@@ -683,6 +713,7 @@ async function openOverlay(list = '') {
     const prefs = readConfig().prefs || {}; /* the launcher's: its clock, Settings -> Control Center and Accessibility */
     frames = prefs.reduceTransparency ? '' : framesDir(); /* solid panels: no frames */
     framePicture = false;
+    frameBlur = !!prefs.ccBlurVideo;
     // what's on screen now (DISPLAY: the app's own screen too), before the panel is drawn over it:
     // the glass's first picture, and the one it keeps over an app with no video. The TV takes it as
     // the call starts (seen on the C3), so it isn't waited for: the panel isn't on screen yet. If the
@@ -699,7 +730,7 @@ async function openOverlay(list = '') {
     asked = true;
     const r = await luna(SYSUI + '/launch', {
       appId: OVERLAY_ID, main: overlayMain(), windowType: '_WEBOS_SYSTEM_UI_TYPE_OVERLAY', defaultWindowType: 'overlay',
-      params: { state, port: IMAGE_PORT, token: TOKEN, frame: frames && 'file://' + path.join(frames, 'frame.png'), list } /* the API: the compositor may only call LG's services over luna */
+      params: { state, port: IMAGE_PORT, token: TOKEN, frame: frameFile(frames), list } /* the API: the compositor may only call LG's services over luna */
     });
     if (!r || r.returnValue === false) throw new Error((r && r.errorText) || "the TV didn't open it");
     if (gen !== overlayGen) { /* another app came to the front while it opened */
@@ -707,7 +738,8 @@ async function openOverlay(list = '') {
       return false;
     }
     overlayOpen = opened = true;
-    if (frames) framesLoop = framesLoop.then(() => captureFrames(gen, frames, snapshot, !!prefs.ccBlurVideo));
+    overlayFrames = frames;
+    if (frames) framesLoop = framesLoop.then(() => captureFrames(gen, frames, snapshot));
     return true;
   } finally {
     overlayBusy = false;
@@ -728,6 +760,7 @@ async function openOverlay(list = '') {
 // closes.
 const FRAMES_IN = process.env.HOMEPLUS_FRAMES_DIR || os.tmpdir(); /* tests: elsewhere */
 const framesDir = () => fs.mkdtempSync(path.join(FRAMES_IN, 'homeplus-cc-')); /* new, root's, 0700 */
+const frameFile = (dir) => (dir ? 'file://' + path.join(dir, 'frame.png') : '');
 try { /* left by a service that stopped (only its own) */
   for (const f of fs.readdirSync(FRAMES_IN).filter((f) => /^homeplus-cc-/.test(f))) {
     const p = path.join(FRAMES_IN, f), st = fs.lstatSync(p);
@@ -826,25 +859,36 @@ async function grab(dir, method, go, live) {
 // again at first (the video was dark a moment, or PicCap is letting go of the capture), then less and
 // less often.
 let framesLoop = Promise.resolve();
+let frameBlur = false; /* Blur Over Video, as it is now: it can change in the panel's Settings */
 const CAPTURE_MS = 1000 / (Number(process.env.HOMEPLUS_CAPTURE_RATE) || 3); /* tests: more */
 const RETRY_MS = (process.env.HOMEPLUS_CAPTURE_RETRY_MS || '1500,3000,5000').split(',').map(Number); /* tests: shorter */
 
-// waits ms, or less if live() says it has closed (looked at every 100 ms)
+// waits ms, or less if live() says it's over: closed, or there's something else to do (looked at every 100 ms)
 async function nap(ms, live) {
   for (const end = Date.now() + ms; live() && Date.now() < end;) await sleep(Math.min(end - Date.now(), 100));
 }
 
-async function captureFrames(gen, dir, snapshot, blurVideo) {
+async function captureFrames(gen, dir, snapshot) {
   const live = () => overlayOpen && gen === overlayGen;
   const until = Date.now() + 5 * 60000; /* in case it's never said to have closed */
   let video = false; /* the frame on show is the video's, not the snapshot */
-  let paused = false; /* PicCap's capture, for Blur Over Video */
+  let blur = false, paused = false; /* Blur Over Video, as it's been acted on; PicCap's capture, for it */
+  let pausedAt = 0; /* the try it was paused before */
   let wait = 0, none = 0, slow = 0; /* before the next try; tries in a row with no picture, and long waits after them */
   try {
     const screen = await snapshot;
-    if (blurVideo && picCapture && live()) paused = await picCapture.pause();
     for (let n = 0; ; n++) {
-      await nap(Math.max(wait, captureAt + CAPTURE_MS - Date.now()), live);
+      if (blur !== frameBlur && live()) { /* (and whenever it's changed in the panel's Settings) */
+        blur = frameBlur;
+        if (blur && picCapture) paused = await picCapture.pause();
+        else if (paused) {
+          picCapture.resume();
+          paused = false;
+        }
+        pausedAt = n;
+        wait = 0;
+      }
+      await nap(Math.max(wait, captureAt + CAPTURE_MS - Date.now()), () => live() && blur === frameBlur);
       if (!live() || Date.now() > until) break;
       const got = await grab(dir, 'VIDEO', live, live); /* none (no video playing): the snapshot stays */
       if (!live()) break;
@@ -861,7 +905,7 @@ async function captureFrames(gen, dir, snapshot, blurVideo) {
         video = false;
       }
       none++;
-      wait = (got === 'dark' && none <= 3) || (paused && n < 10) ? 300 : RETRY_MS[Math.min(slow++, RETRY_MS.length - 1)];
+      wait = (got === 'dark' && none <= 3) || (paused && n - pausedAt < 10) ? 300 : RETRY_MS[Math.min(slow++, RETRY_MS.length - 1)];
     }
   } catch (e) {
     log('control center frames:', e.message);
@@ -871,6 +915,14 @@ async function captureFrames(gen, dir, snapshot, blurVideo) {
     if (shown && shown.dir === dir) shown = null;
     dropFrames(dir);
   }
+}
+
+// Reduce Transparency turned off in the Settings of a panel that opened with it on, so with no frames: they
+// start now. Not with a snapshot of the screen: that would be of the panel.
+function startFrames() {
+  if (!overlayOpen || overlayFrames) return;
+  const dir = overlayFrames = framesDir(), gen = overlayGen;
+  framesLoop = framesLoop.then(() => captureFrames(gen, dir, 'not taken'));
 }
 
 // The compositor keeps every QML file it has loaded, by its address, until the TV restarts; so each
@@ -905,12 +957,31 @@ function closeOverlay() {
   luna(SYSUI + '/closeByAppId', { appId: OVERLAY_ID });
 }
 
-// What it asks for (POST /api/overlay): {"event": "open", "target": "network" | "recents" |
-// "accessibility" | "settings"}, or {"event": "open", "app"} for an input it offered; {"event":
-// "opened"} (on screen) and {"event": "closed"}; and {"event": "failed", "error"}, when its panel
-// didn't load: LG's Quick Settings instead.
+// Recents, as the panel shows them: each app's icon as a file (an Image there can't send the API's token)
+async function overlayRecents() {
+  const apps = await Promise.all((await apiRunning()).apps.map(async (a) => {
+    const icon = a.icon && await imageFile('icon', a.id);
+    return { id: a.id, title: a.title, color: a.color, icon: icon ? `file://${encodeURI(icon)}` : '' };
+  }));
+  return { returnValue: true, apps, front: lastForeground };
+}
+
+// What it may open: what it offers, which are the inputs, LG's settings apps and Recents
+async function overlayOffers(id) {
+  return overlayInputs.includes(id) || SETTINGS_APPS.some(([app]) => app === id) || (await apiRunning()).apps.some((a) => a.id === id);
+}
+
+// What it leaves to Home+: all of a menu if its own panel didn't load, or a page of Settings, for a row
+// that can't be done over an app
+const HOME_TARGETS = ['recents', 'accessibility', 'settings', 'general', 'accounts', 'about'];
+
+// What it asks for (POST /api/overlay): {"event": "open", "target": "network" or one of HOME_TARGETS}, or
+// {"event": "open", "app"} for an app it offered; {"event": "recents"}, the apps for its Recents;
+// {"event": "opened"} (on screen) and {"event": "closed"}; and {"event": "failed", "error"}, when its
+// panel didn't load: LG's Quick Settings instead.
 async function overlayEvent(p) {
   if (p.event === 'frame') return nextFrame(Number(p.after) || 0); /* (answered when there's a newer one) */
+  if (p.event === 'recents') return overlayRecents();
   if (p.event === 'opened') {
     if (overlayAsked) log('control center overlay: on screen', Date.now() - overlayAsked, 'ms after the key');
     overlayAsked = 0;
@@ -921,11 +992,12 @@ async function overlayEvent(p) {
     log('control center overlay failed:', String(p.error || '').replace(/\s+/g, ' ').slice(0, 300));
     await (overlayList === 'inputs' ? inputPicker() : quickSettings());
   } else if (p.event === 'open' && p.app) {
-    if (!overlayInputs.includes(p.app)) throw new Error(`not an input: ${p.app}`);
+    if (!(await overlayOffers(p.app))) throw new Error(`not an app it offered: ${p.app}`);
+    clearWake();
     await luna(APPMGR + '/launch', { id: p.app });
   } else if (p.event === 'open' && p.target === 'network') { /* as LG's Quick Settings open it */
     await luna(APPMGR + '/launch', { id: 'com.webos.app.firstuse-overlay', params: { target: 'network' } });
-  } else if (p.event === 'open' && ['recents', 'accessibility', 'settings'].includes(p.target)) {
+  } else if (p.event === 'open' && HOME_TARGETS.includes(p.target)) {
     emit(p.target); /* the launcher opens it once it's in front */
     await luna(APPMGR + '/launch', { id: NATIVE_ID });
   } else {
@@ -974,6 +1046,8 @@ function dropElevation() {
 
 async function uninstall() {
   const steps = {};
+  await systemHome.remove(); // failure to restore Home must stop removal, not strand the Home button
+  steps.defaultHome = true;
   await unmountRedirect().catch(() => {});
   steps.keyFilter = await keyFilter.remove().catch((e) => e.message); /* (out of the compositor's list; a reboot would do it too) */
   try { [INITD, BOOT_LOG].forEach((f) => remove.rmSync(f, { force: true })); steps.bootScript = true; } catch (e) { steps.bootScript = e.message; }
@@ -1009,15 +1083,19 @@ function saveRecents() {
 }
 
 async function onForeground(appId) {
+  maybeHomeAfterWake(appId);
   if (!appId || appId === lastForeground) return;
   log('foreground', lastForeground || '-', '->', appId);
   lastForeground = appId;
+  if (resumeRun && resumeRun.app === appId) resumeRun.seen = true;
+  else if (resumeRun && resumeRun.seen) resumeRun = null; /* you left it: not wanted, even if you come back before it's ready */
   closeOverlay();
   lastUsed.set(appId, Date.now());
   saveRecents();
   const cfg = readConfig();
   const target = homeTarget(cfg);
   if (appId === target) takeoverLanded = true;
+  if (cfg.defaultHomeEnabled) return; // system Home handles Home; an explicit LG Home launch stays usable
   if (cfg.homeOverride === false) return;
   if (!homeApps(cfg).includes(appId)) return;
   if (redirectTarget) return; // the no-flash page already opens Home+
@@ -1050,6 +1128,30 @@ const coming = new Map(); /* apps SAM is starting or bringing back to the front,
 const quit = new Map(); /* apps that closed, id -> when */
 let emptied = { app: '', at: 0 }; /* the app that left the front with nothing after it, and when */
 let tvOn = true;
+let powerState = '';
+let wakeUntil = 0;
+let homeBeforeStandby = false;
+let wakeTimer = null;
+
+function clearWake() {
+  wakeUntil = 0;
+  if (wakeTimer) clearTimeout(wakeTimer);
+  wakeTimer = null;
+}
+
+function maybeHomeAfterWake(appId) {
+  if (!wakeUntil || !tvOn || !appId) return;
+  if (Date.now() > wakeUntil) return clearWake();
+  const cfg = readConfig();
+  if (appId === homeTarget(cfg) || appId !== 'com.webos.app.livetv' || homeMode(cfg) === 'off') return clearWake();
+  if (wakeTimer) return;
+  wakeTimer = setTimeout(() => {
+    wakeTimer = null;
+    if (!wakeUntil || !tvOn || lastForeground !== 'com.webos.app.livetv') return;
+    clearWake();
+    takeover(homeTarget(readConfig()), ' (power on)').catch((e) => log('home wake failed', e.message));
+  }, 650);
+}
 
 function onNoForeground() {
   const left = lastForeground;
@@ -1057,16 +1159,23 @@ function onNoForeground() {
   log('foreground', left, '-> (none)');
   lastForeground = '';
   emptied = { app: left, at: Date.now() };
-  setTimeout(homeAfterQuit, QUIT_GRACE_MS);
+  checkHomeAfterQuit();
+}
+
+function checkHomeAfterQuit() {
+  /* Home+ itself won't be relaunched: clear a manual close before a queued standby event can remember it. */
+  if (emptied.app === homeTarget(readConfig())) homeAfterQuit();
+  else setTimeout(homeAfterQuit, QUIT_GRACE_MS);
 }
 
 /* (SAM says an app closed and the screen has no app, in either order) */
 function homeAfterQuit() {
   const left = emptied.app, now = Date.now();
   if (!left || lastForeground || now - emptied.at > 900 || !(now - (quit.get(left) || 0) < 3000)) return;
-  emptied.app = '';
   const cfg = readConfig();
   const target = homeTarget(cfg);
+  if (left === target && !tvOn) return; /* standby still needs the recent Home+ foreground */
+  emptied.app = '';
   if (left === target || homeApps(cfg).includes(left) || cfg.homeOverride === false || redirectTarget || !tvOn) return;
   for (const [id, at] of coming) if (id !== target && now - at < 10000) return; /* (it'll be in front) */
   takeover(target, ` (${left} quit)`).catch((e) => log('home takeover failed', e.message));
@@ -1084,7 +1193,7 @@ function watchLife() {
       stremioServer.onLife(p.appId, p.event);
       if (p.event === 'close' || p.event === 'stop') {
         quit.set(p.appId, Date.now());
-        if (p.appId === emptied.app) setTimeout(homeAfterQuit, QUIT_GRACE_MS);
+        if (p.appId === emptied.app) checkHomeAfterQuit();
       }
       if (p.event !== 'launch' && p.event !== 'splash') return coming.delete(p.appId);
       coming.set(p.appId, Date.now());
@@ -1105,7 +1214,26 @@ function watchPower() {
     const sub = service.subscribe('luna://com.webos.service.tvpower/power/getPowerState', { subscribe: true });
     sub.on('response', (m) => {
       const p = m.payload || {};
-      if (p.state) tvOn = p.state === 'Active' && !p.processing; /* (not turning off, nor its screen) */
+      if (!p.state) return;
+      tvOn = p.state === 'Active' && !p.processing; /* (not turning off, nor its screen) */
+      const previous = powerState;
+      if (p.state !== 'Active' || !p.processing) powerState = p.state;
+      if (['Active Standby', 'Suspend', 'Power Off'].includes(p.state) &&
+          !['Active Standby', 'Suspend', 'Power Off'].includes(previous)) {
+        const target = homeTarget(readConfig());
+        // webOS may clear the foreground just before reporting standby.
+        homeBeforeStandby = lastForeground === target ||
+          (!lastForeground && emptied.app === target && Date.now() - emptied.at < 2000);
+        clearWake();
+      }
+      if (!tvOn || !['Active Standby', 'Suspend', 'Power Off'].includes(previous)) return;
+      log('power wake', previous, '-> Active');
+      if (!homeBeforeStandby) return;
+      homeBeforeStandby = false;
+      wakeUntil = Date.now() + 5000;
+      const until = wakeUntil;
+      setTimeout(() => { if (wakeUntil === until && lastForeground === 'com.webos.app.livetv') maybeHomeAfterWake(lastForeground); }, 100);
+      setTimeout(() => { if (wakeUntil === until) clearWake(); }, 5000);
     });
     sub.on('cancel', () => setTimeout(watchPower, 3000));
   } catch (e) {
@@ -1132,18 +1260,25 @@ function watchForeground() {
 }
 watchForeground();
 
-register('setHomeOverride', (msg) => {
-  const cfg = readConfig();
-  const p = msg.payload || {};
-  if (typeof p.enabled === 'boolean') cfg.homeOverride = p.enabled;
-  if (Array.isArray(p.homeApps)) cfg.homeApps = p.homeApps.map(String);
-  if (typeof p.target === 'string') cfg.homeTarget = p.target || undefined;
-  if (['redirect', 'watch'].includes(p.mode)) cfg.homeMode = p.mode;
-  writeConfig(cfg);
-  // rebuild: the no-flash page has the target baked in
-  unmountRedirect().then(applyHomeMode).catch((e) => log('home mode error', e.message));
-  msg.respond({ returnValue: true, enabled: cfg.homeOverride !== false, mode: homeMode(cfg),
-    homeApps: cfg.homeApps || DEFAULT_HOME_APPS, target: cfg.homeTarget || 'auto', lastForeground });
+register('setHomeOverride', async (msg) => {
+  try {
+    let cfg = readConfig();
+    const p = msg.payload || {};
+    if (p.enabled === false || ['redirect', 'watch'].includes(p.mode)) {
+      await systemHome.setEnabled(false); cfg = readConfig();
+    }
+    if (p.enabled === false) dropHomeBind();
+    if (typeof p.enabled === 'boolean') cfg.homeOverride = p.enabled;
+    if (Array.isArray(p.homeApps)) cfg.homeApps = p.homeApps.map(String);
+    if (typeof p.target === 'string') cfg.homeTarget = p.target || undefined;
+    if (['redirect', 'watch'].includes(p.mode)) cfg.homeMode = p.mode;
+    writeConfig(cfg);
+    // rebuild: the no-flash page has the target baked in
+    await unmountRedirect();
+    await applyHomeMode();
+    msg.respond({ returnValue: true, enabled: cfg.homeOverride !== false, mode: homeMode(cfg),
+      homeApps: cfg.homeApps || DEFAULT_HOME_APPS, target: cfg.homeTarget || 'auto', lastForeground });
+  } catch (e) { fail(msg, e.message); }
 });
 
 // ------------------------------------------------------------------ local JSON API
@@ -1440,7 +1575,8 @@ const picCapture = ambient.find((c) => c.id === 'screenCapture'); /* Blur Over V
 async function apiFeatured(id) {
   if (!titles[id]) await listApps();
   const hasArt = !!(images[id] && images[id].art && images[id].art.length); /* else: what's trending */
-  const f = await recommendations.featured(id, titles[id]) || await tmdb.featured(titles[id] ? { id, title: titles[id] } : null, hasArt);
+  const detailsEnabled = (readConfig().prefs || {}).topShelfDetails !== 'off';
+  const f = await recommendations.featured(id, titles[id], detailsEnabled) || await tmdb.featured(titles[id] ? { id, title: titles[id] } : null, hasArt);
   return { kind: f.kind, provider: f.provider, items: f.items.map((it) => Object.assign({}, it, { background: proxied(it.background), logo: proxied(it.logo) })) };
 }
 // Media servers: each one's Continue Watching shows in its own app's Top Shelf.
@@ -1532,6 +1668,97 @@ async function apiRunning() {
   return { apps: opened.map((id) => byId.get(id)) };
 }
 
+const showToast = (message) => luna('luna://com.webos.notification/createToast', { sourceId: NATIVE_ID, message: String(message).slice(0, 200) });
+let hint = null; /* the toast waiting for its app to open: { message, timer } */
+
+// Opens an app. toast: a hint shown by the system, so it appears over the app that just opened.
+async function openApp(id, params, toast, recommendationId) {
+  clearWake();
+  const direct = recommendationId ? await recommendations.launch(id, recommendationId) : null;
+  const openedTitle = direct && direct.returnValue !== false;
+  const r = openedTitle ? direct : await luna(APPMGR + '/launch', params ? { id, params } : { id });
+  if (toast && !openedTitle && r && r.returnValue !== false) {
+    if (hint) clearTimeout(hint.timer);
+    const h = hint = { message: toast, timer: setTimeout(() => { hint = null; showToast(h.message); }, 1500) };
+  }
+  return r;
+}
+
+// What happened since: the hint says this instead, or, gone already, this follows it.
+function tellInstead(message) {
+  if (hint) hint.message = message;
+  else showToast(message);
+}
+
+// OK on a title in the Top Shelf: its app has opened, and now its server has it play the title. The launcher has
+// its answer by then: this takes seconds, and is all that polls, only after an OK. A new run replaces the last, and
+// once the app has been in front any other app there ends it for good (onForeground; right after the launch Home+
+// still is, which doesn't count), so nothing starts behind your back. If it can't be done, the toast OK has always shown.
+async function playInBackground(m, app, item, fromStart, run) {
+  const stillWanted = () => run === resumeRun;
+  if (await m.playOnTV({ id: item.id, fromStart }, stillWanted) || !stillWanted()) return;
+  if (!titles[app]) await listApps();
+  tellInstead(`“${item.name}” is in ${titles[app] || app}’s Continue Watching`);
+}
+
+// What Settings' Remote page changes: the Home button's mode, and the Settings and Input buttons. cfg is
+// saved here, and left as it's saved
+async function setHome(b, cfg = readConfig()) {
+  if (typeof b.defaultHome === 'boolean') {
+    await systemHome.setEnabled(b.defaultHome); cfg = readConfig();
+    if (!b.defaultHome) { dropHomeBind(); cfg.homeOverride = false; writeConfig(cfg); await applyHomeMode(); }
+  }
+  if (typeof b.startupEnabled === 'boolean') { cfg.startupEnabled = b.startupEnabled; writeConfig(cfg); }
+  if (b.mode !== undefined) { await systemHome.setEnabled(false); cfg = readConfig(); }
+  if (typeof b.settingsKey === 'boolean' || typeof b.inputKey === 'boolean') {
+    const was = { settingsKey: cfg.settingsKey, inputKey: cfg.inputKey };
+    if (typeof b.settingsKey === 'boolean') setKeyBind(SETTINGS_KEY, b.settingsKey, cfg); /* the Settings key's bind */
+    if (typeof b.inputKey === 'boolean') setKeyBind(INPUT_KEY, b.inputKey, cfg); /* the Input key's */
+    const took = await applyKeyFilter();
+    if (took !== true && !fs.existsSync(path.dirname(INPUTHOOK_BINDS))) { /* the key filter is all that catches them: as they were */
+      Object.assign(cfg, was);
+      writeConfig(cfg);
+      await applyKeyFilter();
+      throw new Error(`the TV didn't take Home+'s key filter: ${took}`); /* (Settings says so) */
+    }
+  }
+  if (typeof b.onboarded === 'boolean') { /* the welcome steps: false while they're on, true once done or skipped */
+    cfg.onboarded = b.onboarded;
+    if (b.mode === undefined && !b.asked) writeConfig(cfg);
+  }
+  if (b.mode !== undefined || b.asked) {
+    if (b.mode === 'off') dropHomeBind();
+    if (['redirect', 'watch'].includes(b.mode)) { cfg.homeMode = b.mode; cfg.homeOverride = true; }
+    if (b.mode === 'off') cfg.homeOverride = false;
+    if (b.asked) cfg.homeAsked = true;
+    writeConfig(cfg);
+    await unmountRedirect();
+    await applyHomeMode();
+  }
+}
+
+async function homeState(cfg = readConfig()) {
+  const active = !!redirectTarget || keyFilter.takes('home');
+  const mode = homeMode(cfg) === 'off' && active ? 'redirect' : homeMode(cfg);
+  return Object.assign({ mode, noFlashActive: active, noFlashAvailable: !cfg.defaultHomeEnabled && await noFlashAvailable(), settingsKey: settingsKeyState(), inputKey: keyState(INPUT_KEY),
+    piccap: !!picCapture && await picCapture.available() }, await systemHome.status());
+}
+
+function setPrefs(b) {
+  const cfg = readConfig();
+  cfg.prefs = Object.assign({}, cfg.prefs, b);
+  writeConfig(cfg);
+  if (typeof b.ccBlurVideo === 'boolean') frameBlur = b.ccBlurVideo; /* (the panel open now too) */
+  if (b.reduceTransparency === false) startFrames();
+  return cfg.prefs;
+}
+
+const settings = require('./settings')({
+  log, readConfig, setPrefs, home: homeState, setHome, apps: apiApps, tvApps: async () => (await apiSystem()).settings,
+  accounts: () => ({ stremio: stremioStatus(), trakt: trakt.status(), jellyfin: media.jellyfin.status(), plex: media.plex.status(), tmdb: tmdb.status() }),
+  version: pkg.version, elevated: isRoot
+});
+
 async function handleApi(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1');
   try {
@@ -1547,6 +1774,7 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/control') { /* the Control Center: GET its state, POST {action, value} */
       if (req.method === 'POST') {
         const b = await readBody(req);
+        if (b.action === 'input') clearWake();
         await control.act(String(b.action || ''), b.value, b);
         log('control:', b.action, b.value === undefined ? '' : b.value);
       }
@@ -1582,34 +1810,13 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/home') { /* (the config is read once the body is in: a sign-in may save it meanwhile) */
       const b = req.method === 'POST' ? await readBody(req) : null;
       const cfg = readConfig();
-      if (b) {
-        if (typeof b.settingsKey === 'boolean' || typeof b.inputKey === 'boolean') {
-          const was = { settingsKey: cfg.settingsKey, inputKey: cfg.inputKey };
-          if (typeof b.settingsKey === 'boolean') setKeyBind(SETTINGS_KEY, b.settingsKey, cfg); /* the Settings key's bind */
-          if (typeof b.inputKey === 'boolean') setKeyBind(INPUT_KEY, b.inputKey, cfg); /* the Input key's */
-          const took = await applyKeyFilter();
-          if (took !== true && !fs.existsSync(path.dirname(INPUTHOOK_BINDS))) { /* the key filter is all that catches them: as they were */
-            Object.assign(cfg, was);
-            writeConfig(cfg);
-            await applyKeyFilter();
-            throw new Error(`the TV didn't take Home+'s key filter: ${took}`); /* (Settings says so) */
-          }
-        }
-        if (typeof b.onboarded === 'boolean') { /* the welcome steps: false while they're on, true once done or skipped */
-          cfg.onboarded = b.onboarded;
-          if (b.mode === undefined && !b.asked) writeConfig(cfg);
-        }
-        if (b.mode !== undefined || b.asked) {
-          if (['redirect', 'watch'].includes(b.mode)) { cfg.homeMode = b.mode; cfg.homeOverride = true; }
-          if (b.mode === 'off') cfg.homeOverride = false;
-          if (b.asked) cfg.homeAsked = true;
-          writeConfig(cfg);
-          await unmountRedirect();
-          await applyHomeMode();
-        }
-      }
-      return sendJSON(res, 200, { mode: homeMode(cfg), noFlashActive: !!redirectTarget || keyFilter.takes('home'), noFlashAvailable: await noFlashAvailable(), settingsKey: settingsKeyState(), inputKey: keyState(INPUT_KEY),
-        piccap: !!picCapture && await picCapture.available() }); /* Settings -> Control Center offers Blur Over Video */
+      if (b) await setHome(b, cfg);
+      return sendJSON(res, 200, await homeState());
+    }
+    if (url.pathname === '/api/settings' && req.method === 'POST') { /* Settings over other apps: its pages, {row, dir} changes one first */
+      const b = await readBody(req);
+      if (b.row) await settings.act(String(b.row), b.dir === -1 || b.dir === 'next' ? b.dir : 1);
+      return sendJSON(res, 200, Object.assign(await settings.state(), { frame: overlayOpen ? frameFile(overlayFrames) : '' }));
     }
     if (url.pathname === '/api/events') return listen(req, res);
     if (url.pathname === '/api/key' && req.method === 'POST') return sendJSON(res, 200, await remoteKey(String((await readBody(req)).key || '')));
@@ -1630,13 +1837,16 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/launch' && req.method === 'POST') {
       const { id, params, toast, recommendationId } = await readBody(req);
       if (!id) return sendJSON(res, 400, { returnValue: false, errorText: 'id is required' });
-      const direct = recommendationId ? await recommendations.launch(id, recommendationId) : null;
-      const openedTitle = direct && direct.returnValue !== false;
-      const r = openedTitle ? direct : await luna(APPMGR + '/launch', params ? { id, params } : { id });
-      // a hint shown by the system, so it appears over the app that just opened
-      if (toast && !openedTitle && r && r.returnValue !== false) {
-        setTimeout(() => luna('luna://com.webos.notification/createToast', { sourceId: NATIVE_ID, message: String(toast).slice(0, 200) }), 1500);
-      }
+      return sendJSON(res, 200, await openApp(id, params, toast, recommendationId));
+    }
+    if (url.pathname === '/api/resume' && req.method === 'POST') { /* OK on a Jellyfin card: { app, source, id, fromStart } */
+      const { app, source, id, fromStart } = await readBody(req);
+      const m = media[source], run = resumeRun = { app, seen: false };
+      if (!app || !m || !m.playOnTV) return sendJSON(res, 400, { returnValue: false, errorText: 'app and a source that can play are required' });
+      const item = await m.known(id);
+      if (!item) return sendJSON(res, 404, { returnValue: false, errorText: 'that title isn\'t in the list' });
+      const r = await openApp(app, null, `${item.positionTicks && !fromStart ? 'Resuming' : 'Playing'} “${item.name}”`);
+      if (r && r.returnValue !== false) playInBackground(m, app, item, !!fromStart, run).catch((e) => log('resume failed', e.message));
       return sendJSON(res, 200, r);
     }
     if (url.pathname === '/api/layout') {
@@ -1650,12 +1860,7 @@ async function handleApi(req, res) {
     }
     if (url.pathname === '/api/prefs') { // launcher preferences, e.g. {"sounds": false}
       const b = req.method === 'POST' ? await readBody(req) : null;
-      const cfg = readConfig();
-      if (b) {
-        cfg.prefs = Object.assign({}, cfg.prefs, b);
-        writeConfig(cfg);
-      }
-      return sendJSON(res, 200, cfg.prefs || {});
+      return sendJSON(res, 200, b ? setPrefs(b) : readConfig().prefs || {});
     }
     if (url.pathname === '/api/log' && req.method === 'POST') {
       const b = await readBody(req);

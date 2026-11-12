@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mockServer, configStore, quiet, last, freshRequire } = require('./helpers');
+const { mockServer, configStore, quiet, last, freshRequire, until } = require('./helpers');
 
 /* A stand-in TMDB: a few streaming services, their popular titles, trending, logos and keys. */
 const PROVIDERS = [
@@ -24,7 +24,7 @@ const titles = (provider, kind, n = 4) => Array.from({ length: n }, (_, i) => ({
   backdrop_path: `/b${provider}-${kind}-${i}.jpg`
 }));
 
-let tmdbServer, down = false, genreDown = false, availabilityDown = false;
+let tmdbServer, down = false, genreDown = false, findHang = false, genreHang = false, availabilityDown = false;
 test.before(async () => {
   tmdbServer = await mockServer((req, url) => {
     if (down) return { status: 500, json: {} };
@@ -32,8 +32,8 @@ test.before(async () => {
     if (url.pathname === '/3/configuration') return auth ? { json: { images: {} } } : { status: 401, json: {} };
     if (!auth) return { status: 401, json: {} };
     if (url.pathname.startsWith('/3/watch/providers/')) return { json: { results: PROVIDERS } };
-    if (url.pathname === '/3/genre/tv/list') return genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 18, name: 'Drama' }] } };
-    if (url.pathname === '/3/genre/movie/list') return genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 35, name: 'Comedy' }] } };
+    if (url.pathname === '/3/genre/tv/list') return genreHang ? { hang: true } : genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 18, name: 'Drama' }] } };
+    if (url.pathname === '/3/genre/movie/list') return genreHang ? { hang: true } : genreDown ? { status: 500, json: {} } : { json: { genres: [{ id: 35, name: 'Comedy' }] } };
     const d = /^\/3\/discover\/(tv|movie)$/.exec(url.pathname);
     if (d) {
       const list = titles(Number(url.searchParams.get('with_watch_providers')), d[1]);
@@ -51,12 +51,13 @@ test.before(async () => {
     const watch = /^\/3\/(tv|movie)\/(\d+)\/watch\/providers$/.exec(url.pathname);
     if (watch) {
       if (availabilityDown) return { status: 500, json: {} };
-      const on = { 1: [8], 2: [8], 1001: [8], 1002: [9], 1003: [21], 1004: [9],
+      const on = { 1: [8], 2: [8], 123: [9], 213562: [21], 1001: [8], 1002: [9], 1003: [21], 1004: [9],
         1005: [337], 1006: [337], 1007: [337] }[Number(watch[2])] || [];
       return { json: { results: { US: { flatrate: on.map((id) => ({ provider_id: id })) } } } };
     }
     const found = /^\/3\/find\/(tt\d+)$/.exec(url.pathname);
     if (found) {
+      if (findHang) return { hang: true };
       const movie = found[1] === 'tt1234567' ? [{ genre_ids: [35], release_date: '2024-02-01', vote_average: 7.56,
         overview: 'A film  about people\nwho discover an unexpected world.' }] : [];
       const tv = found[1] === 'tt7654321' ? [{ genre_ids: [18], first_air_date: '2012-03-01', vote_average: 8.34,
@@ -109,7 +110,7 @@ test.before(async () => {
   process.env.HOMEPLUS_TMDB_IMAGES = `${tmdbServer.base}/img`;
 });
 test.after(() => tmdbServer.close());
-test.beforeEach(() => { down = genreDown = availabilityDown = false; });
+test.beforeEach(() => { down = genreDown = findHang = genreHang = availabilityDown = false; });
 
 function makeTmdb(cfg = { tmdbKey: 'goodkey' }) {
   const store = configStore(cfg);
@@ -147,8 +148,16 @@ test('tmdb: provider availability resolves close namesakes, with separate caches
   assert.equal((await tmdb.detailsByTitle('The Rainmaker', 'Prime Video')).overview, 'An older film.');
   assert.equal(await tmdb.detailsByTitle('The Rainmaker', 'Stan'), null, 'another provider cannot reuse the Netflix match');
   assert.equal(await tmdb.detailsByTitle('Same Title', 'Netflix'), null, 'two available namesakes remain plain');
-  assert.equal((await tmdb.detailsByTitle('The Rainmaker (1997)', 'Netflix')).overview, 'An older film.',
+  assert.equal((await tmdb.detailsByTitle('The Rainmaker (1997)', 'Prime Video')).overview, 'An older film.',
     'an explicit year identifies the film');
+});
+
+test('tmdb: even a dominant exact name must be on the selected provider', async () => {
+  const { tmdb } = makeTmdb();
+  assert.equal((await tmdb.detailsByTitle('Crystal Lake', 'Stan')).overview, 'A series story.');
+  assert.equal(await tmdb.detailsByTitle('Crystal Lake', 'Netflix'), null, 'a namesake is not given Stan metadata on Netflix');
+  assert.equal(await tmdb.detailsByTitle('Just Add Magic', 'Netflix'), null);
+  assert.equal((await tmdb.detailsByTitle('Just Add Magic', 'Prime Video')).overview, 'Three friends find a cookbook.');
 });
 
 test('tmdb: provider availability confirms likely title aliases', async () => {
@@ -166,8 +175,27 @@ test('tmdb: unavailable provider data leaves uncertain cards plain', async () =>
   availabilityDown = true;
   const { tmdb } = makeTmdb();
   assert.equal(await tmdb.detailsByTitle('The Rainmaker', 'Netflix'), null);
-  assert.equal((await tmdb.detailsByTitle('Just Add Magic', 'Netflix')).overview,
-    'Three friends find a cookbook.', 'unique titles still have details');
+  assert.equal(await tmdb.detailsByTitle('Just Add Magic', 'Prime Video'), null,
+    'unverified exact titles stay plain when availability cannot be checked');
+});
+
+test('tmdb: failed availability requests retry after the short backoff', async (t) => {
+  const { tmdb } = makeTmdb();
+  availabilityDown = true;
+  assert.equal(await tmdb.detailsByTitle('The Rainmaker', 'Netflix'), null);
+  availabilityDown = false;
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now + 6 * 60 * 1000);
+  assert.equal((await tmdb.detailsByTitle('The Rainmaker', 'Netflix')).overview, 'A new series.');
+});
+
+test('tmdb: an availability outage keeps previously verified details', async (t) => {
+  const { tmdb } = makeTmdb();
+  const first = await tmdb.detailsByTitle('The Rainmaker', 'Netflix');
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now + 13 * 3600 * 1000);
+  availabilityDown = true;
+  assert.deepEqual(await tmdb.detailsByTitle('The Rainmaker', 'Netflix'), first);
 });
 
 test('tmdb: simultaneous ambiguous cards share the provider list lookup', async () => {
@@ -243,6 +271,28 @@ test('tmdb: paused IMDb titles have genre, year, rating and synopsis', async () 
     overview: 'A series about people who discover an unexpected world.' });
   assert.equal(await tmdb.detailsByImdb('tt0000000', 'movie'), null, 'unmatched titles remain usable');
   assert.equal(await tmdb.detailsByImdb('kitsu:123', 'series'), null, 'non-IMDb ids are not looked up');
+});
+
+test('tmdb: a stalled IMDb and genre lookup cannot hold the Continue Watching shelf', async () => {
+  findHang = genreHang = true;
+  const { tmdb } = makeTmdb();
+  const started = Date.now();
+  assert.equal(await tmdb.detailsByImdb('tt1234567', 'movie'), null);
+  assert.ok(Date.now() - started < 5000, 'both requests must time out together, not one after the other');
+});
+
+test('tmdb: a shared genre request keeps the Continue Watching deadline', async () => {
+  genreHang = true;
+  const { tmdb } = makeTmdb();
+  const before = tmdbServer.hits.length;
+  const featured = tmdb.featured({ id: 'netflix', title: 'Netflix' }, true);
+  await until(() => tmdbServer.hits.slice(before).some((h) => h.path.startsWith('/3/genre/')), 3000, 'featured genres requested');
+  const started = Date.now();
+  const details = await tmdb.detailsByImdb('tt1234567', 'movie');
+  assert.ok(Date.now() - started < 3200, 'joining a featured request must keep the short deadline');
+  assert.equal(details.overview, 'A film about people who discover an unexpected world.');
+  assert.equal(details.genre, '');
+  await featured;
 });
 
 test('tmdb: a list is fetched once, then kept', async () => {

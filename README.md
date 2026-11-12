@@ -37,7 +37,7 @@
 - **Recents:** an App Switcher for the apps you opened that are still running, most recent first. Apps webOS runs by itself (preloaded, or started again in the background) stay out. Open them, close them one by one, or close them all. Press **Back** on the first app to open Recents.
 - **Your layout:** hold **OK** on an app to move it, move it to the front, hide it, or delete it from the TV (like tvOS's Delete App; LG's built-in apps, the Homebrew Channel, LG Input Hook and Home+ itself can't be deleted). Hidden apps collect in a "Hidden" tile at the end.
 - **Your home screen, all day:** optionally, the Home button opens Home+ instead of LG's home screen, closing an app comes back to it, and it's what you see after the TV starts.
-- **No ads:** no sponsored rows or tiles. Home+ connects only to the services you sign in to (see [Privacy and security](#privacy-and-security)).
+- **No ads:** no sponsored rows or tiles. Its network connections are listed in [Privacy and security](#privacy-and-security).
 - **OLED care:** the picture drifts by a pixel every minute, and an idle Home+ dims, then goes black.
 - **Light on the TV:** a native app (C, SDL2, OpenGL ES 2) that draws nothing while nothing moves. It shares the GPU happily with PicCap and HyperHDR.
 
@@ -72,7 +72,7 @@ Updates install the same way. An update resets the service's root access, and Ho
 
 | Key | What it does |
 |---|---|
-| Arrows, **OK** | Move and open. Hold **OK** for an app's options. |
+| Arrows, **OK** | Move and open. Hold **OK** for an app's options, or a Jellyfin title's. |
 | **Back** | Closes a menu, steps out of Continue Watching or the clock, then jumps to the first app. On the first app it opens Recents. It never leaves Home+. |
 | **Red** | Recents |
 | **Green** | Settings |
@@ -93,7 +93,9 @@ The remote's own **Settings** and **Input** keys open LG's menus, and apps never
 
 **Control Center**, like tvOS's, opens from the clock: glass tiles under it for **Power Off**, **Wi-Fi** (your network; OK opens LG's network settings), **Screen Off** (sound keeps playing; any key brings the picture back), **Sound** (OK switches between TV speakers and HDMI ARC or eARC, and any other output the TV has used, like Optical: not a full picker), **Sleep Timer** (the minutes left; OK steps through LG's 10 to 240 minutes, and the TV turns off when it runs out), **Picture** (the picture mode; OK lists the modes LG offers for what's on, which differ for HDR and Dolby Vision), **Eye Comfort** (OK turns it on or off), and round buttons for **Inputs** (Live TV and the HDMI ports by LG's names, with what's plugged in, like "Soundbar · PS5"), **Recents**, **Accessibility** and **Settings**. A name too long for its tile scrolls while the tile has focus. Picture and Inputs open their list in the Control Center's place.
 
-**Over other apps** (with **Settings Button** set to the Control Center), the Settings key opens the same Control Center on top of what's playing, where LG's Quick Settings would open, and the video keeps playing under it. Its glass, like tvOS's, takes its look from the picture behind it: the TV hands Home+ a small frame of the video about three times a second, blurred, so the glass carries the picture's colours rather than its detail, and the corner behind the clock dims only where the picture is bright (a channel's logo, say). The TV can't always capture its video: protected video (Netflix and the like) gives no frames, and nor does any video while PicCap captures it, as the TV captures video for one app at a time. The glass is then a clear tint, unless **Blur Over Video** (Settings → Control Center) pauses PicCap while the Control Center is open. Everything works there as in Home+, editing too, with Home+'s focus sounds and its Reduce Motion and Reduce Transparency settings; **Back** closes it, and so does the Settings key again. Recents, Accessibility and Settings open Home+.
+**Over other apps** (with **Settings Button** set to the Control Center), the Settings key opens the same Control Center on top of what's playing, where LG's Quick Settings would open, and the video keeps playing under it. Its glass, like tvOS's, takes its look from the picture behind it: the TV hands Home+ a small frame of the video about three times a second, blurred, so the glass carries the picture's colours rather than its detail, and the corner behind the clock dims only where the picture is bright (a channel's logo, say). The TV can't always capture its video: protected video (Netflix and the like) gives no frames, and nor does any video while PicCap captures it, as the TV captures video for one app at a time. The glass is then a clear tint, unless **Blur Over Video** (Settings → Control Center) pauses PicCap while the Control Center is open. Everything works there as in Home+, editing too, with Home+'s focus sounds and its Reduce Motion and Reduce Transparency settings; **Back** closes it, and so does the Settings key again.
+
+**Settings** and **Recents** open there too, and the video keeps playing under them. Settings is the same two panes as in Home+, and what you change takes effect at once. A few things are for Home+'s own screen, and the hint line says so when **OK** would go there: signing in and out of **Accounts**, **Hidden Apps** and **Remove Home+**. Recents is a strip of app cards along the bottom of the screen, with the same keys as in Home+. It starts on the app before the one you're in, so **OK** flips back to it, and **Close All** asks first, because it closes what's playing too.
 
 ![Add a Control](docs/screenshots/control-gallery.jpg)
 
@@ -110,8 +112,8 @@ luna-send -n 1 luna://com.github.pbalazaar.homeplus.service/control '{"action":"
 
 | Section | What's there |
 |---|---|
-| **Remote** | Whether the Home button opens Home+ or LG's home screen, No Flash on TVs that support it, and what the Settings and Input buttons open (where Home+'s key filter or LG Input Hook can catch them) |
-| **Display & OLED** | Dim After, Turn Off After, Pixel Shift, Calm Colours (dark app backgrounds, so ambient lights don't flood the room), and whether the Top Shelf turns pages by itself |
+| **Remote** | Whether the Home button opens Home+ or LG's home screen, the default Home app and startup choice, No Flash on TVs that support it, and what the Settings and Input buttons open (where Home+'s key filter or LG Input Hook can catch them) |
+| **Display & OLED** | Dim After, Turn Off After, Pixel Shift, Calm Colours (dark app backgrounds, so ambient lights don't flood the room), whether the Top Shelf turns pages by itself, and Top Shelf Details (Off, Compact or Full) |
 | **App Tiles** | Default, Dark, Clear or Tinted, and Tinted's colour |
 | **Control Center** | Blur Over Video (with PicCap installed, where the Settings button opens the Control Center over other apps): pauses PicCap's capture while the Control Center is open over an app, so its glass can blur the video |
 | **General** | Focus sounds, a 12-hour or 24-hour clock, and Hidden Apps (once you've hidden one) |
@@ -138,7 +140,7 @@ Sign in under **Settings → Accounts**, or hold **OK** on the app and choose **
 
 ![Signing in to Plex with a QR code](docs/screenshots/plex-signin.jpg)
 
-Pressing **OK** on a card opens the app. Apps on LG TVs can't be opened at a specific title from outside, so a notification names the title, ready to pick from the app's own Continue Watching.
+Pressing **OK** on a Jellyfin card plays the title in the Jellyfin app ([how](#jellyfin)). On other cards it opens the app: apps on LG TVs can't be opened at a specific title from outside, so a notification names the title, ready to pick from the app's own Continue Watching.
 
 ### Stremio
 
@@ -177,6 +179,10 @@ Sign-in uses Jellyfin's Quick Connect, so the server needs it turned on (**Dashb
 
 The titles are what you're partway through, then the next episode of each show you're watching. The Accounts row appears once the Jellyfin app is installed.
 
+Press **Up** to reach the titles, then **OK** on one: the Jellyfin app opens and plays it from where you stopped (a next episode, from its start). Hold **OK** on a title for **Play From Beginning** and **Open Jellyfin**.
+
+Home+ asks your server to tell the app what to play, so the app must be signed in to that server as the same user as Home+ (or Home+ as an admin allowed to control other users). A TV renamed in Jellyfin's dashboard isn't found. If the app can't be reached in time, it stays open and a notification names the title, ready to pick from its Continue Watching.
+
 **A server Home+ can't find** (on another network, or behind a reverse proxy): give it the address over SSH, then sign in as above.
 
 ```sh
@@ -206,13 +212,21 @@ Home+ checks the key with TMDB before keeping it, and `{"key":""}` removes it. T
 
 ![Trending Now behind YouTube](docs/screenshots/trending.jpg)
 
-Apps that publish clickable recommendations show those titles in Top Shelf. **OK** opens a recommendation in its app. Home+ adds TMDB details when the title is clear; for close namesakes, it checks the app's availability in your TV's country. Uncertain matches keep the app's own artwork and title. Availability data comes from [JustWatch](https://www.justwatch.com) through TMDB.
+Apps that publish clickable recommendations show those titles in Top Shelf. **OK** opens a recommendation in its app. Home+ adds TMDB details only when TMDB also lists that title on the app in your TV's country. Unverified matches keep the app's own artwork and title. Availability data comes from [JustWatch](https://www.justwatch.com) through TMDB. Top Shelf Details set to Off skips these title lookups.
+
+For unmatched Prime Video, Netflix and Stan cards, Home+ can also read a public title page to get display details when the page confirms the same title. This happens only with Top Shelf Details enabled. The app's own content ID still opens the title; the page does not supply a launch link.
 
 For apps without compatible recommendations, Home+ shows the 10 most popular films and series TMDB lists for that service. These are refreshed every 12 hours; **OK** opens the app and names the title to search for.
 
 ## Home button
 
 With **Settings → Remote → Home Button** set to **Opens Home+**, Home+ watches for LG's home screen and opens itself instead. Without No Flash (below), LG's home screen shows for a moment first.
+
+**Default Home App**, below **Home Button**, offers **LG Home** or **Home+**. Home+ first checks that the TV reports support, that LG Home is available for recovery, and that it can read the current default. Enabling it briefly opens LG Home, then checks that the TV’s default-Home route opens Home+. A separate recovery process restores the original setting if that check fails or the package becomes unavailable. LG Home stays installed and can still be opened directly. Choosing **LG Home**, turning **Home Button** off, or using **Remove Home+** restores the saved default. No Flash is not used alongside this mode.
+
+**Open Home+ at Startup** is a separate, opt-in choice. On opens Home+ once after a full TV startup, from LG Home, Live TV or an input; an app already opened during startup is left alone. Off follows the TV’s own startup behaviour. It does not change LG’s power-on or input settings, and is separate from Home+ returning after standby.
+
+Default Home support is checked on each TV rather than inferred from its webOS version. A TV without the required profile, APIs or recoverable LG Home keeps the existing Home-button methods. Package/runtime compatibility covers webOS 5 and later; this does not establish that every model supports system default Home. Physical validation is currently limited to the OLED65C4PSA on webOS 26. HDMI-CEC wake remains unverified.
 
 Leaving an app (its own Exit, or Back on its first screen) comes back to Home+ too, without LG's home screen: Home+ opens as soon as the app has closed, before webOS would open LG's (it waits a second for that). Coming back, the home screen comes into focus where you left it, on the app you opened, as tvOS's does.
 
@@ -290,7 +304,7 @@ If the TV ever has trouble booting, the Homebrew Channel's failsafe skips boot s
 
 ## Privacy and security
 
-- **What Home+ connects to:** only the services you sign in to: Stremio's and Trakt's APIs, `plex.tv` and your Plex server, your Jellyfin server, and TMDB (`api.themoviedb.org`, `image.tmdb.org`) if you add a key. Stremio artwork comes from `images.metahub.space`; Jellyfin and Plex artwork comes from your server. To find a Jellyfin server, Home+ sends one broadcast on your local network (UDP port 7359), only when you start a Jellyfin sign-in.
+- **What Home+ connects to:** Stremio's and Trakt's APIs when you sign in, `plex.tv` and your Plex server, your Jellyfin server, and TMDB (`api.themoviedb.org`, `image.tmdb.org`) if you add a key. With a TMDB key and Top Shelf Details enabled, Home+ sends IMDb IDs from Continue Watching and app recommendation titles to TMDB for genre, rating and synopsis. With Top Shelf Details enabled, unmatched recommendations can also trigger public title-page requests to `www.primevideo.com`, `www.netflix.com` or `www.stan.com.au` without a provider sign-in or TMDB key. Stremio artwork comes from `images.metahub.space`; Jellyfin and Plex artwork comes from your server. Recommendation artwork comes from URLs supplied by the installed apps, so its hosts vary by app. To find a Jellyfin server, Home+ sends one broadcast on your local network (UDP port 7359), only when you start a Jellyfin sign-in.
 - **Signing out:** Settings → Accounts signs out of Stremio and ends Home+'s session on your Jellyfin server. Plex lists Home+ under your account's **Authorized Devices**; remove it there to revoke its access.
 - **What's stored:** sign-ins, your layout and preferences, in `/var/lib/homeplus/config.json`, and the Top Shelf's pictures, so they show at once the next time, in `/var/lib/homeplus/images` (up to 64 MB). Both are readable only by root, and **Remove Home+** deletes them.
 - **The local API:** the service runs as root and answers only on `127.0.0.1`. Every request needs a token the service writes into Home+'s app folder, and requests from web pages and other hosts are refused.
@@ -310,6 +324,10 @@ tools/test.sh                          # run the tests (tools/test.sh all: every
 Without Docker, unpack the toolchain, run its `relocate-sdk.sh`, then `WEBOS_SDK=/path/to/arm-webos-linux-gnueabi_sdk-buildroot tools/build-release.sh`. `tools/native-preview/run.sh` renders screenshots on a Linux desktop. It runs the real service against a stand-in for webOS, and the shots land in `preview/`.
 
 Every push is built and tested by GitHub Actions. Pushing a `v*` tag does the same, and once everything has passed, publishes a release with the `.ipk` attached. To send a change, see [CONTRIBUTING.md](CONTRIBUTING.md); everyone here follows the [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately, as [SECURITY.md](SECURITY.md) explains. What Home+ does for accessibility, and what it can't do yet, is in [ACCESSIBILITY.md](ACCESSIBILITY.md).
+
+## Thanks
+
+Thanks to [MoBluey](https://github.com/MoBluey) for contributing code and testing on an LG C4, [mattokar](https://github.com/mattokar) for the LG C1 report, and [idk123guy5-arch](https://github.com/idk123guy5-arch) for the LG QNED report. Thanks to everyone who reports an issue, tests Home+ or helps improve it.
 
 ## How Home+ is built and tested
 

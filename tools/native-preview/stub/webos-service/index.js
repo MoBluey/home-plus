@@ -2,10 +2,24 @@
 const { EventEmitter } = require('events');
 module.exports = class Service {
   constructor() { this.activityManager = { create() {} }; }
-  register() {}
+  register(method, handler) {
+    // Exercise an inbound Luna method through its real service/callers wrapper, without a bus.
+    if (method !== process.env.HOMEPLUS_PREVIEW_LUNA_METHOD) return;
+    const fs = require('fs'), file = process.env.HOMEPLUS_PREVIEW_LUNA_REQUEST;
+    setInterval(() => {
+      let payload;
+      try { payload = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return; }
+      fs.unlinkSync(file);
+      handler({ sender: 'com.webos.lunasend-' + process.pid, payload, respond: (response) => {
+        fs.writeFileSync(file + '.response.tmp', JSON.stringify(response));
+        fs.renameSync(file + '.response.tmp', file + '.response');
+      } });
+    }, 25).unref();
+  }
   subscribe(uri) { // the app in front: HOMEPLUS_PREVIEW_FOREGROUND, once the service asks
     const sub = new EventEmitter();
     const app = process.env.HOMEPLUS_PREVIEW_FOREGROUND;
+    if (uri.endsWith('/getForegroundAppInfo')) this.front = sub;
     if (app && uri.endsWith('/getForegroundAppInfo')) setImmediate(() => sub.emit('response', { payload: { appId: app } }));
     // tests: HOMEPLUS_PREVIEW_SUBSCRIPTIONS, what subscriptions say and when: {"<method>": [[ms, payload], ...]}, the
     // ms from when the service subscribed (each is in HOMEPLUS_PREVIEW_LUNA_LOG too, as it comes)
@@ -26,7 +40,16 @@ module.exports = class Service {
     }
     // tests: services that never answer, the calls to them matching this regular expression
     if (process.env.HOMEPLUS_PREVIEW_LUNA_SILENT && new RegExp(process.env.HOMEPLUS_PREVIEW_LUNA_SILENT).test(uri)) return;
-    if (uri.endsWith('/launch')) return cb({ payload: { returnValue: true } });
+    const home = global.__stubHomeCall && global.__stubHomeCall(uri, params, this);
+    if (home && typeof home.then === 'function') return void home.then((payload) => cb({ payload }));
+    if (home) return cb({ payload: home });
+    if (uri.endsWith('/launch')) {
+      // tests: HOMEPLUS_PREVIEW_LAUNCH_REFUSED, an app that won't open; HOMEPLUS_PREVIEW_LAUNCH_FRONT, an app that
+      // opens comes to the front (a test can leave one by opening another)
+      if (params.id && params.id === process.env.HOMEPLUS_PREVIEW_LAUNCH_REFUSED) return cb({ payload: { returnValue: false, errorText: 'refused' } });
+      if (process.env.HOMEPLUS_PREVIEW_LAUNCH_FRONT && this.front) setImmediate(() => this.front.emit('response', { payload: { appId: params.id } }));
+      return cb({ payload: { returnValue: true } });
+    }
     const fake = global.__stubLuna && global.__stubLuna(uri, params); // the harness's stand-in TV
     if (fake && typeof fake.then === 'function') return void fake.then((payload) => cb({ payload })); // (later, or never)
     if (fake) return cb({ payload: fake });

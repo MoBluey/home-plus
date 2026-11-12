@@ -15,6 +15,17 @@
 #define RAIL_TEXT_MAX_W (W / 2 - LEFT - 5) /* keep the text and its shadow in the left half */
 #define SHELF_DETAIL_ALPHA 230 /* readable over bright artwork without a text panel */
 
+static int rail_has_details(const RailItem *it)
+{
+    return it->genre[0] || it->rating > 0 || it->overview[0];
+}
+
+static int rail_enriched(const RailItem *it)
+{
+    return S.shelf_details != SHELF_DETAILS_OFF &&
+           (S.rail_source == SRC_FEATURED || S.rail_source == SRC_STREMIO) && rail_has_details(it);
+}
+
 static int pic_eq(Pic a, Pic b) { return a.kind == b.kind && (a.kind == PIC_NONE || a.i == b.i); }
 
 /* a layer lets go of its picture (a held one is freed) */
@@ -87,7 +98,7 @@ static const char *overview_line(const char *from, char *line, size_t cap, int l
 static void ensure_rail_texts(RailItem *it)
 {
     if (it->texts_made) return; /* (not title_tex: a name that renders to nothing made them every frame) */
-    int enriched = S.shelf_details != SHELF_DETAILS_OFF;
+    int enriched = rail_enriched(it);
     /* Streaming titles lead with type, genre, year and rating; a paused title
      * keeps its episode and time left on a separate line below the synopsis. */
     char meta[200] = "";
@@ -185,6 +196,7 @@ void featured_request(App *a)
     char path[ID_LEN + 32];
     snprintf(path, sizeof path, "/api/featured?app=%s", a->id);
     if (!a->feat) a->feat = 1;
+    a->feat_refresh = 0;
     S.feat_req = (int)(a - S.apps);
     net_get_json(path, TAG_FEATURED, S.feat_req, S.generation);
 }
@@ -240,7 +252,9 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
         snprintf(hint, sizeof hint, "OK opens %s", opens);
         tex_free(&S.rail_hint);
         S.rail_hint = text_render(S.f_medium, HINT_PX, hint, 0, &S.rail_hint_w, &S.rail_hint_h);
-        snprintf(hint, sizeof hint, "Left and right for more  \xC2\xB7  OK opens %s", opens); /* while you step through them */
+        /* while you step through them, OK is on the title: Jellyfin's can be played */
+        if (src == SRC_JELLYFIN) snprintf(hint, sizeof hint, "Left and right for more  \xC2\xB7  OK plays  \xC2\xB7  Hold OK for options");
+        else snprintf(hint, sizeof hint, "Left and right for more  \xC2\xB7  OK opens %s", opens);
         tex_free(&S.rail_browse);
         S.rail_browse = text_render(S.f_medium, HINT_PX, hint, 0, &S.rail_browse_w, &S.rail_browse_h);
         S.rail_source = src;
@@ -253,7 +267,7 @@ static void rail_fill(cJSON *arr, int src, const char *app, const char *heading,
     char sig[2048] = "";
     cJSON_ArrayForEach(v, arr) {
         unsigned hash = 2166136261u;
-        for (const unsigned char *p = (const unsigned char *)jstr(v, "overview"); *p; p++) hash = (hash ^ *p) * 16777619u;
+        for (const unsigned char *p = (const unsigned char *)jstr(v, "name"); *p; p++) hash = (hash ^ *p) * 16777619u;
         hash = (hash ^ 255u) * 16777619u;
         for (const unsigned char *p = (const unsigned char *)jstr(v, "genre"); *p; p++) hash = (hash ^ *p) * 16777619u;
         hash = (hash ^ 255u) * 16777619u;
@@ -456,7 +470,7 @@ void shelf_load(void)
     if (want && want != SRC_FEATURED && want != S.rail_source && want != S.rail_req && S.service_ok) rail_request(want);
     App *sa = shelf_app();
     if (sa && !media_source(sa) && S.service_ok && S.feat_req < 0 &&
-        (sa->feat == 0 || (sa->feat == 2 && !rail_for(sa))))
+        (sa->feat_refresh || sa->feat == 0 || (sa->feat == 2 && !rail_for(sa))))
         featured_request(sa); /* a streaming service? (the service keeps its list) */
     if (rail_active()) {
         int nx = (S.rail_index + 1) % S.nrail, pv = (S.rail_index + S.nrail - 1) % S.nrail;
@@ -654,11 +668,9 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     int logo = cur->logo_tex && cur->lw > 0 && cur->lh > 0, n = S.nrail < MAX_DOTS ? S.nrail : MAX_DOTS;
     float k = logo ? fminf(fminf(560.0f / cur->lw, 190.0f / cur->lh), 1.6f) : 0;
     float title_h = logo ? cur->lh * k + 18 : cur->th + 8;
-    int featured = S.rail_source == SRC_FEATURED;
-    int enriched = S.shelf_details != SHELF_DETAILS_OFF && (featured || S.rail_source == SRC_STREMIO);
-    int full = enriched && S.shelf_details == SHELF_DETAILS_FULL;
-    int overview = full && cur->overview_tex[0];
-    float detail_h = !enriched ? S.rail_hint_h : S.rail_source == SRC_STREMIO && cur->resume_tex ? cur->rh + 14 : 0;
+    int enriched = rail_enriched(cur);
+    int full = enriched && S.shelf_details == SHELF_DETAILS_FULL && cur->overview_tex[0];
+    float detail_h = S.rail_hint_h + (enriched && S.rail_source == SRC_STREMIO && cur->resume_tex ? cur->rh + 14 : 0);
     float total = title_h + cur->mh + 14 + (cur->progress > 0 ? 21 : 0) + detail_h + (n > 1 ? 32 : 0);
     Uint8 ta = (Uint8)(alpha * title);
     float y = full ? FEATURED_TITLE_Y : DOCK_Y - 64 - total;
@@ -692,17 +704,24 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
     float cc = 1 - fminf(fmaxf(S.cc.t, 0), 1); /* the Control Center, open, says what OK does */
     if (full) y = FEATURED_OVERVIEW_Y;
     float resume_y = CONTINUE_RESUME_Y;
-    if (overview) {
+    if (full) {
         float line_y = y;
         for (int l = 0; l < OVERVIEW_LINES; l++) if (cur->overview_tex[l]) {
             draw_shelf_text(cur->overview_tex[l], cur->ow[l], cur->oh[l], LEFT, line_y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
             line_y += cur->oh[l] + 3;
         }
         resume_y = fmaxf(resume_y, line_y + 5);
-    } else if (!enriched || (full && S.rail_source != SRC_STREMIO)) {
+        if (S.zone == ZONE_RAIL && S.rail_browse) {
+            float limit = S.rail_source == SRC_STREMIO ? resume_y : DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22;
+            float hint_y = line_y + 7;
+            if (hint_y + S.rail_browse_h + 8 > limit) hint_y = TOP_Y + BAR + 22;
+            draw_shelf_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, hint_y,
+                            (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255));
+        }
+    } else {
         if (S.zone == ZONE_RAIL && S.rail_browse)
             draw_shelf_text(S.rail_browse, S.rail_browse_w, S.rail_browse_h, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255));
-        else draw_shelf_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255 * cc)); /* it can't resume from here */
+        else draw_shelf_text(S.rail_hint, S.rail_hint_w, S.rail_hint_h, LEFT, y, (Uint8)(SHELF_DETAIL_ALPHA * alpha / 255 * cc)); /* (from the tile: OK opens the app) */
     }
     if (full && S.rail_source == SRC_STREMIO && cur->resume_tex)
         draw_shelf_text(cur->resume_tex, cur->rw, cur->rh, LEFT, resume_y, (Uint8)(SHELF_DETAIL_ALPHA * ta / 255));
@@ -712,7 +731,7 @@ static void draw_rail_content(RailItem *cur, Uint8 alpha, float title, float ske
         r_shape(LEFT, CONTINUE_PROGRESS_Y, bw * cur->progress, bh, bh / 2, 255, 255, 255, ta, 0, 1, 1);
     }
     y = full && S.rail_source == SRC_STREMIO ? CONTINUE_DOTS_Y :
-        full ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + (enriched ? 0 : detail_h) + 22;
+        full ? DOCK_Y - 64 - (n > 1 ? 32 : 0) + 22 : y + S.rail_hint_h + 22;
     int browsing = S.zone == ZONE_RAIL;
     for (int i = 0; n > 1 && i < n; i++) {
         int on = i == (S.rail_index < n ? S.rail_index : n - 1);

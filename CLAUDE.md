@@ -36,7 +36,10 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   system UI, as it runs LG's Quick Settings, opened by the service on the Settings key when Home+ isn't in
   front (`systemUIManager/launch` with our own `main` and `windowType: _WEBOS_SYSTEM_UI_TYPE_OVERLAY`; the
   video keeps playing). `ControlCenter.qml` is the window (lifecycle, the API calls), `ControlCenterView.qml`
-  the panel (Home+'s sizes, editing, lists, gallery, sheets), `Glass.qml` its glass, `Tint.qml` a glyph's
+  the panel (Home+'s sizes, editing, lists, gallery, sheets), `SettingsPanel.qml` Settings' two panes and
+  `RecentsStrip.qml` Recents, over the video too (made the first time they're wanted; if one can't be, its tile
+  opens Home+ as before), `service/settings.js` the pages they draw (the launcher's words: `test/qml-sizes.test.js`
+  compares them; what needs Home+'s own screen, like a sign-in's QR code, opens it on that page), `Glass.qml` its glass, `Tint.qml` a glyph's
   colour, `Marquee.qml` a long name; `glyphs/` are Home+'s icons as PNGs (`tools/make-glyphs.sh`), `sounds/` its
   focus sounds (`tools/make-sounds.py`). Found on the C3:
   - The compositor keeps every QML file it has loaded, by URL, until the TV restarts: the service opens it
@@ -58,6 +61,9 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   - It can't post a notification that leaves the remote to the app: an overlay keeps the keys even when it
     doesn't take them (tried), so Home+'s hints stay LG's toasts.
   - Sounds play through QtMultimedia's `SoundEffect` (`Sounds.qml`, loaded on its own in case it can't).
+  - In a Repeater's delegate, a name is looked up on the delegate's own item before the file's ids, so an id
+    such as `right` or a property such as `top` is an anchor line there (a width of undefined, and no error):
+    `tools/qml-check` only drives the logic, so render a panel too when its layout changes.
   - No logs: to debug, put a `Text` on screen and take a screenshot. `touch /tmp/homeplus-cc-fps` shows its
     frame rate and the last key code. A failure to load is reported to the service (`overlay failed:` in its log).
 - `native/` — the launcher (`com.github.pbalazaar.homeplus`): C, SDL2 + our own GLES2 renderer
@@ -118,7 +124,8 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   arm64 libSDL2 by itself). The harness's service believes it's root unless `HOMEPLUS_PREVIEW_UNROOTED`.
 - Tests (`tools/test.sh`, CI: `.github/workflows/ci.yml`): the service's unit tests and HTTP API
   tests in `test/` (Node's test runner; `node --test test/*.test.js`), the launcher's own (`native`:
-  `native/test/`, `make -C native test`: `net.c` against a stand-in service, `icon.c`, `util.c`'s `media_source()`), every preview scene rendered
+  `native/test/`, `make -C native test`: `net.c` against a stand-in service, `icon.c`, `util.c`'s `media_source()`; then
+  `make -C native sanitize`, the same under ASan and UBSan, where the first fault fails them), every preview scene rendered
   and checked (`screens`, on a desktop only), the .ipk built and checked (`package`: `tools/check-package.mjs` — contents,
   versions, modes, 32-bit ARM, only SDL 2.0.14 functions). Service modules read their mock URLs from env
   at load (`HOMEPLUS_TMDB`, `HOMEPLUS_PLEX_TV`, ...), so tests load them with `freshRequire`;
@@ -140,8 +147,9 @@ PicCap and HyperHDR run on the TV, so keep GPU/CPU use low.
   through a link: `service/tmp.js`); `HOMEPLUS_FETCH_TIMEOUT_MS` and `HOMEPLUS_LUNA_TIMEOUT_MS` shorten
   the image proxy's and luna calls' 15 s. The harness's `HOMEPLUS_PREVIEW_ART` serves the mock Stremio
   titles' pictures from a test's server, `HOMEPLUS_PREVIEW_HTTPS` sends Stremio's and Trakt's API calls to
-  one, `HOMEPLUS_PREVIEW_LUNA_SILENT` (a regular expression) makes those luna calls never answer, and
-  `HOMEPLUS_PREVIEW_NO_APPS` has webOS list no apps.
+  one, `HOMEPLUS_PREVIEW_LUNA_SILENT` (a regular expression) makes those luna calls never answer,
+  `HOMEPLUS_PREVIEW_NO_APPS` has webOS list no apps, `HOMEPLUS_PREVIEW_LAUNCH_REFUSED` names an app that won't
+  open, and with `HOMEPLUS_PREVIEW_LAUNCH_FRONT` an app that opens comes to the front.
   `tools/native-preview/glass-test.sh <art.jpg> <out.png>` renders a glass test card.
   `tools/native-preview/compare-screens.py <before> <after>` compares two folders of preview shots, for a change
   that should draw the same: it leaves out the clock, and allows the few scenes caught mid-animation the difference two
@@ -278,6 +286,18 @@ appears in your own SSH command line** — it kills the session. Use:
   tested, cold and warm). Its files are encrypted LG Store content; don't try to work around
   that. Continue Watching opens Stremio and the service shows a system toast
   (`com.webos.notification/createToast`) naming the title.
+- Jellyfin's LG app (`org.jellyfin.webos` 1.2.2) reads no launch parameters (it loads the server's jellyfin-web in
+  an iframe), but it obeys its server, so OK on a card goes through that (`/api/resume`, `playOnTV` in `jellyfin.js`):
+  `POST /Sessions/<id>/Playing?playCommand=PlayNow&itemIds=&startPositionTicks=` played about 2 s later, first time
+  on every try (12.4.0), so it's sent once. A hidden app doesn't play: it holds the command until it's opened, so
+  the app is opened first. Its session comes ~4.5 s after opening from closed, 1.4-1.8 s from the background,
+  and stays controllable for 40-50 s after the app leaves the screen, so controllable doesn't mean in front.
+  Its `Client` is "Jellyfin for WebOS" or "Jellyfin Web" depending on when it signed in, and playback is often
+  reported on a second session that can't be controlled, with another `DeviceId` (the first ~40 characters match):
+  this TV's sessions are `DeviceName` "LG Smart TV" at Home+'s own `RemoteEndPoint`, and a title has started when any
+  of them has it as `NowPlayingItem` (by `Id`). Home+'s entry shows that address only once it has registered
+  (`POST /Sessions/Capabilities`): right after sign-in the entry's address is null, and after a server restart
+  there's no entry, whatever it reads. Design: `docs/plans/2026-10-30-top-shelf-resume-design.md`.
 - Stremio's streaming server is a webOS service of its own (`io.strem.tv.server`, ~30 MB) that keeps
   running after Stremio closes, and webOS's memory manager closes apps, not services: `stremio-server.js`
   stops it once Stremio has been closed for 10 s (Stremio starts it again when it opens).

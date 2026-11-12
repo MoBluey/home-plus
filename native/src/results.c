@@ -121,44 +121,64 @@ int handle_result(Result *r)
         if (r->body && strstr(r->body, "\"keys\"")) net_get_json("/api/keys", TAG_KEYS_STATUS, 0, 0); /* pasted on a phone */
         if (r->body) { /* asked for from the Control Center over another app, which brings Home+ to the front */
             int want = strstr(r->body, "\"settings\"") ? OPEN_SETTINGS : strstr(r->body, "\"recents\"") ? OPEN_RECENTS
-                     : strstr(r->body, "\"accessibility\"") ? OPEN_ACCESSIBILITY : 0;
+                     : strstr(r->body, "\"accessibility\"") ? OPEN_ACCESSIBILITY : strstr(r->body, "\"general\"") ? OPEN_GENERAL
+                     : strstr(r->body, "\"accounts\"") ? OPEN_ACCOUNTS : strstr(r->body, "\"about\"") ? OPEN_ABOUT : 0;
             if (want) open_asked(want); /* (while hidden too: coming back leaves it open) */
         }
         break;
     case TAG_HOME:
     case TAG_HOME_SET:
-    case TAG_KEY_SET:
-        if (r->status == 200) {
-            cJSON *o = cJSON_Parse(r->body);
-            if (o) {
-                snprintf(S.home_mode, sizeof S.home_mode, "%s", jstr(o, "mode"));
-                S.noflash_active = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashActive"));
-                S.noflash_available = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashAvailable"));
-                cJSON *sk = cJSON_GetObjectItem(o, "settingsKey");
-                S.settings_key = cJSON_IsTrue(cJSON_GetObjectItem(sk, "on"));
-                S.settings_key_available = cJSON_IsTrue(cJSON_GetObjectItem(sk, "available"));
-                S.input_key = cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(o, "inputKey"), "on"));
-                S.piccap = cJSON_IsTrue(cJSON_GetObjectItem(o, "piccap"));
-                if (!strcmp(S.home_mode, "redirect") && !S.noflash_active && r->tag == TAG_HOME_SET)
-                    toast("No-flash mode isn\xE2\x80\x99t available on this TV; using standard mode", 5000);
+    case TAG_KEY_SET: {
+        cJSON *o = r->status == 200 && r->body ? cJSON_Parse(r->body) : NULL;
+        int valid = o && jstr(o, "mode")[0];
+        if (valid) {
+            snprintf(S.home_mode, sizeof S.home_mode, "%s", jstr(o, "mode"));
+            S.noflash_active = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashActive"));
+            S.noflash_available = cJSON_IsTrue(cJSON_GetObjectItem(o, "noFlashAvailable"));
+            S.default_home_enabled = cJSON_IsTrue(cJSON_GetObjectItem(o, "defaultHomeEnabled"));
+            S.default_home_available = cJSON_IsTrue(cJSON_GetObjectItem(o, "defaultHomeAvailable"));
+            snprintf(S.default_home_reason, sizeof S.default_home_reason, "%s", jstr(o, "defaultHomeReason"));
+            S.startup_enabled = cJSON_IsTrue(cJSON_GetObjectItem(o, "startupEnabled"));
+            cJSON *sk = cJSON_GetObjectItem(o, "settingsKey");
+            S.settings_key = cJSON_IsTrue(cJSON_GetObjectItem(sk, "on"));
+            S.settings_key_available = cJSON_IsTrue(cJSON_GetObjectItem(sk, "available"));
+            S.input_key = cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(o, "inputKey"), "on"));
+            S.piccap = cJSON_IsTrue(cJSON_GetObjectItem(o, "piccap"));
+            if (!strcmp(S.home_mode, "redirect") && !S.noflash_active && r->tag == TAG_HOME_SET && r->kind == JOB_POST)
+                toast("No-flash mode isn\xE2\x80\x99t available on this TV; using standard mode", 5000);
+        }
+        cJSON_Delete(o);
+        if (r->kind == JOB_POST) {
+            S.home_error[0] = 0;
+            if (!valid) {
+                o = r->body ? cJSON_Parse(r->body) : NULL;
+                snprintf(S.home_error, sizeof S.home_error, "Couldn\xE2\x80\x99t change the setting: %s",
+                         o && jstr(o, "errorText")[0] ? jstr(o, "errorText") : "the service didn\xE2\x80\x99t answer");
                 cJSON_Delete(o);
-                if (r->tag == TAG_KEY_SET && r->kind == JOB_JSON && S.sheet.open &&
-                    (S.sheet.page == PAGE_HOME || S.sheet.page == PAGE_WELCOME)) {
-                    int index = S.sheet.index, parent_index = S.sheet.parent_index; /* the buttons as they are */
-                    settings_page(S.sheet.page, index);
-                    S.sheet.parent_index = parent_index;
-                }
+                toast(S.home_error, 6000);
+                S.home_welcome_next = 0;
             }
-        } else if (r->tag == TAG_KEY_SET && r->kind == JOB_POST) {
-            /* the Settings or Input button wasn't changed (LG Input Hook's file isn't JSON, say): why, then how they are */
-            cJSON *o = r->body ? cJSON_Parse(r->body) : NULL;
-            char msg[300];
-            snprintf(msg, sizeof msg, "Couldn\xE2\x80\x99t change the button: %s", o && jstr(o, "errorText")[0] ? jstr(o, "errorText") : "the service didn\xE2\x80\x99t answer");
-            cJSON_Delete(o);
-            toast(msg, 5000);
-            net_get_json("/api/home", TAG_KEY_SET, 0, 0);
+            /* Always read back the actual state, including partial failures and a restored default. */
+            net_get_json("/api/home", r->tag, 0, 0);
+        } else if (r->tag != TAG_HOME) {
+            if (r->tag == TAG_HOME_SET) S.home_pending = 0;
+            if (!valid) {
+                S.home_welcome_next = 0;
+                toast(S.home_error[0] ? S.home_error :
+                      "Couldn\xE2\x80\x99t refresh Home settings. Open Settings again to retry.", 6000);
+            } else if (S.home_welcome_next) {
+                S.home_welcome_next = 0;
+                if (S.sheet.open && S.sheet.page == PAGE_WELCOME) welcome_next();
+            }
+        }
+        if (valid && S.sheet.open && (S.sheet.page == PAGE_HOME || S.sheet.page == PAGE_WELCOME ||
+            (S.sheet.page == PAGE_MAIN && S.sheet.cat_page[S.sheet.cat] == PAGE_HOME))) {
+            int index = S.sheet.index, parent_index = S.sheet.parent_index;
+            settings_page(S.sheet.page, S.sheet.page == PAGE_MAIN ? S.sheet.cat : index);
+            S.sheet.parent_index = parent_index;
         }
         break;
+    }
     case TAG_PREFS:
         if (r->status == 200) {
             cJSON *o = cJSON_Parse(r->body);
@@ -173,9 +193,14 @@ int handle_result(Result *r)
             int c24 = o && cJSON_IsTrue(cJSON_GetObjectItem(o, "clock24"));
             if (c24 != S.clock24) S.clock24 = c24, S.clock_min = -1;
             S.orbit_off = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "pixelShift"));
-            S.vivid_covers = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "calmColours"));
+            int vivid = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "calmColours"));
+            if (vivid != S.vivid_covers) { /* (changed in Settings over another app: covers are made from the icons) */
+                S.vivid_covers = vivid;
+                request_icons();
+            }
             S.shelf_still = o && cJSON_IsFalse(cJSON_GetObjectItem(o, "shelfTurns"));
             const char *details = o ? jstr(o, "topShelfDetails") : "";
+            int was_details = S.shelf_details;
             shelf_set_details(!strcmp(details, "off") ? SHELF_DETAILS_OFF :
                               !strcmp(details, "compact") ? SHELF_DETAILS_COMPACT : SHELF_DETAILS_FULL);
             const char *look = o ? jstr(o, "iconLook") : "";
@@ -185,7 +210,11 @@ int handle_result(Result *r)
             for (int i = 0; i < NTINTS; i++)
                 if (!strcasecmp(tint, TINTS[i].name)) S.icon_tint = i;
             cJSON_Delete(o);
-            if (r->kind == JOB_POST && S.shelf_details != SHELF_DETAILS_OFF) rail_request(SRC_STREMIO);
+            if ((r->kind == JOB_POST || was_details == SHELF_DETAILS_OFF) && S.shelf_details != SHELF_DETAILS_OFF) {
+                App *a = shelf_app();
+                if (a && !media_source(a)) a->feat_refresh = 1;
+                else rail_request(SRC_STREMIO);
+            }
         } else if (r->kind == JOB_POST) {
             toast("Couldn\xE2\x80\x99t save Top Shelf Details", 3500);
             net_get_json("/api/prefs", TAG_PREFS, 0, 0);
@@ -242,6 +271,12 @@ int handle_result(Result *r)
             }
         }
         break;
+    case TAG_RESUME: /* the launch's answer */
+        if (r->status != 200) { /* the title's not known (it has left the list since the card came): OK as on any card */
+            launch(S.resume_app, S.resume_hint);
+            break;
+        }
+        /* fall through */
     case TAG_LAUNCH:
         if (r->status != 200 || (r->body && strstr(r->body, "\"returnValue\":false"))) {
             S.away = 0;

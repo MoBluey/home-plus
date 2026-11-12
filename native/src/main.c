@@ -36,6 +36,9 @@ void open_asked(int what)
     if (what == OPEN_SETTINGS) open_settings_sheet();
     else if (what == OPEN_RECENTS) sw_open();
     else if (what == OPEN_ACCESSIBILITY) settings_page(PAGE_ACCESS, 0);
+    else if (what == OPEN_GENERAL) settings_page(PAGE_GENERAL, 0);
+    else if (what == OPEN_ACCOUNTS) settings_page(PAGE_ACCOUNTS, 0);
+    else if (what == OPEN_ABOUT) settings_page(PAGE_ABOUT, 0);
 }
 
 /* Advances every animated value once per frame. Drawing only reads them: the
@@ -446,6 +449,9 @@ int main(int argc, char **argv)
             } else if (S.cc.open && !S.sheet.open) {
                 snd_play(SND_SELECT);
                 cc_long_press();
+            } else if (!S.sheet.open && !S.recents.open && S.zone == ZONE_RAIL && S.rail_source == SRC_JELLYFIN) {
+                snd_play(SND_SELECT);
+                open_card_sheet();
             }
             dirty = 1;
         }

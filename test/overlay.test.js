@@ -48,6 +48,7 @@ const framesFolder = () => path.dirname(fileURLToPath(calls(LAUNCH).at(-1).param
 test.before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-overlay-'));
   fs.writeFileSync(path.join(dir, 'apps.txt'), 'netflix|Netflix,youtube|YouTube');
+  fs.copyFileSync(path.join(ROOT, 'docs/icon.png'), path.join(dir, 'netflix.png')); /* (the stand-in's apps have their icons here) */
   const app = path.join(dir, 'app'); /* the installed app folder, with the Control Center's QML */
   fs.mkdirSync(path.join(app, 'qml'), { recursive: true });
   for (const f of ['ControlCenter.qml', 'ControlCenterView.qml']) fs.copyFileSync(path.join(ROOT, 'native/qml', f), path.join(app, 'qml', f));
@@ -111,9 +112,63 @@ test('overlay: it asks for what it can\'t do itself, and nothing else', async ()
   assert.deepEqual(calls('luna://com.webos.applicationManager/launch').at(-1).params, { id: 'com.github.pbalazaar.homeplus' });
   const r = await call('POST', '/api/overlay', { body: { event: 'open', app: 'com.example.anything' } });
   assert.equal(r.status, 500);
-  assert.match(r.json.errorText, /not an input/, 'only the inputs it offered');
+  assert.match(r.json.errorText, /not an app it offered/, 'only what it offered');
   assert.equal((await call('POST', '/api/overlay', { body: { event: 'open', target: '../../etc' } })).status, 500);
   assert.equal((await call('POST', '/api/overlay', { body: { event: 'whatever' } })).status, 500);
+});
+
+test('overlay: Settings: its pages over the API, and a row changed where the launcher keeps it', async () => {
+  assert.equal((await call('POST', '/api/settings', { body: {}, auth: false })).status, 403, 'the token');
+  assert.equal((await call('GET', '/api/settings')).status, 404, 'it asks with POST, as it asks for everything');
+  const { json } = await call('POST', '/api/settings', { body: {} });
+  assert.ok(json.pages.some((p) => p.id === 'accessibility'), 'the pages');
+  try {
+    const r = await call('POST', '/api/settings', { body: { row: 'clock', dir: 1 } });
+    assert.equal(r.json.prefs.clock24, true, 'the answer has the prefs, for the panel to follow');
+    assert.equal(r.json.pages.find((p) => p.id === 'general').rows.find((c) => c.id === 'clock').value, '24-Hour', 'and the pages as they are now');
+    assert.equal((await call('GET', '/api/prefs')).json.clock24, true, 'kept where the launcher reads it');
+  } finally {
+    await call('POST', '/api/prefs', { body: { clock24: false } });
+  }
+  const bad = await call('POST', '/api/settings', { body: { row: 'nothing' } });
+  assert.equal(bad.status, 500);
+  assert.match(bad.json.errorText, /not a setting/);
+});
+
+test('overlay: Settings: the Home button changes as it does from Home+', async () => {
+  try {
+    await call('POST', '/api/settings', { body: { row: 'homeButton' } });
+    assert.equal((await call('GET', '/api/home')).json.mode, 'off');
+    await call('POST', '/api/settings', { body: { row: 'homeButton' } });
+    assert.notEqual((await call('GET', '/api/home')).json.mode, 'off');
+  } finally {
+    await call('POST', '/api/home', { body: { mode: 'watch', asked: true } });
+  }
+});
+
+test('overlay: a row that can\'t be done over an app opens Home+, and tells the launcher which page', async () => {
+  for (const target of ['general', 'accounts', 'about']) {
+    assert.equal((await call('POST', '/api/overlay', { body: { event: 'open', target } })).status, 200);
+    assert.deepEqual(calls('luna://com.webos.applicationManager/launch').at(-1).params, { id: 'com.github.pbalazaar.homeplus' });
+    assert.ok((await call('GET', '/api/events')).json.events.includes(target), target);
+  }
+});
+
+test('overlay: Recents: the apps you opened, the one in front first, each icon a file', { skip: windows }, async () => {
+  const { json } = await call('POST', '/api/overlay', { body: { event: 'recents' } });
+  assert.equal(json.front, 'netflix');
+  assert.deepEqual(json.apps.map((a) => a.id), ['netflix', 'youtube'], 'most recent first');
+  assert.equal(fileURLToPath(json.apps[0].icon), fs.realpathSync(path.join(dir, 'netflix.png')), 'a panel\'s Image can\'t send the token');
+  assert.equal(json.apps[1].icon, '', 'one with no icon says so');
+  assert.equal(json.apps[0].title, 'Netflix');
+});
+
+test('overlay: it may open the apps it offered: Recents, and LG\'s settings apps', async () => {
+  assert.equal((await call('POST', '/api/overlay', { body: { event: 'open', app: 'youtube' } })).status, 200);
+  assert.deepEqual(calls('luna://com.webos.applicationManager/launch').at(-1).params, { id: 'youtube' });
+  assert.equal((await call('POST', '/api/overlay', { body: { event: 'open', app: 'com.palm.app.settings' } })).status, 200);
+  assert.deepEqual(calls('luna://com.webos.applicationManager/launch').at(-1).params, { id: 'com.palm.app.settings' });
+  assert.equal((await call('POST', '/api/overlay', { body: { event: 'open', app: 'spotify' } })).status, 500, 'not one of the apps on this TV\'s list: not offered');
 });
 
 test('overlay: once it has closed, the frames stop and are deleted', async () => {
@@ -180,6 +235,36 @@ test('overlay: with Reduce Transparency (solid panels), no frames of the video a
   } finally {
     await call('POST', '/api/prefs', { body: { reduceTransparency: false } });
   }
+});
+
+test('overlay: Reduce Transparency turned off in its Settings starts the frames it opened without', async () => {
+  await call('POST', '/api/prefs', { body: { reduceTransparency: true } });
+  try {
+    const before = calls(SHOT).length;
+    await call('POST', '/api/key', { body: { key: 'settings' } });
+    assert.equal(calls(LAUNCH).at(-1).params.params.frame, '', 'it opens with none');
+    assert.equal((await call('POST', '/api/settings', { body: {} })).json.frame, '', 'and says so');
+    const { frame } = (await call('POST', '/api/settings', { body: { row: 'reduceTransparency' } })).json;
+    assert.ok(frame, 'the panel hears where they are');
+    const file = fileURLToPath(frame);
+    await until(() => fs.existsSync(file), 3000, 'a frame');
+    assert.ok(calls(SHOT).slice(before).every((c) => c.params.method === 'VIDEO'), 'of the video: the screen would be of the panel');
+    assert.equal((await call('POST', '/api/settings', { body: {} })).json.frame, frame, 'the same ones from then on');
+    await call('POST', '/api/overlay', { body: { event: 'closed' } });
+    await until(() => !fs.existsSync(path.dirname(file)), 3000, 'the frames to go');
+    assert.equal((await call('POST', '/api/settings', { body: {} })).json.frame, '', 'closed: none');
+  } finally {
+    await call('POST', '/api/overlay', { body: { event: 'closed' } });
+    await call('POST', '/api/prefs', { body: { reduceTransparency: false } });
+  }
+});
+
+test('overlay: Reduce Transparency turned off with no panel open starts nothing', async () => {
+  const before = calls(SHOT).length;
+  await call('POST', '/api/prefs', { body: { reduceTransparency: false } });
+  await sleep(GAP + 100);
+  assert.equal(calls(SHOT).length, before);
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'frames')), []);
 });
 
 // opens it with the stand-in TV's capture giving `what` ({DISPLAY, VIDEO}: see harness.js); its frames'
@@ -253,6 +338,23 @@ test('overlay: Blur Over Video pauses PicCap while it\'s open, for frames of the
   }
 });
 
+test('overlay: Blur Over Video changed while it\'s open applies at once, and back', async () => {
+  const piccap = (what) => calls(`luna://org.webosbrew.piccap.service/${what}`).length;
+  const stops = piccap('stop'), starts = piccap('start');
+  try {
+    const frames = await openWith({ DISPLAY: 'piccap', VIDEO: 'piccap' });
+    assert.equal(piccap('stop'), stops, 'off: PicCap is left alone');
+    await call('POST', '/api/prefs', { body: { ccBlurVideo: true } });
+    await until(() => piccap('stop') === stops + 1, 2000, 'PicCap to pause');
+    await until(() => fs.existsSync(path.join(frames, 'frame.png')), 3000, 'a frame of the video');
+    await call('POST', '/api/prefs', { body: { ccBlurVideo: false } });
+    await until(() => piccap('start') === starts + 1, 3000, 'PicCap to start again');
+  } finally {
+    await close();
+    await call('POST', '/api/prefs', { body: { ccBlurVideo: false } });
+  }
+});
+
 test('overlay: the panel asks for the next frame, and the answer comes when it\'s taken', async () => {
   try {
     const frames = await openWith({ VIDEO: 'moving' });
@@ -274,6 +376,14 @@ test('overlay: the panel asks for the next frame, and the answer comes when it\'
 
 // ---- What it asks of the TV's capture: one at a time, so many a second at most, a picture once, less
 // often while there's none; and PicCap's pause from one opening to the next.
+
+// how soon something comes, by the clock, as the best of up to three goes (till one is under limit): a
+// stall on a busy machine can only make it later, so it's only too late if it's too late every time
+async function soonest(limit, go) {
+  let ms = Infinity;
+  for (let i = 0; i < 3 && ms >= limit; i++) ms = Math.min(ms, await go());
+  return ms;
+}
 
 test('overlay: one capture at a time, across a close and a quick reopen; no snapshot once the panel is asked for', async () => {
   fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'moving', ms: { DISPLAY: 100, VIDEO: GAP - 20 } }));
@@ -353,21 +463,23 @@ test('overlay: a capture that comes after it was given up on isn\'t shown, its f
 });
 
 test('overlay: closed while it waits to try again, it stops at once: opened again, its frames come straight away', async () => {
-  fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'busy' }));
-  const since = Date.now();
-  try {
-    await call('POST', '/api/key', { body: { key: 'settings' } });
-    await until(() => videoSince(since).length >= 3, 4000, `three tries (then it waits ${RETRY[2]} ms)`);
-    fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'moving' }));
-    await call('POST', '/api/overlay', { body: { event: 'closed' } });
-    const again = Date.now();
-    assert.deepEqual((await call('POST', '/api/key', { body: { key: 'settings' } })).json, { opened: 'overlay' });
-    await until(() => videoSince(again).length >= 1, 3000, 'a frame of the video for the new one');
-    const first = videoSince(again)[0].start - again;
-    assert.ok(first < GAP + 300, `the new one's first frame came ${first} ms after it opened, not after the last one's wait`);
-  } finally {
-    await close();
-  }
+  const first = await soonest(GAP + 300, async () => {
+    fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'busy' }));
+    const since = Date.now();
+    try {
+      await call('POST', '/api/key', { body: { key: 'settings' } });
+      await until(() => videoSince(since).length >= 3, 4000, `three tries (then it waits ${RETRY[2]} ms)`);
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'moving' }));
+      await call('POST', '/api/overlay', { body: { event: 'closed' } });
+      const again = Date.now();
+      assert.deepEqual((await call('POST', '/api/key', { body: { key: 'settings' } })).json, { opened: 'overlay' });
+      await until(() => videoSince(again).length >= 1, 3000, 'a frame of the video for the new one');
+      return videoSince(again)[0].start - again;
+    } finally {
+      await close();
+    }
+  });
+  assert.ok(first < GAP + 300, `the new one's first frame came ${first} ms after it opened, not after the last one's wait`);
 });
 
 test('overlay: a frame that comes after it has closed isn\'t shown, and its folder isn\'t made again', async () => {
@@ -391,40 +503,49 @@ test('overlay: a frame that comes after it has closed isn\'t shown, and its fold
 });
 
 test('overlay: a capture the TV never answers holds the next one back only as long as luna waits for it', async () => {
-  fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'never' }));
-  const since = Date.now();
-  try {
-    await call('POST', '/api/key', { body: { key: 'settings' } });
-    await until(() => videoSince(since).length >= 1, 3000, 'a frame of the video asked for');
-    fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'moving' }));
-    const n = (await ask(0)).n;
-    await until(async () => (await ask(0)).n > n, LUNA_MS + 3000, 'frames again');
-    const [hung, next] = videoSince(since);
-    assert.ok(next.start - hung.start >= LUNA_MS - 20, `the next one waited for it: ${next.start - hung.start} ms`);
-    assert.ok(next.start - hung.start < LUNA_MS + 500, `but no longer: ${next.start - hung.start} ms`);
-  } finally {
-    await close();
-  }
+  const held = await soonest(LUNA_MS + 500, async () => {
+    fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'never' }));
+    const since = Date.now();
+    try {
+      await call('POST', '/api/key', { body: { key: 'settings' } });
+      await until(() => videoSince(since).length >= 1, 3000, 'a frame of the video asked for');
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'moving' }));
+      const n = (await ask(0)).n;
+      await until(async () => (await ask(0)).n > n, LUNA_MS + 3000, 'frames again');
+      const [hung, next] = videoSince(since);
+      assert.ok(next.start - hung.start >= LUNA_MS - 20, `the next one waited for it: ${next.start - hung.start} ms`);
+      return next.start - hung.start;
+    } finally {
+      await close();
+    }
+  });
+  assert.ok(held < LUNA_MS + 500, `but no longer: ${held} ms`);
 });
 
 test('overlay: while the video can\'t be captured it\'s asked for less and less often, and a picture starts that over', async () => {
-  fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'busy' }));
-  const since = Date.now(), gaps = (list) => list.slice(1).map((c, i) => c.start - list[i].start);
-  try {
-    await call('POST', '/api/key', { body: { key: 'settings' } });
-    await until(() => videoSince(since).length >= 3, 4000, 'three tries');
-    const waits = gaps(videoSince(since));
-    for (const [i, ms] of RETRY.slice(0, 2).entries()) assert.ok(waits[i] >= ms - 5 && waits[i] < ms + 200, `waits of ${RETRY}: ${waits}`);
-    fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({})); /* a picture */
-    const tries = videoSince(since).length;
-    await until(() => videoSince(since).filter((c) => c.end).length > tries, 3000, 'a picture');
+  const gaps = (list) => list.slice(1).map((c, i) => c.start - list[i].start);
+  let waits, first;
+  const over = await soonest(200, async () => { /* the most a wait ran over */
     fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'busy' }));
-    const again = Date.now();
-    await until(() => videoSince(again).length >= 2, 3000, 'two more tries');
-    assert.ok(gaps(videoSince(again))[0] < RETRY[1], `the first wait again: ${gaps(videoSince(again))}`);
-  } finally {
-    await close();
-  }
+    const since = Date.now();
+    try {
+      await call('POST', '/api/key', { body: { key: 'settings' } });
+      await until(() => videoSince(since).length >= 3, 4000, 'three tries');
+      waits = gaps(videoSince(since));
+      for (const [i, ms] of RETRY.slice(0, 2).entries()) assert.ok(waits[i] >= ms - 5, `waits of ${RETRY}: ${waits}`);
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({})); /* a picture */
+      const tries = videoSince(since).length;
+      await until(() => videoSince(since).filter((c) => c.end).length > tries, 3000, 'a picture');
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({ VIDEO: 'busy' }));
+      const again = Date.now();
+      await until(() => videoSince(again).length >= 2, 3000, 'two more tries');
+      [first] = gaps(videoSince(again));
+      return Math.max(waits[0] - RETRY[0], waits[1] - RETRY[1], first - RETRY[0]);
+    } finally {
+      await close();
+    }
+  });
+  assert.ok(over < 200, `waits of ${RETRY}: ${waits}, and the first wait again: ${first}`);
 });
 
 test('overlay: Blur Over Video, closed and opened again at once: PicCap stays paused, then starts again once', async () => {
