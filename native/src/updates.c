@@ -12,7 +12,7 @@ typedef struct {
 } UpdateState;
 static UpdateState U;
 static char shown_version[48], shown_token[256], kept[48];
-static int pending, getting, generation, valid;
+static int pending, getting, generation, valid, update_view_dirty, about_view_dirty;
 static int busy(void) { return !strcmp(U.phase, "checking") || !strcmp(U.phase, "installing") || !strcmp(U.phase, "recovering"); }
 
 static void text(char *out, size_t size, cJSON *o, const char *key)
@@ -42,7 +42,7 @@ static void page(void)
              U.preserve ? "Custom changes are preserved in this build." :
              strstr(U.source, "Unknown") ? "Replacing this build discards unverified custom changes." : U.warning[0] ? "Review custom changes before replacing this build." : "",
              !strcmp(U.phase, "installing") || !strcmp(U.phase, "recovering") ? "Installation continues independently. Home+ reopens when ready." :
-             U.upstream ? "Install upstream drops custom code and may remove update checks." : "");
+             U.upstream ? "Install upstream drops custom code." : "");
     sheet_body(body);
     snprintf(shown_version, sizeof shown_version, "%s", U.version);
     snprintf(shown_token, sizeof shown_token, "%s", U.token);
@@ -58,6 +58,19 @@ static void page(void)
     S.ok_long = 1;
 }
 
+/* Responses can arrive while another app is in front. Reconcile only an existing
+ * view; automatic notices still go through updates_tick's foreground guards. */
+static void refresh_view(void)
+{
+    if (S.offscreen || S.away) return;
+    if (S.sheet.open) {
+        if (S.sheet.page == PAGE_UPDATES && update_view_dirty) page();
+        else if (S.sheet.split && S.sheet.cat_page[S.sheet.cat] == PAGE_ABOUT && about_view_dirty)
+            settings_again();
+    }
+    update_view_dirty = about_view_dirty = 0;
+}
+
 static void post(cJSON *o)
 {
     char *json = cJSON_PrintUnformatted(o);
@@ -68,7 +81,7 @@ static void post(cJSON *o)
     getting = 0;
     net_post("/api/updates", json, TAG_UPDATE_ACTION);
     free(json);
-    S.updates_poll = SDL_GetTicks() + 1000;
+    S.updates_poll = 0; /* the response wakes the loop and rearms polling */
 }
 
 void updates_keep(void)
@@ -125,6 +138,7 @@ void updates_action(Action act, int arg)
 void updates_result(Result *r)
 {
     if (r->tag == TAG_UPDATES && r->generation != generation) return;
+    int was_pending = pending;
     if (r->tag == TAG_UPDATES) getting = 0;
     else pending = 0;
     UpdateState old = U;
@@ -152,20 +166,19 @@ void updates_result(Result *r)
     }
     cJSON_Delete(o);
     S.updates_poll = SDL_GetTicks() + (busy() ? 1000 : 60000);
-    if (!S.offscreen && !S.away) {
-        if (S.sheet.open && S.sheet.page == PAGE_UPDATES && memcmp(&old, &U, sizeof U)) page();
-        else if (S.sheet.open && S.sheet.split && S.sheet.cat_page[S.sheet.cat] == PAGE_ABOUT && old.automatic != U.automatic)
-            settings_again();
-    }
+    if (was_pending || memcmp(&old, &U, sizeof U)) update_view_dirty = 1;
+    if (old.automatic != U.automatic) about_view_dirty = 1;
+    refresh_view();
 }
 
 void updates_tick(void)
 {
     if (S.offscreen || S.away || S.setup != SETUP_DONE || !S.onboarded) return;
+    refresh_view();
     Uint32 now = SDL_GetTicks();
     if (!pending && !getting && (!S.updates_poll || (Sint32)(now - S.updates_poll) >= 0)) {
         getting = 1;
-        S.updates_poll = now + 60000;
+        S.updates_poll = 0; /* no deadline while the GET is in flight */
         net_get_json("/api/updates", TAG_UPDATES, 0, generation);
     }
     if (valid && U.prompt && (!strcmp(U.phase, "ready") || !strcmp(U.phase, "conflict") || !strcmp(U.phase, "failed")) && strcmp(kept, U.version) && !pending && !S.sheet.open && !S.cc.open &&

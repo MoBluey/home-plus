@@ -40,6 +40,10 @@ build/webos/homeplus: $(SRC) src/*.h
 test: $(TEST_OUT)/updates-test $(TEST_OUT)/net-test $(TEST_OUT)/icon-test $(TEST_OUT)/util-test $(TEST_OUT)/input-test $(TEST_OUT)/input-sdl-test
 	@python3 test/make-fixtures.py build/test
 	$(TEST_OUT)/updates-test
+	$(TEST_OUT)/updates-test hidden
+	$(TEST_OUT)/updates-test about
+	$(TEST_OUT)/updates-test pending
+	$(TEST_OUT)/updates-test getting
 	$(TEST_OUT)/net-test build/test
 	$(TEST_OUT)/icon-test
 	$(TEST_OUT)/util-test
@@ -68,9 +72,9 @@ $(TEST_OUT)/input-sdl-test: test/input_test.c src/input.c src/idle.c src/*.h
 	$(CC) $(CFLAGS) $(TEST_FLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections \
 	  -Isrc -o $@ test/input_test.c src/input.c src/idle.c $(HOST_SDL) -lm -lpthread -ldl
 
-$(TEST_OUT)/updates-test: test/updates_test.c src/updates.c src/*.h
+$(TEST_OUT)/updates-test: test/updates_test.c src/updates.c src/idle.c src/*.h
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(TEST_FLAGS) -Isrc -o $@ test/updates_test.c src/updates.c third_party/cJSON.c $(HOST_SDL) -lm
+	$(CC) $(CFLAGS) $(TEST_FLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -Isrc -o $@ test/updates_test.c src/updates.c src/idle.c third_party/cJSON.c $(HOST_SDL) -lm
 
 sanitize:
 	@UBSAN_OPTIONS=print_stacktrace=1 $(MAKE) test TEST_OUT=build/sanitize \

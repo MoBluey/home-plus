@@ -51,7 +51,7 @@ Brief affected-change/file information
 [ Keep current build ]  [ Install upstream ]
 ```
 
-The official action explicitly states that it drops all custom code in that package. If the official release lacks this updater, say that automatic update checks will stop too. Keep current build is always focused by default; Back has the same keep/suppress effect. Unknown or manually modified builds receive a replacement warning.
+The official action explicitly states that it drops all custom code in that package. Keep current build is always focused by default; Back has the same keep/suppress effect. Unknown or manually modified builds receive a replacement warning.
 
 Use existing sheet styling and readable progress while Home+ is running. Before closing it, explain that installation/recovery continues independently and Home+ will reopen when ready. Its own sheet cannot draw while its process is closed. Do not restart the TV, put overlays over other apps, force a foreground return over a new user-selected app, or change volume, input or power settings.
 

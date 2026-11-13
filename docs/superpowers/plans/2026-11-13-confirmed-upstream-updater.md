@@ -15,7 +15,7 @@
 - Node 8.12 minimum for shipped service/helper code; no new runtime dependencies. Preserve SDL 2.0.14 support.
 - No TV changes or deployment in this implementation approval; no firmware writes, altered audio/inputs/privacy, automatic installs or automatic branch merges/force-pushes.
 - Keep current build persistently suppresses the chosen upstream version across restart, changed build status and reissued assets. Only a strictly newer upstream version prompts again; manual status never clears suppression.
-- Conflict/check failure offers Keep current build or explicit upstream installation dropping custom code. Warn if that also removes automatic updates.
+- Conflict/check failure offers Keep current build or explicit upstream installation dropping custom code.
 - Exact source equivalence may be dropped; ambiguous changes/conflicts/failed checks stop the custom build. Unknown installed edits are never silently merged.
 - Backups must be verified, private and reinstallable before replacing the package. Independent recovery must survive replacement/power loss and retain LG Home access.
 - Fixed packaged update repositories, HTTPS validation, bounded data/time, authenticated actions, fresh version/hash confirmation and one transaction only.
@@ -74,7 +74,7 @@
 
 - [ ] Add a representative real-launcher preview workflow first: check through About, view a candidate, Back/keep it through the real HTTP route, re-enter and confirm no repeat. Preview network/installer fixtures must remain isolated from TV/production accounts.
 - [ ] Implement updates.c as the feature owner. Parse bounded strings and choices, default to Keep current build, queue authenticated actions, display a normal sheet, keep busy/progress/error state clear and never auto-confirm. Add only the required shared state/tags/actions/hooks; normal Home entry must remain nonblocking.
-- [ ] Wire native About and external QML settings to the same controller. Show conflict/check-failure cause, explicit custom-code/updater-loss warning for stock fallback, and automatic-check switch. Poll only while needed; no prompt over another sheet/editor/setup flow or a new foreground app.
+- [ ] Wire native About and external QML settings to the same controller. Show conflict/check-failure cause, explicit custom-code replacement warning for stock fallback, and automatic-check switch. Poll only while needed; no prompt over another sheet/editor/setup flow or a new foreground app.
 - [ ] Render/inspect ready, conflict, failed, custom/unknown warning, checking/progress and About states with the production launcher/service; exercise remote default focus, Back, explicit install request and stale-response handling. Run focused native checks, then native sanitizer/QML/package/service and Node8 checks at integration.
 - [ ] Conduct a fresh independent whole-branch review of code, actual diff, installer/recovery trust and producer-consumer boundaries. Owners fix valid defects and recheck affected paths; do not expand unrelated scope.
 - [ ] Update README and private handoff with actual capabilities, recovery and verification limits. Commit and push the verified branch to the fork; report CI and ask before merging. TV installation/physical end-to-end trial and upstream PR publication remain pending separate approval.
