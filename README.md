@@ -76,6 +76,8 @@ Updates install the same way. An update resets the service's root access, and Ho
 
 Installation requires the displayed version and package confirmation, a verified private backup and an independent recovery helper. Progress remains visible while Home+ is running; installation and recovery continue after the package closes. Keep the recovery backup private: it can contain account settings. This updates Home+ only.
 
+If Homebrew Channel never reports a final install result, the backup and recovery hook stay armed. Cancelling its subscription does not cancel installation, so rollback waits for a full webOS restart and a changed boot ID. Standby and wake are insufficient. Home+ does not force a restart.
+
 This fork's updater is locally verified with an isolated desktop service and installer fixtures. It has not completed a physical TV update/rollback trial; TV deployment needs separate approval.
 
 ## Using Home+

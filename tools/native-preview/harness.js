@@ -477,5 +477,11 @@ if (process.env.HOMEPLUS_PREVIEW_UPDATES) {
     };
     return controller;
   };
+} else {
+  // Ordinary preview/tests keep their own app and foreground fixtures. Never let a
+  // long-running scene's automatic timer (or a manual check) reach live releases.
+  const mod = require(path.join(serviceDir, 'updates')), create = mod.createUpdates;
+  mod.createUpdates = opts => create(Object.assign({}, opts, { startupDelay: 86400000,
+    fetchRelease: async () => { throw new Error('Update checks are offline in the default preview.'); } }));
 }
 require(path.join(serviceDir, 'service.js'));
