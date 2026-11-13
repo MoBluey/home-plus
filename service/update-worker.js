@@ -148,14 +148,14 @@ function load(file) {
   release.version(s.previousVersion); release.version(s.artifact.version);
   return s;
 }
-const generationId = value => typeof value === 'string' && /^runtime-v1:[0-9a-f]{64}$/.test(value);
+const generationId = value => typeof value === 'string' && /^runtime-v2:[0-9a-f]{64}$/.test(value);
 function bootId(runtime, mountInfo) {
-  runtime = runtime || '/run';
+  runtime = runtime || '/dev'; // fixed volatile parent; never fall back to another mount
   if (mountInfo === undefined) mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
   const root = fs.lstatSync(runtime);
   const mounted = mountInfo.split('\n').some(line => {
     const parts = line.split(' - '), fields = parts[0].split(' ');
-    return parts.length === 2 && fields[3] === '/' && fields[4] === runtime && parts[1].split(' ')[0] === 'tmpfs';
+    return parts.length === 2 && fields[3] === '/' && fields[4] === runtime && ['tmpfs', 'devtmpfs'].includes(parts[1].split(' ')[0]);
   });
   if (!mounted || !root.isDirectory() || root.isSymbolicLink() || root.uid !== 0 || (root.mode & 0o022) || fs.realpathSync(runtime) !== runtime)
     throw new Error('Cannot verify volatile runtime mount for update recovery');
@@ -172,7 +172,7 @@ function bootId(runtime, mountInfo) {
   const marker = fs.lstatSync(file);
   if (!marker.isFile() || marker.uid !== 0 || (marker.mode & 0o777) !== 0o600 || marker.size > 256)
     throw new Error('Unsafe update boot generation record');
-  const record = read(file), id = 'runtime-v1:' + record.generation;
+  const record = read(file), id = 'runtime-v2:' + record.generation;
   if (record.schemaVersion !== 1 || !generationId(id)) throw new Error('Invalid update boot generation record');
   return id;
 }
@@ -181,7 +181,7 @@ function processStart(pid) {
   catch (e) { return ''; }
 }
 function workerAlive(owner, boot) {
-  // A legacy raw UUID cannot prove a different boot during migration.
+  // A legacy raw UUID or runtime-v1 token cannot prove a different boot during migration.
   if (generationId(owner.boot) && owner.boot !== boot) return false;
   try { process.kill(owner.pid, 0); }
   catch (e) { return e.code !== 'ESRCH'; }
