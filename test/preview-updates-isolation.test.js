@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs'), os = require('os'), path = require('path');
 const { startService, until } = require('./helpers');
 const remove = require('../service/remove');
+const { mkdirSync } = require('../service/mkdir');
 const ROOT = path.join(__dirname, '..');
 
 test('default preview update timer is offline and preserves the supplied foreground app', async () => {
@@ -11,7 +12,7 @@ test('default preview update timer is offline and preserves the supplied foregro
   const probe = path.join(dir, 'probe.cjs'), network = path.join(dir, 'live-fetch'), log = path.join(dir, 'luna.jsonl');
   fs.writeFileSync(path.join(dir, 'apps.txt'), 'netflix|Netflix');
   const app = path.join(dir, 'app');
-  fs.mkdirSync(path.join(app, 'qml'), { recursive: true });
+  mkdirSync(path.join(app, 'qml'));
   for (const file of ['ControlCenter.qml', 'ControlCenterView.qml']) fs.copyFileSync(path.join(ROOT, 'native/qml', file), path.join(app, 'qml', file));
   // Accelerate only the controller timer, and trap its production fetch before it can reach a network.
   // The real harness must supply its own offline boundary, without reusing the foreground-changing UI fixture.
