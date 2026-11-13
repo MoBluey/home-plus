@@ -1,6 +1,6 @@
 # Confirmed upstream updates for Home+
 
-Status: approach and conflict/reminder behaviour agreed; written design awaiting review and approval. No updater code or TV deployment yet.
+Status: approved by Mo on 13 November 2026 in msg_01M79AVVVXE3ANZ2EQ35JFPXCX. Implementation authorised; TV deployment remains separate.
 
 ## Intent
 
