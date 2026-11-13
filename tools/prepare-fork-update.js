@@ -9,7 +9,10 @@ const crypto = require('crypto');
 const ID = 'com.github.pbalazaar.homeplus';
 const RESULT = ID + '.update.json';
 const repository = value => typeof value === 'string' && /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.includes('..');
-const runtimePath = name => /^(service\/|init\.d\/|native\/(src\/|qml\/|assets\/|img\/|third_party\/|Makefile$|appinfo\.json$)|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(name);
+// Source preservation includes the producers/inputs that choose packaged bytes,
+// not only the source copied or compiled into the payload.
+const buildInput = /^(tools\/(build\.mjs|build-release\.sh|docker-build\.sh|update-provenance\.js|prepare-fork-update\.js)|docker\/(Dockerfile|toolchain\.sha256)|\.github\/workflows\/(ci|fork-updates)\.yml)$/;
+const runtimePath = name => buildInput.test(name) || /^(service\/|init\.d\/|native\/(src\/|qml\/|assets\/|img\/|third_party\/|Makefile$|appinfo\.json$)|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(name);
 function git(repo, args, input) {
   const environment = { ...process.env };
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_PREFIX']) delete environment[key];

@@ -29,6 +29,8 @@ test('integrates tracked source without changing dirty user checkout or refs; re
   const before = git(f.repo, 'show-ref'); const head = git(f.repo, 'rev-parse', 'HEAD');
   const result = prepare(f.options);
   assert.equal(result.status, 'failed'); assert.match(result.message, /checks/i);
+  const info = require('../tools/update-provenance').validate(JSON.parse(fs.readFileSync(path.join(f.options.destination, 'update-info-build.json'))));
+  assert.equal(info.upstream.commit, f.upstream); assert.equal(info.source.commit, f.source); assert.equal(info.source.base, f.base); assert.equal(info.customised, true);
   assert.equal(fs.readFileSync(path.join(f.options.destination, 'service/custom.js'), 'utf8'), 'preserved\n');
   assert.equal(fs.readFileSync(path.join(f.options.destination, 'service/new.js'), 'utf8'), 'upstream\n');
   assert.equal(git(f.repo, 'show-ref'), before); assert.equal(git(f.repo, 'rev-parse', 'HEAD'), head);
@@ -100,9 +102,9 @@ test('trusted finaliser rejects identity drift and records package/check failure
 });
 test('official detached CI build records verified release, while dirty origin stays unknown', t => {
   const f = fixture(t), { capture } = require('../tools/update-provenance');
-  const names = ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF'], old = names.map(name => process.env[name]);
+  const names = ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_ACTIONS'], old = names.map(name => process.env[name]);
   try {
-    process.env.GITHUB_REPOSITORY = 'pbalazaar/home-plus'; process.env.GITHUB_SHA = f.upstream; process.env.GITHUB_REF = 'refs/tags/v1.1.0';
+    process.env.GITHUB_ACTIONS = 'true'; process.env.GITHUB_REPOSITORY = 'pbalazaar/home-plus'; process.env.GITHUB_SHA = f.upstream; process.env.GITHUB_REF = 'refs/tags/v1.1.0';
     const official = capture(f.repo); assert.equal(official.customised, false); assert.equal(official.upstream.commit, f.upstream); assert.equal(official.source.commit, f.upstream);
     fs.writeFileSync(path.join(f.repo, 'private'), 'untracked modification');
     const dirty = capture(f.repo); assert.equal(dirty.source.commit, null); assert.equal(dirty.customised, true);
@@ -116,5 +118,48 @@ test('inherited Git index/worktree controls cannot redirect candidate writes int
     const result = prepare(f.options); assert.equal(result.status, 'failed');
     assert.deepEqual(fs.readFileSync(path.join(f.repo, '.git/index')), before);
     assert.equal(fs.existsSync(path.join(f.repo, 'service/custom.js')), false);
+  } finally { names.forEach((name, i) => { if (old[i] === undefined) delete process.env[name]; else process.env[name] = old[i]; }); }
+});
+test('build-only retained producer changes publish the custom payload rather than official fallback', t => {
+  const f = fixture(t), crypto = require('node:crypto');
+  git(f.repo, 'checkout', '-q', '--detach', f.base);
+  const builder = payload => 'import fs from "node:fs"; import crypto from "node:crypto"; fs.mkdirSync("dist",{recursive:true}); const data=Buffer.from(' + JSON.stringify(payload) + '); const name="com.github.pbalazaar.homeplus_1.1.0_all.ipk"; fs.writeFileSync("dist/"+name,data); fs.writeFileSync("dist/com.github.pbalazaar.homeplus.manifest.json",JSON.stringify({id:"com.github.pbalazaar.homeplus",version:"1.1.0",ipkUrl:name,ipkSize:data.length,ipkHash:{sha256:crypto.createHash("sha256").update(data).digest("hex")}}));';
+  const base = f.commit({ 'tools/build.mjs': builder('official payload') }, 'base builder');
+  const source = f.commit({ 'tools/build.mjs': builder('preserved custom payload') }, 'custom build producer only');
+  git(f.repo, 'checkout', '-q', '--detach', base);
+  f.commit({ 'native/appinfo.json': '{"version":"1.1.0"}', 'service/package.json': '{"version":"1.1.0"}' }, 'new official release'); git(f.repo, 'tag', '-f', 'v1.1.0');
+  const result = prepare({ ...f.options, base, source });
+  // Run the retained producer through the same Node entry point as production.
+  cp.execFileSync(process.execPath, ['tools/build.mjs'], { cwd: f.options.destination });
+  const data = fs.readFileSync(path.join(f.options.destination, 'dist/com.github.pbalazaar.homeplus_1.1.0_all.ipk'));
+  assert.equal(data.toString(), 'preserved custom payload');
+  assert.deepEqual(result.customisations, ['tools/build.mjs']);
+  const ready = finish(result, f.options.destination, true);
+  assert.equal(ready.artifact.sha256, crypto.createHash('sha256').update(data).digest('hex'));
+  const { runtimePath } = require('../tools/prepare-fork-update');
+  for (const name of ['tools/build-release.sh', 'tools/docker-build.sh', 'tools/update-provenance.js', 'tools/prepare-fork-update.js', 'docker/Dockerfile', 'docker/toolchain.sha256', '.github/workflows/ci.yml', '.github/workflows/fork-updates.yml']) assert.equal(runtimePath(name), true, name);
+  assert.equal(runtimePath('docs/screenshots/old.png'), false);
+});
+test('fork-only reachable version tag cannot claim an official upstream base', t => {
+  const f = fixture(t), { capture } = require('../tools/update-provenance');
+  git(f.repo, 'checkout', '-q', '-b', 'fork-source', f.source);
+  git(f.repo, 'remote', 'add', 'fork', 'https://github.com/MoBluey/home-plus.git');
+  git(f.repo, 'remote', 'add', 'upstream', 'https://github.com/pbalazaar/home-plus.git');
+  git(f.repo, 'config', 'branch.fork-source.remote', 'fork');
+  git(f.repo, 'tag', 'v99.0.0');
+  const info = capture(f.repo);
+  assert.equal(info.source.commit, f.source); assert.equal(info.source.repository, 'MoBluey/home-plus');
+  assert.equal(info.upstream.version, null); assert.equal(info.upstream.commit, null); assert.equal(info.source.base, null); assert.equal(info.customised, true);
+});
+
+test('desktop environment and local tags cannot impersonate an official CI release', t => {
+  const f = fixture(t), { capture } = require('../tools/update-provenance');
+  git(f.repo, 'checkout', '-q', '-b', 'desktop-source', f.source);
+  git(f.repo, 'remote', 'add', 'origin', 'https://github.com/pbalazaar/home-plus.git');
+  git(f.repo, 'config', 'branch.desktop-source.remote', 'origin'); git(f.repo, 'tag', 'v99.0.0');
+  const names = ['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF'], old = names.map(name => process.env[name]);
+  try {
+    process.env.GITHUB_ACTIONS = 'false'; process.env.GITHUB_REPOSITORY = 'pbalazaar/home-plus'; process.env.GITHUB_SHA = f.source; process.env.GITHUB_REF = 'refs/tags/v99.0.0';
+    const info = capture(f.repo); assert.equal(info.source.commit, f.source); assert.equal(info.upstream.commit, null); assert.equal(info.source.base, null); assert.equal(info.customised, true);
   } finally { names.forEach((name, i) => { if (old[i] === undefined) delete process.env[name]; else process.env[name] = old[i]; }); }
 });

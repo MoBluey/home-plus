@@ -18,7 +18,8 @@ function capture(repo) {
     if (git(repo, ['status', '--porcelain', '--untracked-files=normal']).split('\n').some(line => line && !/^(\?\?) (update-info-build\.json|com\.github\.pbalazaar\.homeplus\.update\.json)$/.test(line))) return result;
     const commit = git(repo, ['rev-parse', 'HEAD']);
     let sourceRepo;
-    if (process.env.GITHUB_SHA === commit && repository(process.env.GITHUB_REPOSITORY)) sourceRepo = process.env.GITHUB_REPOSITORY;
+    const ciSource = process.env.GITHUB_ACTIONS === 'true' && process.env.GITHUB_SHA === commit && repository(process.env.GITHUB_REPOSITORY);
+    if (ciSource) sourceRepo = process.env.GITHUB_REPOSITORY;
     else {
       const branch = git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
       const remote = git(repo, ['config', 'branch.' + branch + '.remote']);
@@ -26,21 +27,15 @@ function capture(repo) {
     }
     if (!sourceRepo) return result;
     result.source.repository = sourceRepo; result.source.commit = commit;
-    if (sourceRepo === 'pbalazaar/home-plus' && /^refs\/tags\/v\d+\.\d+\.\d+$/.test(process.env.GITHUB_REF || '')) {
+    if (ciSource && sourceRepo === 'pbalazaar/home-plus' && /^refs\/tags\/v\d+\.\d+\.\d+$/.test(process.env.GITHUB_REF || '')) {
       const tag = process.env.GITHUB_REF.slice('refs/tags/'.length);
       if (JSON.parse(fs.readFileSync(path.join(repo, 'native/appinfo.json'))).version !== tag.slice(1) || git(repo, ['rev-parse', tag + '^{commit}']) !== commit) return result;
       result.upstream = { repository: sourceRepo, version: tag.slice(1), tag, commit };
       result.source.base = commit; result.customised = false; return result;
     }
-    const official = git(repo, ['remote']).split('\n').filter(name => repoName(git(repo, ['remote', 'get-url', name])) === 'pbalazaar/home-plus');
-    if (!official.length) return result;
-    const tag = git(repo, ['tag', '--merged', 'HEAD', '--list', 'v*', '--sort=-version:refname']).split('\n').filter(name => /^v\d+\.\d+\.\d+$/.test(name))[0];
-    if (!tag) return result;
-    const base = git(repo, ['rev-parse', tag + '^{commit}']);
-    result.upstream = { repository: 'pbalazaar/home-plus', version: tag.slice(1), tag, commit: base };
-    result.source.base = base;
-    result.customisations = git(repo, ['diff', '--name-only', base, commit]).split('\n').filter(runtimePath);
-    result.customised = result.customisations.length > 0;
+    // Local tags and remote URLs do not prove an official release identity.
+    // Fork workflows pass independently verified provenance from prepare(); desktop
+    // builds retain known source identity but explicitly unknown upstream/base.
   } catch (_) { /* No Git, branch/upstream or trustworthy origin: explicitly unknown. */ }
   return result;
 }
