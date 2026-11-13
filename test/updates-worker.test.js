@@ -62,7 +62,7 @@ test('leaving Home cancels before replacement', async () => {
   const f = await fixture('left'); try { await worker.run(f.file, f.ops); assert.deepStrictEqual(f.counts(), { targetInstalls: 0, backupInstalls: 0, fallback: false }); assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).active, false); } finally { f.close(); }
 });
 test('interrupted replacement recovers without repeating target install', async () => {
-  const f = await fixture(); f.s.phase = 'installing'; recovery.atomic(f.file, f.s); put(f.after, f.dirs);
+  const f = await fixture(); f.s.phase = 'installing'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s); put(f.after, f.dirs);
   try { await worker.run(f.file, f.ops); assert.strictEqual(f.counts().targetInstalls, 0); assert.strictEqual(f.counts().backupInstalls, 1); assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'failed'); } finally { f.close(); }
 });
 test('copied helper completes after replacement kills its launching process', async () => {
@@ -150,5 +150,91 @@ test('a second independent helper refuses the live worker lock', { skip: process
   } finally {
     if (child && child.exitCode === null) { const exited = new Promise(resolve => child.on('exit', resolve)); child.kill(); await exited; }
     f.close();
+  }
+});
+
+// Review regressions: later user state must outlive an update transaction's snapshot.
+function laterConfig(f) {
+  return Object.assign({}, f.config, { accounts: { fixture: 'refreshed-token' }, layout: ['new-app'], inputKey: false, startupEnabled: true,
+    prefs: { theme: 'light', sounds: false }, updates: { automatic: false, ignoredVersion: '0.26.0' }, addedAfterSnapshot: true });
+}
+const fixtureBoot = () => fs.existsSync('/proc/sys/kernel/random/boot_id') ? fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : '';
+for (const failure of ['left', 'tampered']) test('pre-replacement ' + failure + ' preserves post-snapshot user settings', async () => {
+  const f = await fixture(failure), current = laterConfig(f);
+  recovery.atomic(f.s.configPath, current);
+  if (failure === 'tampered') fs.appendFileSync(f.s.targetFile, 'tampered');
+  try { await worker.run(f.file, f.ops); assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), current); assert.strictEqual(f.counts().backupInstalls, 0); }
+  finally { f.close(); }
+});
+test('legitimate config writes during installation do not cause rollback', async () => {
+  const f = await fixture(), install = f.ops.installTarget, current = laterConfig(f);
+  f.ops.installTarget = async () => { await install(); recovery.atomic(f.s.configPath, current); };
+  try {
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'completed');
+    assert.strictEqual(f.counts().backupInstalls, 0);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), current);
+  } finally { f.close(); }
+});
+test('delayed recovery preserves newer account, layout, preference and update fields', async () => {
+  const f = await fixture(), current = laterConfig(f);
+  f.s.phase = 'uncertain'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s); recovery.atomic(f.s.configPath, current); put(f.after, f.dirs);
+  const install = f.ops.installBackup;
+  f.ops.installBackup = async () => { await install(); current.duringRecovery = 'retained'; recovery.atomic(f.s.configPath, current); };
+  try { await worker.run(f.file, f.ops); assert.strictEqual(f.counts().backupInstalls, 1); assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), current); }
+  finally { f.close(); }
+});
+test('uncertain recovery install records the current boot before invoking the installer', async () => {
+  const f = await fixture(); f.s.phase = 'uncertain'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s);
+  let backupCalls = 0, observed;
+  f.ops.installBackup = async () => {
+    backupCalls++; observed = JSON.parse(fs.readFileSync(f.file));
+    const e = new Error('backup completion unknown'); e.installerUncertain = true; throw e;
+  };
+  try {
+    await assert.rejects(worker.run(f.file, f.ops), /could not complete/);
+    assert.strictEqual(observed.installBoot, fixtureBoot());
+    assert.strictEqual(observed.installerPending, true);
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(backupCalls, 1);
+  } finally { f.close(); }
+});
+for (const kind of ['target', 'backup']) test('helper SIGKILL during ' + kind + ' install cannot start a same-boot rollback', async () => {
+  const f = await fixture(), cp = require('child_process'), runner = path.join(f.dir, 'interrupted-helper.js');
+  for (const name of ['update-worker.js', 'update-archive.js', 'update-release.js', 'default-home-guard.js', 'net.js', 'mkdir.js'])
+    fs.copyFileSync(path.join(__dirname, '..', 'service', name), path.join(f.dir, name));
+  if (kind === 'backup') { f.s.phase = 'uncertain'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s); }
+  fs.writeFileSync(runner, "const w=require('./update-worker');w.run(process.argv[2],{foreground:async()=>'" + APP +
+    "',fallback:async()=>{}," + (kind === 'target' ? 'installTarget' : 'installBackup') + ":async()=>process.kill(process.pid,'SIGKILL')}).catch(()=>process.exit(2));");
+  try {
+    const child = cp.spawn(process.execPath, [runner, f.file], { stdio: 'ignore' });
+    assert.strictEqual(await new Promise(resolve => child.on('exit', (code, signal) => resolve(signal))), 'SIGKILL');
+    const interrupted = JSON.parse(fs.readFileSync(f.file));
+    assert.strictEqual(interrupted.phase, kind === 'target' ? 'installing' : 'recovering');
+    assert.strictEqual(interrupted.installerPending, true); assert.strictEqual(interrupted.installBoot, fixtureBoot());
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(f.counts().backupInstalls, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'uncertain');
+    const s = JSON.parse(fs.readFileSync(f.file)); s.installBoot = 'previous-boot'; recovery.atomic(f.file, s);
+    await worker.run(f.file, f.ops); assert.strictEqual(f.counts().backupInstalls, 1);
+  } finally { f.close(); }
+});
+test('cancellation restores only updater-owned Home fields in usable current config', async () => {
+  const f = await fixture('left');
+  Object.assign(f.config, { homeMode: 'redirect', homeOverride: true, defaultHomeEnabled: false });
+  recovery.atomic(f.s.configBackup, f.config);
+  const current = Object.assign(laterConfig(f), { homeOverride: false, defaultHomeEnabled: true });
+  recovery.atomic(f.s.configPath, current);
+  try {
+    await worker.run(f.file, f.ops);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), Object.assign({}, current, { homeOverride: true }));
+  } finally { f.close(); }
+});
+test('complete config snapshot is used only when current config is absent or unusable', async () => {
+  for (const invalid of [undefined, '{', 'null', '[]']) {
+    const f = await fixture('left');
+    if (invalid === undefined) fs.unlinkSync(f.s.configPath); else fs.writeFileSync(f.s.configPath, invalid);
+    try { await worker.run(f.file, f.ops); assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), f.config); }
+    finally { f.close(); }
   }
 });
