@@ -3,6 +3,14 @@ const test = require('node:test'), assert = require('node:assert/strict'), fs = 
 const archive = require('../service/update-archive'), worker = require('../service/update-worker'), recovery = require('../service/default-home-guard');
 const { mkdirSync } = require('../service/mkdir'), remove = require('../service/remove');
 const APP = 'com.github.pbalazaar.homeplus', SERVICE = APP + '.service';
+async function assertKilled(child, file) {
+  const result = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  assert.deepStrictEqual(result, process.platform === 'win32' ? { code: 1, signal: null } : { code: null, signal: 'SIGKILL' });
+  assert.strictEqual(fs.existsSync(file + '.graceful-exit'), false);
+}
 function files(version) {
   const f = {};
   function add(i, name, value) { f[archive.roots[i] + '/' + name] = { mode: name === 'homeplus' ? 0o755 : 0o644, data: Buffer.from(typeof value === 'object' ? JSON.stringify(value) : value) }; }
@@ -75,14 +83,20 @@ test('copied helper completes after replacement kills its launching process', as
       "const fs=require('fs'),path=require('path'),a=require('./update-archive'),w=require('./update-worker'),m=require('./mkdir');\n" +
       "const file=process.argv[2],s=w.load(file);\n" +
       "const replace=async p=>{const r=await a.inspect(fs.readFileSync(p),p===s.backup?s.previousVersion:s.artifact.version);Object.keys(r.files).forEach(n=>{if(r.files[n].directory)return;const i=a.roots.findIndex(x=>n.indexOf(x+'/')===0),f=path.join(s.directories[i],n.slice(a.roots[i].length+1));m.mkdirSync(path.dirname(f));fs.writeFileSync(f,r.files[n].data);});};\n" +
-      "w.run(file,{foreground:async()=>'" + APP + "',installTarget:async()=>{await replace(s.targetFile);process.kill(Number(process.argv[3]),'SIGKILL');},installBackup:()=>replace(s.backup),elevate:async()=>{},health:async()=>{},enter:async()=>true,restoreHome:async()=>{},fallback:async()=>{}}).catch(e=>{console.error(e.message);process.exitCode=1;});\n");
+      "w.run(file,{foreground:async()=>'" + APP + "',installTarget:async()=>{await replace(s.targetFile);process.kill(Number(process.argv[3]),'SIGKILL');},installBackup:()=>replace(s.backup),elevate:async()=>{},health:async()=>{},enter:async()=>true,restoreHome:async()=>{},fallback:async()=>{}}).then(()=>console.log('helper-completed'),e=>{console.error(e.message);process.exitCode=1;});\n");
     const parent = childProcess.spawn(process.execPath, ['-e',
-      "const c=require('child_process').spawn(process.execPath,[process.argv[1],process.argv[2],String(process.pid)],{detached:true,stdio:'ignore'});c.unref();setInterval(()=>{},1000);",
-      runner, f.file], { stdio: 'ignore' });
-    const exited = new Promise(resolve => parent.on('exit', (code, signal) => resolve(signal)));
-    assert.strictEqual(await exited, 'SIGKILL');
-    const until = require('./helpers').until;
-    await until(() => JSON.parse(fs.readFileSync(f.file)).active === false, 5000);
+      "process.on('exit',()=>require('fs').writeFileSync(process.argv[2]+'.graceful-exit','unexpected'));" +
+      "const c=require('child_process').spawn(process.execPath,[process.argv[1],process.argv[2],String(process.pid)],{detached:true,stdio:['ignore',1,2]});c.unref();setInterval(()=>{},1000);",
+      runner, f.file], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '', errors = '';
+    parent.stdout.on('data', data => { output += data; });
+    parent.stderr.on('data', data => { errors += data; });
+    // The detached helper inherits these pipes. 'close' waits for it to finish too,
+    // including worker lock cleanup after transaction.active becomes false.
+    await assertKilled(parent, f.file);
+    assert.strictEqual(errors, '');
+    assert.strictEqual(output.trim(), 'helper-completed');
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).active, false);
     assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'completed');
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), f.config);
   } finally { f.close(); }
@@ -204,11 +218,12 @@ for (const kind of ['target', 'backup']) test('helper SIGKILL during ' + kind + 
   for (const name of ['update-worker.js', 'update-archive.js', 'update-release.js', 'default-home-guard.js', 'net.js', 'mkdir.js'])
     fs.copyFileSync(path.join(__dirname, '..', 'service', name), path.join(f.dir, name));
   if (kind === 'backup') { f.s.phase = 'uncertain'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s); }
-  fs.writeFileSync(runner, "const w=require('./update-worker');w.run(process.argv[2],{foreground:async()=>'" + APP +
+  fs.writeFileSync(runner, "process.on('exit',()=>require('fs').writeFileSync(process.argv[2]+'.graceful-exit','unexpected'));" +
+    "const w=require('./update-worker');w.run(process.argv[2],{foreground:async()=>'" + APP +
     "',fallback:async()=>{}," + (kind === 'target' ? 'installTarget' : 'installBackup') + ":async()=>process.kill(process.pid,'SIGKILL')}).catch(()=>process.exit(2));");
   try {
     const child = cp.spawn(process.execPath, [runner, f.file], { stdio: 'ignore' });
-    assert.strictEqual(await new Promise(resolve => child.on('exit', (code, signal) => resolve(signal))), 'SIGKILL');
+    await assertKilled(child, f.file);
     const interrupted = JSON.parse(fs.readFileSync(f.file));
     assert.strictEqual(interrupted.phase, kind === 'target' ? 'installing' : 'recovering');
     assert.strictEqual(interrupted.installerPending, true); assert.strictEqual(interrupted.installBoot, fixtureBoot());
@@ -273,6 +288,7 @@ for (const stale of [false, true]) for (const point of ['writing', 'published'])
   const f = await fixture(), cp = require('child_process'), runner = path.join(f.dir, 'lock-interruption.js');
   if (stale) recovery.atomic(f.file + '.worker', { pid: 2147483647, boot: fixtureBoot(), token: 'dead-owner' });
   fs.writeFileSync(runner, "const fs=require('fs'),file=process.argv[2],point=process.argv[3],write=fs.writeFileSync,link=fs.linkSync;" +
+    "process.on('exit',()=>write(file+'.graceful-exit','unexpected'));" +
     "fs.writeFileSync=function(p){if(typeof p==='number'||p===file+'.worker'){" +
     "if(point==='writing'){const fd=typeof p==='number'?p:fs.openSync(p,'wx',384);fs.writeSync(fd,'{');process.kill(process.pid,'SIGKILL');}" +
     "const result=write.apply(this,arguments);if(p===file+'.worker')process.kill(process.pid,'SIGKILL');return result;}return write.apply(this,arguments);};" +
@@ -280,7 +296,7 @@ for (const stale of [false, true]) for (const point of ['writing', 'published'])
     "require(" + JSON.stringify(require.resolve('../service/update-worker')) + ").run(file,{}).catch(()=>process.exit(2));");
   try {
     const child = cp.spawn(process.execPath, [runner, f.file, point], { stdio: 'ignore' });
-    assert.strictEqual(await new Promise(resolve => child.on('exit', (code, signal) => resolve(signal))), 'SIGKILL');
+    await assertKilled(child, f.file);
     if (fs.existsSync(f.file + '.worker')) assert.strictEqual(typeof JSON.parse(fs.readFileSync(f.file + '.worker')).pid, 'number');
     await worker.run(f.file, f.ops);
     assert.strictEqual(f.counts().targetInstalls, 1);
