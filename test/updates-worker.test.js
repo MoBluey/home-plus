@@ -238,3 +238,109 @@ test('complete config snapshot is used only when current config is absent or unu
     finally { f.close(); }
   }
 });
+
+test('leaving Home during archive validation cancels at the replacement boundary', async () => {
+  const f = await fixture(), inspect = archive.inspect;
+  let front = APP;
+  f.ops.foreground = async () => front;
+  archive.inspect = async function () { const result = await inspect.apply(this, arguments); front = 'user.selected.app'; return result; };
+  try {
+    await worker.run(f.file, f.ops);
+    assert.deepStrictEqual(f.counts(), { targetInstalls: 0, backupInstalls: 0, fallback: false });
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).active, false);
+    assert.match(JSON.parse(fs.readFileSync(f.file)).message, /cancelled/);
+  } finally { archive.inspect = inspect; f.close(); }
+});
+test('an accepted native launch that immediately exits is unhealthy, not deferred', async () => {
+  const luna = recovery.luna; let launches = 0;
+  recovery.luna = async uri => {
+    if (uri.endsWith('/launch')) { launches++; return { returnValue: true }; }
+    return { returnValue: true, appId: launches ? 'com.webos.app.home' : APP };
+  };
+  try { await assert.rejects(worker.production({}).enter(), /did not stay open/); assert.strictEqual(launches, 1); }
+  finally { recovery.luna = luna; }
+});
+test('native entry defers to an already selected foreground app without launching', async () => {
+  const luna = recovery.luna; let launches = 0;
+  recovery.luna = async uri => {
+    if (uri.endsWith('/launch')) launches++;
+    return { returnValue: true, appId: 'user.selected.app' };
+  };
+  try { assert.strictEqual(await worker.production({}).enter(), false); assert.strictEqual(launches, 0); }
+  finally { recovery.luna = luna; }
+});
+for (const stale of [false, true]) for (const point of ['writing', 'published']) test('SIGKILL while ' + point + (stale ? ' a stale lock successor' : ' the worker lock') + ' permits a safe restart', async () => {
+  const f = await fixture(), cp = require('child_process'), runner = path.join(f.dir, 'lock-interruption.js');
+  if (stale) recovery.atomic(f.file + '.worker', { pid: 2147483647, boot: fixtureBoot(), token: 'dead-owner' });
+  fs.writeFileSync(runner, "const fs=require('fs'),file=process.argv[2],point=process.argv[3],write=fs.writeFileSync,link=fs.linkSync;" +
+    "fs.writeFileSync=function(p){if(typeof p==='number'||p===file+'.worker'){" +
+    "if(point==='writing'){const fd=typeof p==='number'?p:fs.openSync(p,'wx',384);fs.writeSync(fd,'{');process.kill(process.pid,'SIGKILL');}" +
+    "const result=write.apply(this,arguments);if(p===file+'.worker')process.kill(process.pid,'SIGKILL');return result;}return write.apply(this,arguments);};" +
+    "fs.linkSync=function(a,b){const result=link.apply(this,arguments);if(b===file+'.worker'||b.indexOf(file+'.worker.after-')===0)process.kill(process.pid,'SIGKILL');return result;};" +
+    "require(" + JSON.stringify(require.resolve('../service/update-worker')) + ").run(file,{}).catch(()=>process.exit(2));");
+  try {
+    const child = cp.spawn(process.execPath, [runner, f.file, point], { stdio: 'ignore' });
+    assert.strictEqual(await new Promise(resolve => child.on('exit', (code, signal) => resolve(signal))), 'SIGKILL');
+    if (fs.existsSync(f.file + '.worker')) assert.strictEqual(typeof JSON.parse(fs.readFileSync(f.file + '.worker')).pid, 'number');
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(f.counts().targetInstalls, 1);
+    assert.strictEqual(f.counts().backupInstalls, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'completed');
+  } finally { f.close(); }
+});
+
+test('healthy service with a crashed native entry reinstalls the previous package', async () => {
+  const f = await fixture(), luna = recovery.luna, healthy = [], health = f.ops.health;
+  let launched = false;
+  recovery.luna = async uri => {
+    if (uri.endsWith('/launch')) { launched = true; return { returnValue: true }; }
+    return { returnValue: true, appId: launched ? 'com.webos.app.home' : APP };
+  };
+  const enter = worker.production(f.s).enter;
+  f.ops.health = async version => { await health(version); healthy.push(version); };
+  f.ops.enter = async () => f.counts().backupInstalls ? true : enter();
+  try {
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(f.counts().targetInstalls, 1);
+    assert.strictEqual(f.counts().backupInstalls, 1);
+    assert(healthy.includes('0.26.0')); assert(healthy.includes('0.25.0'));
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'failed');
+  } finally { recovery.luna = luna; f.close(); }
+});
+test('concurrent stale-lock takeover grants ownership to only one live helper', async () => {
+  const f = await fixture(), cp = require('child_process'), until = require('./helpers').until, children = [];
+  f.s.phase = 'uncertain'; f.s.installBoot = fixtureBoot(); recovery.atomic(f.file, f.s);
+  recovery.atomic(f.file + '.worker', { pid: 2147483647, boot: fixtureBoot(), token: 'dead-owner' });
+  const runner = path.join(f.dir, 'lock-contender.js');
+  fs.writeFileSync(runner, "const fs=require('fs'),file=process.argv[2],id=process.argv[3];fs.writeFileSync(file+'.ready-'+id,'ready');" +
+    "const timer=setInterval(()=>{if(!fs.existsSync(file+'.go'))return;clearInterval(timer);require(" +
+    JSON.stringify(require.resolve('../service/update-worker')) + ").run(file,{fallback:async()=>{" +
+    "fs.writeFileSync(file+'.inside',String(process.pid),{flag:'wx'});await new Promise(r=>setTimeout(r,500));fs.unlinkSync(file+'.inside');" +
+    "}}).then(()=>process.exit(0),e=>process.exit(/already running/.test(e.message)?3:4));},10);");
+  try {
+    const exits = [];
+    for (let i = 0; i < 4; i++) {
+      const child = cp.spawn(process.execPath, [runner, f.file, String(i)], { stdio: 'ignore' }); children.push(child);
+      exits.push(new Promise(resolve => child.on('exit', resolve)));
+    }
+    await until(() => children.every((child, i) => fs.existsSync(f.file + '.ready-' + i)), 5000);
+    fs.writeFileSync(f.file + '.go', 'go');
+    const codes = await Promise.all(exits);
+    assert.strictEqual(codes.filter(code => code === 0).length, 1);
+    assert.strictEqual(codes.filter(code => code === 3).length, 3);
+    assert.strictEqual(fs.existsSync(f.file + '.worker'), false);
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill();
+    f.close();
+  }
+});
+test('an unverifiable pre-existing worker lock is never removed blindly', async () => {
+  const f = await fixture();
+  fs.writeFileSync(f.file + '.worker', '{');
+  try {
+    await assert.rejects(worker.run(f.file, f.ops), SyntaxError);
+    assert.strictEqual(fs.readFileSync(f.file + '.worker', 'utf8'), '{');
+    assert.strictEqual(f.counts().targetInstalls, 0);
+    assert.strictEqual(f.counts().backupInstalls, 0);
+  } finally { f.close(); }
+});

@@ -86,7 +86,7 @@ function production(state) {
       if (id && id !== APP) return false;
       await accepted(MANAGER + 'launch', { id: APP });
       const end = Date.now() + 15000; let stable = 0;
-      while (Date.now() < end) { if (await front() !== APP) return false; if (++stable >= 10) return true; await wait(500); }
+      while (Date.now() < end) { if (await front() !== APP) throw new Error('Home+ did not stay open'); if (++stable >= 10) return true; await wait(500); }
       throw new Error('Home+ did not stay open');
     },
     async restoreHome() {
@@ -148,23 +148,71 @@ function load(file) {
   release.version(s.previousVersion); release.version(s.artifact.version);
   return s;
 }
+const bootId = () => fs.existsSync('/proc/sys/kernel/random/boot_id') ? fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : '';
+function processStart(pid) {
+  try { const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8'); return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]; }
+  catch (e) { return ''; }
+}
+function workerAlive(owner) {
+  if (owner.boot.trim() !== bootId()) return false;
+  try { process.kill(owner.pid, 0); }
+  catch (e) { return e.code !== 'ESRCH'; }
+  const start = processStart(owner.pid);
+  return !owner.start || !start || start === owner.start;
+}
+function lockRecord(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const owner = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || typeof owner.boot !== 'string') throw new Error('Invalid worker owner');
+    return { owner, stat: fs.fstatSync(fd) };
+  } finally { fs.closeSync(fd); }
+}
+function sameLock(file, stat) {
+  try { const now = fs.statSync(file); return now.dev === stat.dev && now.ino === stat.ino; }
+  catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+}
+const successor = (lock, owner) => lock + '.after-' + archive.hash(Buffer.from(JSON.stringify(owner)));
+function acquireWorker(file) {
+  const lock = file + '.worker', candidate = lock + '.owner-' + require('crypto').randomBytes(12).toString('hex');
+  // Write and flush privately, then publish exclusively with link(2). A torn private file is never a lock.
+  recovery.atomic(candidate, { pid: process.pid, boot: bootId(), start: processStart(process.pid), token: path.basename(candidate) });
+  let at = lock, anchor = null, chain = [];
+  try {
+    for (;;) {
+      let linked = false;
+      try { fs.linkSync(candidate, at); linked = true; }
+      catch (e) { if (e.code !== 'EEXIST') throw e; }
+      if (linked) {
+        recovery.syncDir(path.dirname(lock));
+        if (!anchor) anchor = fs.statSync(at);
+        if (!sameLock(lock, anchor)) { fs.unlinkSync(at); at = lock; anchor = null; chain = []; continue; }
+        chain.push(at);
+        return () => {
+          if (!sameLock(lock, anchor)) return;
+          fs.unlinkSync(lock);
+          for (const entry of chain) if (entry !== lock) fs.unlinkSync(entry);
+          recovery.syncDir(path.dirname(lock));
+        };
+      }
+      let previous;
+      try { previous = lockRecord(at); }
+      catch (e) { if (e.code !== 'ENOENT') throw e; at = lock; anchor = null; chain = []; continue; }
+      if (!anchor) anchor = previous.stat;
+      if (!sameLock(lock, anchor)) { at = lock; anchor = null; chain = []; continue; }
+      if (workerAlive(previous.owner)) throw new Error('Update recovery is already running');
+      // Never unlink a stale lock: concurrent reapers could otherwise unlink the new live owner.
+      // Exactly one successor wins each immutable owner's exclusive link; interrupted takeover is recoverable.
+      chain.push(at); at = successor(lock, previous.owner);
+    }
+  } finally { fs.unlinkSync(candidate); }
+}
 async function run(file, injected) {
   let s = load(file);
   if (!s.active) { finishHook(s); return; }
-  const lock = file + '.worker';
-  try { fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, boot: fs.existsSync('/proc/sys/kernel/random/boot_id') ? fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8') : '' }), { flag: 'wx', mode: 0o600 }); }
-  catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    const previous = read(lock); let alive = false;
-    try {
-      process.kill(previous.pid, 0);
-      const argv = fs.readFileSync('/proc/' + previous.pid + '/cmdline', 'utf8').split('\0');
-      alive = argv[1] === __filename && argv.indexOf(file) >= 0 && previous.boot === fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8');
-    } catch (err) { /* dead process or previous boot */ }
-    if (alive) throw new Error('Update recovery is already running');
-    fs.unlinkSync(lock); return run(file, injected);
-  }
-  const bootId = () => fs.existsSync('/proc/sys/kernel/random/boot_id') ? fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : '';
+  const releaseWorker = acquireWorker(file);
+  try { s = load(file); } catch (e) { releaseWorker(); throw e; }
+  if (!s.active) { releaseWorker(); finishHook(s); return; }
   const ops = injected || production(s);
   let replacing = s.phase !== 'prepared';
   const save = (phase, message) => { s.phase = phase; s.message = message; recovery.atomic(file, s); };
@@ -214,6 +262,7 @@ async function run(file, injected) {
       if (archive.hash(backup) !== s.backupHash) throw new Error('Recovery backup hash changed');
       const prior = await archive.inspect(backup, s.previousVersion);
       archive.verifyInstalled(prior.inventory, s.directories);
+      if (await ops.foreground() !== APP) throw new Error('Update cancelled because Home+ is no longer in front');
       replacing = true;
       await install('target');
       archive.verifyInstalled(s.targetInventory, s.directories);
@@ -256,7 +305,7 @@ async function run(file, injected) {
       save(rollback.installerUncertain ? 'uncertain' : 'recovering', 'Recovery needs attention. The verified backup and recovery hook have been retained.');
       throw new Error('Update recovery could not complete');
     }
-  } finally { try { fs.unlinkSync(lock); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
+  } finally { releaseWorker(); }
 }
 function checkSpace(df, bytes, artifactSize) {
   const line = df.trim().split('\n').pop().trim().split(/\s+/), available = Number(line[line.length - 3]) * 1024;
@@ -269,13 +318,12 @@ async function prepare(options) {
   const file = path.join(dir, 'transaction.json');
   const previous = fs.existsSync(file) ? load(file) : null;
   if (previous && previous.active) throw new Error('An update transaction is already running');
-  if (fs.existsSync(file + '.worker')) {
-    const owner = read(file + '.worker');
-    try {
-      process.kill(owner.pid, 0);
-      const argv = fs.readFileSync('/proc/' + owner.pid + '/cmdline', 'utf8').split('\0');
-      if (argv[1] === path.join(dir, 'update-worker.js') && argv.indexOf(file) >= 0) throw new Error('The previous update helper is still finishing');
-    } catch (e) { if (!['ESRCH', 'ENOENT'].includes(e.code)) throw e; }
+  let lock = file + '.worker';
+  while (fs.existsSync(lock)) {
+    let owner;
+    try { owner = lockRecord(lock).owner; } catch (e) { if (e.code === 'ENOENT') break; throw e; }
+    if (workerAlive(owner)) throw new Error('The previous update helper is still finishing');
+    lock = successor(file + '.worker', owner);
   }
   if (options.externalBusy && options.externalBusy()) throw new Error('Another Home+ setup operation is running');
   fs.accessSync(ELEVATE, fs.constants.X_OK);
