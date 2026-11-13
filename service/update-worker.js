@@ -148,13 +148,41 @@ function load(file) {
   release.version(s.previousVersion); release.version(s.artifact.version);
   return s;
 }
-const bootId = () => fs.existsSync('/proc/sys/kernel/random/boot_id') ? fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : '';
+const generationId = value => typeof value === 'string' && /^runtime-v1:[0-9a-f]{64}$/.test(value);
+function bootId(runtime, mountInfo) {
+  runtime = runtime || '/run';
+  if (mountInfo === undefined) mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
+  const root = fs.lstatSync(runtime);
+  const mounted = mountInfo.split('\n').some(line => {
+    const parts = line.split(' - '), fields = parts[0].split(' ');
+    return parts.length === 2 && fields[3] === '/' && fields[4] === runtime && parts[1].split(' ')[0] === 'tmpfs';
+  });
+  if (!mounted || !root.isDirectory() || root.isSymbolicLink() || root.uid !== 0 || (root.mode & 0o022) || fs.realpathSync(runtime) !== runtime)
+    throw new Error('Cannot verify volatile runtime mount for update recovery');
+  const dir = path.join(runtime, 'homeplus-update-boot'), file = path.join(dir, 'generation.json');
+  let created = false;
+  try { fs.mkdirSync(dir, 0o700); created = true; } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  const st = fs.lstatSync(dir);
+  if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== 0 || (st.mode & 0o777) !== 0o700)
+    throw new Error('Unsafe update boot generation directory');
+  // Only the exclusive mkdir winner may initialise. A killed creator leaves an
+  // incomplete directory that must fail closed until the volatile mount resets.
+  // No updater path removes this directory or replaces an existing generation.
+  if (created) recovery.atomic(file, { schemaVersion: 1, generation: require('crypto').randomBytes(32).toString('hex') });
+  const marker = fs.lstatSync(file);
+  if (!marker.isFile() || marker.uid !== 0 || (marker.mode & 0o777) !== 0o600 || marker.size > 256)
+    throw new Error('Unsafe update boot generation record');
+  const record = read(file), id = 'runtime-v1:' + record.generation;
+  if (record.schemaVersion !== 1 || !generationId(id)) throw new Error('Invalid update boot generation record');
+  return id;
+}
 function processStart(pid) {
   try { const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8'); return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]; }
   catch (e) { return ''; }
 }
-function workerAlive(owner) {
-  if (owner.boot.trim() !== bootId()) return false;
+function workerAlive(owner, boot) {
+  // A legacy raw UUID cannot prove a different boot during migration.
+  if (generationId(owner.boot) && owner.boot !== boot) return false;
   try { process.kill(owner.pid, 0); }
   catch (e) { return e.code !== 'ESRCH'; }
   const start = processStart(owner.pid);
@@ -173,10 +201,10 @@ function sameLock(file, stat) {
   catch (e) { if (e.code === 'ENOENT') return false; throw e; }
 }
 const successor = (lock, owner) => lock + '.after-' + archive.hash(Buffer.from(JSON.stringify(owner)));
-function acquireWorker(file) {
+function acquireWorker(file, boot) {
   const lock = file + '.worker', candidate = lock + '.owner-' + require('crypto').randomBytes(12).toString('hex');
   // Write and flush privately, then publish exclusively with link(2). A torn private file is never a lock.
-  recovery.atomic(candidate, { pid: process.pid, boot: bootId(), start: processStart(process.pid), token: path.basename(candidate) });
+  recovery.atomic(candidate, { pid: process.pid, boot: boot, start: processStart(process.pid), token: path.basename(candidate) });
   let at = lock, anchor = null, chain = [];
   try {
     for (;;) {
@@ -200,7 +228,7 @@ function acquireWorker(file) {
       catch (e) { if (e.code !== 'ENOENT') throw e; at = lock; anchor = null; chain = []; continue; }
       if (!anchor) anchor = previous.stat;
       if (!sameLock(lock, anchor)) { at = lock; anchor = null; chain = []; continue; }
-      if (workerAlive(previous.owner)) throw new Error('Update recovery is already running');
+      if (workerAlive(previous.owner, boot)) throw new Error('Update recovery is already running');
       // Never unlink a stale lock: concurrent reapers could otherwise unlink the new live owner.
       // Exactly one successor wins each immutable owner's exclusive link; interrupted takeover is recoverable.
       chain.push(at); at = successor(lock, previous.owner);
@@ -210,14 +238,16 @@ function acquireWorker(file) {
 async function run(file, injected) {
   let s = load(file);
   if (!s.active) { finishHook(s); return; }
-  const releaseWorker = acquireWorker(file);
+  const boot = injected && injected.bootId ? injected.bootId() : bootId();
+  if (!generationId(boot)) throw new Error('Invalid current boot generation');
+  const releaseWorker = acquireWorker(file, boot);
   try { s = load(file); } catch (e) { releaseWorker(); throw e; }
   if (!s.active) { releaseWorker(); finishHook(s); return; }
   const ops = injected || production(s);
   let replacing = s.phase !== 'prepared';
   const save = (phase, message) => { s.phase = phase; s.message = message; recovery.atomic(file, s); };
   async function install(kind) {
-    s.installBoot = bootId(); s.installerPending = true; s.installer = kind;
+    s.installBoot = boot; s.installerPending = true; s.installer = kind;
     save(kind === 'target' ? 'installing' : 'recovering', kind === 'target' ?
       'Installing Home+. Recovery continues independently.' : 'Reinstalling the verified previous package.');
     try { await (kind === 'target' ? ops.installTarget() : ops.installBackup()); }
@@ -245,9 +275,11 @@ async function run(file, injected) {
   }
   try {
     const pending = s.installerPending === true || ['installing', 'uncertain'].includes(s.phase);
-    if (pending && (typeof s.installBoot !== 'string' || s.installBoot === bootId())) {
+    if (pending && (!generationId(s.installBoot) || s.installBoot === boot)) {
       // A killed helper cannot record uncertainty. Both installers may still be running.
-      if (typeof s.installBoot !== 'string') s.installBoot = bootId();
+      // Legacy/missing identity is baselined without authorising a rollback.
+      // Only a later verified runtime generation can clear this quarantine.
+      if (!generationId(s.installBoot)) s.installBoot = boot;
       save('uncertain', 'Installer completion is unknown. Recovery needs a full webOS restart, not standby. Your backup is retained.');
       try { await ops.fallback(); } catch (e) { /* retain the independent Home guard and recovery hook */ }
       return;
@@ -318,11 +350,12 @@ async function prepare(options) {
   const file = path.join(dir, 'transaction.json');
   const previous = fs.existsSync(file) ? load(file) : null;
   if (previous && previous.active) throw new Error('An update transaction is already running');
+  const boot = bootId(); // refuse unsupported recovery identity before changing Home or replacing packages
   let lock = file + '.worker';
   while (fs.existsSync(lock)) {
     let owner;
     try { owner = lockRecord(lock).owner; } catch (e) { if (e.code === 'ENOENT') break; throw e; }
-    if (workerAlive(owner)) throw new Error('The previous update helper is still finishing');
+    if (workerAlive(owner, boot)) throw new Error('The previous update helper is still finishing');
     lock = successor(file + '.worker', owner);
   }
   if (options.externalBusy && options.externalBusy()) throw new Error('Another Home+ setup operation is running');
@@ -400,7 +433,7 @@ function start(file) {
   const child = spawn(process.execPath, [path.join(path.dirname(file), 'update-worker.js'), '--run', file], { detached: true, stdio: ['ignore', fd, fd], cwd: path.dirname(file), env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/home/root' } });
   child.unref(); fs.closeSync(fd);
 }
-module.exports = { prepare, run, start, load, production, finalReply, installSubscription, checkSpace };
+module.exports = { bootId, prepare, run, start, load, production, finalReply, installSubscription, checkSpace };
 if (require.main === module) {
   const mode = process.argv[2], file = process.argv[3];
   if (mode === '--start') start(file);

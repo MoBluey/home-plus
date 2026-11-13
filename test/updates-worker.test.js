@@ -32,7 +32,7 @@ async function fixture(failure) {
     hook: path.join(dir, '01-homeplus-update'), boot: path.join(dir, 'boot.sh'), defaultHome: false, backupHash: archive.hash(old), targetInventory: (await archive.inspect(target, '0.26.0')).inventory };
   fs.writeFileSync(s.backup, old); fs.writeFileSync(s.targetFile, target); recovery.atomic(s.configPath, config); recovery.atomic(s.configBackup, config); recovery.atomic(file, s); fs.writeFileSync(s.boot, 'fixture'); fs.symlinkSync(s.boot, s.hook);
   let targetInstalls = 0, backupInstalls = 0, fallback = false;
-  const ops = { foreground: async () => failure === 'left' ? 'other.app' : APP,
+  const ops = { bootId: fixtureBoot, foreground: async () => failure === 'left' ? 'other.app' : APP,
     async installTarget() { targetInstalls++; if (failure === 'install') throw new Error('install failed'); put(after, dirs); },
     async installBackup() { backupInstalls++; put(before, dirs); },
     async elevate() { if (failure === 'elevate' && !backupInstalls) throw new Error('elevation failed'); },
@@ -70,7 +70,7 @@ test('leaving Home cancels before replacement', async () => {
   const f = await fixture('left'); try { await worker.run(f.file, f.ops); assert.deepStrictEqual(f.counts(), { targetInstalls: 0, backupInstalls: 0, fallback: false }); assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).active, false); } finally { f.close(); }
 });
 test('interrupted replacement recovers without repeating target install', async () => {
-  const f = await fixture(); f.s.phase = 'installing'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s); put(f.after, f.dirs);
+  const f = await fixture(); f.s.phase = 'installing'; f.s.installBoot = 'runtime-v1:' + 'e'.repeat(64); recovery.atomic(f.file, f.s); put(f.after, f.dirs);
   try { await worker.run(f.file, f.ops); assert.strictEqual(f.counts().targetInstalls, 0); assert.strictEqual(f.counts().backupInstalls, 1); assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'failed'); } finally { f.close(); }
 });
 test('copied helper completes after replacement kills its launching process', async () => {
@@ -83,7 +83,7 @@ test('copied helper completes after replacement kills its launching process', as
       "const fs=require('fs'),path=require('path'),a=require('./update-archive'),w=require('./update-worker'),m=require('./mkdir');\n" +
       "const file=process.argv[2],s=w.load(file);\n" +
       "const replace=async p=>{const r=await a.inspect(fs.readFileSync(p),p===s.backup?s.previousVersion:s.artifact.version);Object.keys(r.files).forEach(n=>{if(r.files[n].directory)return;const i=a.roots.findIndex(x=>n.indexOf(x+'/')===0),f=path.join(s.directories[i],n.slice(a.roots[i].length+1));m.mkdirSync(path.dirname(f));fs.writeFileSync(f,r.files[n].data);});};\n" +
-      "w.run(file,{foreground:async()=>'" + APP + "',installTarget:async()=>{await replace(s.targetFile);process.kill(Number(process.argv[3]),'SIGKILL');},installBackup:()=>replace(s.backup),elevate:async()=>{},health:async()=>{},enter:async()=>true,restoreHome:async()=>{},fallback:async()=>{}}).then(()=>console.log('helper-completed'),e=>{console.error(e.message);process.exitCode=1;});\n");
+      "w.run(file,{bootId:()=>'runtime-v1:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',foreground:async()=>'" + APP + "',installTarget:async()=>{await replace(s.targetFile);process.kill(Number(process.argv[3]),'SIGKILL');},installBackup:()=>replace(s.backup),elevate:async()=>{},health:async()=>{},enter:async()=>true,restoreHome:async()=>{},fallback:async()=>{}}).then(()=>console.log('helper-completed'),e=>{console.error(e.message);process.exitCode=1;});\n");
     const parent = childProcess.spawn(process.execPath, ['-e',
       "process.on('exit',()=>require('fs').writeFileSync(process.argv[2]+'.graceful-exit','unexpected'));" +
       "const c=require('child_process').spawn(process.execPath,[process.argv[1],process.argv[2],String(process.pid)],{detached:true,stdio:['ignore',1,2]});c.unref();setInterval(()=>{},1000);",
@@ -124,7 +124,7 @@ test('unknown installer completion never races HBC with a rollback', async () =>
     assert.strictEqual(f.counts().backupInstalls, 0);
     await worker.run(f.file, f.ops);
     assert.strictEqual(f.counts().backupInstalls, 0);
-    const s = JSON.parse(fs.readFileSync(f.file)); s.installBoot = 'previous-boot'; recovery.atomic(f.file, s);
+    const s = JSON.parse(fs.readFileSync(f.file)); s.installBoot = 'runtime-v1:' + 'e'.repeat(64); recovery.atomic(f.file, s);
     await worker.run(f.file, f.ops);
     assert.strictEqual(f.counts().backupInstalls, 1);
   } finally { f.close(); }
@@ -153,7 +153,9 @@ test('a second independent helper refuses the live worker lock', { skip: process
     const luna = path.join(f.dir, 'fixture-luna');
     fs.writeFileSync(luna, '#!/bin/sh\nsleep 2\n', { mode: 0o700 });
     const opts = { env: Object.assign({}, process.env, { HOMEPLUS_RECOVERY_LUNA: luna }), stdio: ['ignore', 'ignore', 'pipe'] };
-    const args = [path.join(f.dir, 'update-worker.js'), '--run', f.file];
+    const runner = path.join(f.dir, 'live-worker.js');
+    fs.writeFileSync(runner, "const w=require('./update-worker'),file=process.argv[2];w.run(file,Object.assign(w.production(w.load(file)),{bootId:()=>'" + fixtureBoot() + "'})).catch(e=>{console.error(e.message);process.exitCode=1;});");
+    const args = [runner, f.file];
     child = cp.spawn(process.execPath, args, opts);
     await until(() => fs.existsSync(f.file + '.worker'), 3000);
     const second = cp.spawn(process.execPath, args, opts); let output = '';
@@ -172,7 +174,7 @@ function laterConfig(f) {
   return Object.assign({}, f.config, { accounts: { fixture: 'refreshed-token' }, layout: ['new-app'], inputKey: false, startupEnabled: true,
     prefs: { theme: 'light', sounds: false }, updates: { automatic: false, ignoredVersion: '0.26.0' }, addedAfterSnapshot: true });
 }
-const fixtureBoot = () => fs.existsSync('/proc/sys/kernel/random/boot_id') ? fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : '';
+const fixtureBoot = () => 'runtime-v1:' + 'f'.repeat(64);
 for (const failure of ['left', 'tampered']) test('pre-replacement ' + failure + ' preserves post-snapshot user settings', async () => {
   const f = await fixture(failure), current = laterConfig(f);
   recovery.atomic(f.s.configPath, current);
@@ -192,14 +194,14 @@ test('legitimate config writes during installation do not cause rollback', async
 });
 test('delayed recovery preserves newer account, layout, preference and update fields', async () => {
   const f = await fixture(), current = laterConfig(f);
-  f.s.phase = 'uncertain'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s); recovery.atomic(f.s.configPath, current); put(f.after, f.dirs);
+  f.s.phase = 'uncertain'; f.s.installBoot = 'runtime-v1:' + 'e'.repeat(64); recovery.atomic(f.file, f.s); recovery.atomic(f.s.configPath, current); put(f.after, f.dirs);
   const install = f.ops.installBackup;
   f.ops.installBackup = async () => { await install(); current.duringRecovery = 'retained'; recovery.atomic(f.s.configPath, current); };
   try { await worker.run(f.file, f.ops); assert.strictEqual(f.counts().backupInstalls, 1); assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), current); }
   finally { f.close(); }
 });
 test('uncertain recovery install records the current boot before invoking the installer', async () => {
-  const f = await fixture(); f.s.phase = 'uncertain'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s);
+  const f = await fixture(); f.s.phase = 'uncertain'; f.s.installBoot = 'runtime-v1:' + 'e'.repeat(64); recovery.atomic(f.file, f.s);
   let backupCalls = 0, observed;
   f.ops.installBackup = async () => {
     backupCalls++; observed = JSON.parse(fs.readFileSync(f.file));
@@ -217,9 +219,9 @@ for (const kind of ['target', 'backup']) test('helper SIGKILL during ' + kind + 
   const f = await fixture(), cp = require('child_process'), runner = path.join(f.dir, 'interrupted-helper.js');
   for (const name of ['update-worker.js', 'update-archive.js', 'update-release.js', 'default-home-guard.js', 'net.js', 'mkdir.js'])
     fs.copyFileSync(path.join(__dirname, '..', 'service', name), path.join(f.dir, name));
-  if (kind === 'backup') { f.s.phase = 'uncertain'; f.s.installBoot = 'previous-boot'; recovery.atomic(f.file, f.s); }
+  if (kind === 'backup') { f.s.phase = 'uncertain'; f.s.installBoot = 'runtime-v1:' + 'e'.repeat(64); recovery.atomic(f.file, f.s); }
   fs.writeFileSync(runner, "process.on('exit',()=>require('fs').writeFileSync(process.argv[2]+'.graceful-exit','unexpected'));" +
-    "const w=require('./update-worker');w.run(process.argv[2],{foreground:async()=>'" + APP +
+    "const w=require('./update-worker');w.run(process.argv[2],{bootId:()=>'runtime-v1:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',foreground:async()=>'" + APP +
     "',fallback:async()=>{}," + (kind === 'target' ? 'installTarget' : 'installBackup') + ":async()=>process.kill(process.pid,'SIGKILL')}).catch(()=>process.exit(2));");
   try {
     const child = cp.spawn(process.execPath, [runner, f.file], { stdio: 'ignore' });
@@ -230,7 +232,7 @@ for (const kind of ['target', 'backup']) test('helper SIGKILL during ' + kind + 
     await worker.run(f.file, f.ops);
     assert.strictEqual(f.counts().backupInstalls, 0);
     assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).phase, 'uncertain');
-    const s = JSON.parse(fs.readFileSync(f.file)); s.installBoot = 'previous-boot'; recovery.atomic(f.file, s);
+    const s = JSON.parse(fs.readFileSync(f.file)); s.installBoot = 'runtime-v1:' + 'e'.repeat(64); recovery.atomic(f.file, s);
     await worker.run(f.file, f.ops); assert.strictEqual(f.counts().backupInstalls, 1);
   } finally { f.close(); }
 });
@@ -293,7 +295,7 @@ for (const stale of [false, true]) for (const point of ['writing', 'published'])
     "if(point==='writing'){const fd=typeof p==='number'?p:fs.openSync(p,'wx',384);fs.writeSync(fd,'{');process.kill(process.pid,'SIGKILL');}" +
     "const result=write.apply(this,arguments);if(p===file+'.worker')process.kill(process.pid,'SIGKILL');return result;}return write.apply(this,arguments);};" +
     "fs.linkSync=function(a,b){const result=link.apply(this,arguments);if(b===file+'.worker'||b.indexOf(file+'.worker.after-')===0)process.kill(process.pid,'SIGKILL');return result;};" +
-    "require(" + JSON.stringify(require.resolve('../service/update-worker')) + ").run(file,{}).catch(()=>process.exit(2));");
+    "require(" + JSON.stringify(require.resolve('../service/update-worker')) + ").run(file,{bootId:()=>'runtime-v1:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}).catch(()=>process.exit(2));");
   try {
     const child = cp.spawn(process.execPath, [runner, f.file, point], { stdio: 'ignore' });
     await assertKilled(child, f.file);
@@ -330,7 +332,7 @@ test('concurrent stale-lock takeover grants ownership to only one live helper', 
   const runner = path.join(f.dir, 'lock-contender.js');
   fs.writeFileSync(runner, "const fs=require('fs'),file=process.argv[2],id=process.argv[3];fs.writeFileSync(file+'.ready-'+id,'ready');" +
     "const timer=setInterval(()=>{if(!fs.existsSync(file+'.go'))return;clearInterval(timer);require(" +
-    JSON.stringify(require.resolve('../service/update-worker')) + ").run(file,{fallback:async()=>{" +
+    JSON.stringify(require.resolve('../service/update-worker')) + ").run(file,{bootId:()=>'runtime-v1:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',fallback:async()=>{" +
     "fs.writeFileSync(file+'.inside',String(process.pid),{flag:'wx'});await new Promise(r=>setTimeout(r,500));fs.unlinkSync(file+'.inside');" +
     "}}).then(()=>process.exit(0),e=>process.exit(/already running/.test(e.message)?3:4));},10);");
   try {
@@ -402,6 +404,164 @@ test('cookie exception never hides neighbouring code, service paths or non-regul
       require('child_process').execFileSync('mkfifo', [cookie]);
       assert.throws(() => archive.snapshot(f.dirs), /Unsupported/);
       fs.unlinkSync(cookie);
+    }
+  } finally { f.close(); }
+});
+
+// Volatile boot-generation fixtures never use the host's real /run.
+function bootFixture() {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-boot-'))), runtime = path.join(dir, 'run');
+  fs.mkdirSync(runtime); fs.chmodSync(runtime, 0o755);
+  const mount = '24 21 0:21 / /dev/shm rw - tmpfs tmpfs rw\n26 20 0:23 / ' + runtime + ' rw - tmpfs tmpfs rw\n40 20 0:35 / /tmp rw - tmpfs tmpfs rw\n';
+  const markerDir = path.join(runtime, 'homeplus-update-boot'), marker = path.join(markerDir, 'generation.json');
+  function owned(fn, alter) {
+    const original = fs.lstatSync;
+    fs.lstatSync = function (file) {
+      const st = original.apply(this, arguments);
+      if (file === runtime || file.indexOf(runtime + path.sep) === 0) {
+        st.uid = 0; // represent the TV's root-owned mount, even on an unprivileged desktop
+        if (process.platform === 'win32') st.mode = (st.mode & ~0o777) | (file === runtime ? 0o755 : st.isDirectory() ? 0o700 : 0o600);
+        if (alter) alter(file, st);
+      }
+      return st;
+    };
+    try { return fn(); } finally { fs.lstatSync = original; }
+  }
+  return { dir, runtime, mount, markerDir, marker, owned,
+    read: () => owned(() => worker.bootId(runtime, mount)),
+    close() { remove.rmSync(dir, { recursive: true, force: true }); } };
+}
+test('volatile boot generation survives repeat reads and changes only after runtime reset', () => {
+  const f = bootFixture();
+  try {
+    const first = f.read();
+    assert.match(first, /^runtime-v1:[0-9a-f]{64}$/);
+    assert.strictEqual(f.read(), first);
+    assert.strictEqual(require('../service/update-worker').bootId, worker.bootId);
+    assert.strictEqual(f.read(), first); // another caller/service start sees the same file
+    fs.unlinkSync(f.marker);
+    assert.throws(() => f.read()); assert.throws(() => f.read());
+    assert.strictEqual(fs.existsSync(f.marker), false);
+    remove.rmSync(f.markerDir, { recursive: true }); // fixture models complete tmpfs reset on reboot
+    assert.notEqual(f.read(), first);
+  } finally { f.close(); }
+});
+test('existing missing, torn and invalid generations never regenerate in the same runtime', () => {
+  for (const value of [null, '{', '{"schemaVersion":1,"generation":"bad"}']) {
+    const f = bootFixture();
+    try {
+      fs.mkdirSync(f.markerDir, 0o700);
+      if (value !== null) fs.writeFileSync(f.marker, value, { mode: 0o600 });
+      assert.throws(() => f.read());
+      assert.throws(() => f.read());
+      assert.strictEqual(fs.existsSync(f.marker), value !== null);
+      if (value !== null) assert.strictEqual(fs.readFileSync(f.marker, 'utf8'), value);
+    } finally { f.close(); }
+  }
+});
+test('boot generation refuses unverified mounts, permissions and marker symlinks', () => {
+  const f = bootFixture();
+  try {
+    assert.throws(() => f.owned(() => worker.bootId(f.runtime, f.mount.replace(f.runtime + ' rw - tmpfs ', f.runtime + ' rw - ext4 '))));
+    assert.throws(() => f.owned(() => worker.bootId(f.runtime, '' )));
+    assert.throws(() => f.owned(() => worker.bootId(f.runtime, f.mount), (file, st) => { if (file === f.runtime) st.uid = 1; }));
+    assert.throws(() => f.owned(() => worker.bootId(f.runtime, f.mount), (file, st) => { if (file === f.runtime) st.mode |= 0o002; }));
+    assert.strictEqual(fs.existsSync(f.markerDir), false);
+    f.read(); fs.unlinkSync(f.marker);
+    const target = path.join(f.dir, 'other'); fs.writeFileSync(target, '{"schemaVersion":1,"generation":"' + 'a'.repeat(64) + '"}');
+    fs.symlinkSync(target, f.marker);
+    assert.throws(() => f.read());
+  } finally { f.close(); }
+});
+for (const legacy of [true, false]) test((legacy ? 'legacy UUID' : 'current generation') + ' installer stays quarantined until a later generation', async () => {
+  const f = await fixture(), first = 'runtime-v1:' + 'a'.repeat(64), second = 'runtime-v1:' + 'b'.repeat(64);
+  let current = first;
+  f.ops.bootId = () => current;
+  f.s.phase = 'uncertain'; f.s.installerPending = true;
+  f.s.installBoot = legacy ? '2a69c7c5-0dc5-45cd-80d4-7426f0ef3a29' : first;
+  recovery.atomic(f.file, f.s);
+  if (legacy) recovery.atomic(f.file + '.worker', { pid: 2147483647, boot: f.s.installBoot });
+  try {
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(f.counts().backupInstalls, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).installBoot, first);
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(f.counts().backupInstalls, 0);
+    current = second;
+    await worker.run(f.file, f.ops);
+    assert.strictEqual(f.counts().backupInstalls, 1);
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).installBoot, second);
+  } finally { f.close(); }
+});
+test('legacy live worker ownership is not invalidated by boot-token migration', async () => {
+  const f = await fixture();
+  recovery.atomic(f.file + '.worker', { pid: process.pid, boot: '2a69c7c5-0dc5-45cd-80d4-7426f0ef3a29' });
+  f.ops.bootId = () => 'runtime-v1:' + 'a'.repeat(64);
+  try {
+    await assert.rejects(worker.run(f.file, f.ops), /already running/);
+    assert.strictEqual(f.counts().targetInstalls, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file + '.worker')).pid, process.pid);
+  } finally { f.close(); }
+});
+test('unavailable boot identity starts no installer and preserves the active recovery record', async () => {
+  const f = await fixture();
+  f.s.phase = 'uncertain'; f.s.installerPending = true; recovery.atomic(f.file, f.s);
+  f.ops.bootId = () => { throw new Error('Boot generation unavailable'); };
+  try {
+    await assert.rejects(worker.run(f.file, f.ops), /Boot generation/);
+    assert.strictEqual(f.counts().targetInstalls, 0); assert.strictEqual(f.counts().backupInstalls, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(f.file)).active, true);
+    assert.strictEqual(fs.existsSync(f.s.hook), true);
+  } finally { f.close(); }
+});
+
+function bootChild(f, body) {
+  const source = "const fs=require('fs'),path=require('path'),runtime=" + JSON.stringify(f.runtime) + ",mount=" + JSON.stringify(f.mount) +
+    ",stat=fs.lstatSync;fs.lstatSync=function(file){const s=stat.apply(this,arguments);if(file===runtime||file.indexOf(runtime+path.sep)===0){s.uid=0;" +
+    "if(process.platform==='win32')s.mode=(s.mode&~511)|(file===runtime?493:s.isDirectory()?448:384);}return s;};" +
+    "const w=require(" + JSON.stringify(require.resolve('../service/update-worker')) + ");" + body;
+  return require('child_process').spawn(process.execPath, ['-e', source], { stdio: ['ignore', 'pipe', 'pipe'] });
+}
+test('concurrent boot-marker creators and readers converge without replacing a generation', async () => {
+  const f = bootFixture();
+  try {
+    const children = [];
+    for (let i = 0; i < 4; i++) {
+      const child = bootChild(f, "try{console.log(JSON.stringify({id:w.bootId(runtime,mount)}));}catch(e){console.log(JSON.stringify({error:e.code}));}");
+      children.push(new Promise((resolve, reject) => {
+        let out = '', err = ''; child.stdout.on('data', data => { out += data; }); child.stderr.on('data', data => { err += data; });
+        child.once('error', reject); child.once('close', code => resolve({ code, out, err }));
+      }));
+    }
+    const results = await Promise.all(children), generation = f.read();
+    let successes = 0;
+    for (const result of results) {
+      assert.strictEqual(result.code, 0); assert.strictEqual(result.err, '');
+      const value = JSON.parse(result.out);
+      if (value.id) { successes++; assert.strictEqual(value.id, generation); }
+      else assert.strictEqual(value.error, 'ENOENT'); // concurrent first publication may safely refuse
+    }
+    assert(successes > 0);
+    assert.strictEqual(f.read(), generation);
+  } finally { f.close(); }
+});
+for (const point of ['writing', 'published']) test('killed boot-marker creator while ' + point + ' cannot silently regenerate', async () => {
+  const f = bootFixture(), base = path.join(f.dir, 'creator');
+  const guard = JSON.stringify(require.resolve('../service/default-home-guard'));
+  const child = bootChild(f, "process.on('exit',()=>fs.writeFileSync(" + JSON.stringify(base + '.graceful-exit') + ",'unexpected'));" +
+    "const r=require(" + guard + "),atomic=r.atomic;r.atomic=function(file,value){if(" + JSON.stringify(point) +
+    "==='writing'){fs.writeFileSync(file+'.partial','{');process.kill(process.pid,'SIGKILL');}atomic(file,value);process.kill(process.pid,'SIGKILL');};w.bootId(runtime,mount);");
+  child.stdout.resume(); child.stderr.resume();
+  try {
+    await assertKilled(child, base);
+    assert.strictEqual(fs.existsSync(f.markerDir), true);
+    if (point === 'writing') {
+      assert.strictEqual(fs.existsSync(f.marker), false);
+      assert.throws(() => f.read()); assert.throws(() => f.read());
+      assert.strictEqual(fs.existsSync(f.marker), false);
+    } else {
+      const previous = JSON.parse(fs.readFileSync(f.marker));
+      assert.strictEqual(f.read(), 'runtime-v1:' + previous.generation);
     }
   } finally { f.close(); }
 });
