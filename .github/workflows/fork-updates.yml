@@ -101,9 +101,9 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fork-candidate
-          path: ${{ runner.temp }}/candidate
+          path: .homeplus-candidate
       - name: Unpack isolated candidate
-        run: tar --force-local -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
+        run: tar -xf .homeplus-candidate/candidate.tar
 
       - name: Cache the webOS toolchain
         id: sdk-cache
@@ -167,9 +167,9 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fork-candidate
-          path: ${{ runner.temp }}/candidate
+          path: .homeplus-candidate
       - name: Unpack isolated candidate
-        run: tar --force-local -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
+        run: tar -xf .homeplus-candidate/candidate.tar
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: matrix.tv-node
@@ -208,9 +208,9 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fork-candidate
-          path: ${{ runner.temp }}/candidate
+          path: .homeplus-candidate
       - name: Unpack isolated candidate
-        run: tar --force-local -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
+        run: tar -xf .homeplus-candidate/candidate.tar
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
