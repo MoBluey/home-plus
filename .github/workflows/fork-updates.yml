@@ -103,7 +103,7 @@ jobs:
           name: fork-candidate
           path: ${{ runner.temp }}/candidate
       - name: Unpack isolated candidate
-        run: tar -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
+        run: tar --force-local -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
 
       - name: Cache the webOS toolchain
         id: sdk-cache
@@ -169,7 +169,7 @@ jobs:
           name: fork-candidate
           path: ${{ runner.temp }}/candidate
       - name: Unpack isolated candidate
-        run: tar -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
+        run: tar --force-local -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: matrix.tv-node
@@ -210,7 +210,7 @@ jobs:
           name: fork-candidate
           path: ${{ runner.temp }}/candidate
       - name: Unpack isolated candidate
-        run: tar -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
+        run: tar --force-local -xf "$RUNNER_TEMP/candidate/candidate.tar" -C "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
