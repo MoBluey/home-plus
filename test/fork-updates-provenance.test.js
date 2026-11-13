@@ -32,3 +32,25 @@ test('rejects malformed metadata and strips unknown builder fields', () => {
   assert.equal(provenance.validate(info).workstation, undefined);
   for (const change of [{ source: { ...info.source, repository: '../../evil' } }, { customisations: ['/private/path'] }, { upstream: { ...info.upstream, tag: 'v9.9.9' } }]) assert.throws(() => provenance.validate({ ...info, ...change }));
 });
+
+test('producer excludes the regular application PulseAudio cookie without excluding neighbouring payload', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-cookie-provenance-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const app = path.join(dir, 'app'), service = path.join(dir, 'service'), cookie = path.join(app, '.config/pulse/cookie');
+  fs.mkdirSync(path.dirname(cookie), { recursive: true }); fs.mkdirSync(path.join(service, '.config/pulse'), { recursive: true });
+  fs.writeFileSync(cookie, Buffer.alloc(256, 7)); fs.chmodSync(cookie, 0o777);
+  fs.writeFileSync(path.join(app, '.config/pulse/extra.js'), 'payload');
+  fs.writeFileSync(path.join(service, '.config/pulse/cookie'), 'service payload');
+  const read = fs.readFileSync;
+  try {
+    fs.readFileSync = function (file) { if (file === cookie) throw new Error('Runtime cookie contents must not be read'); return read.apply(this, arguments); };
+    const hashes = provenance.inventory(app, service);
+    assert.strictEqual(hashes['application/.config/pulse/cookie'], undefined);
+    assert.strictEqual(hashes['application/.config/pulse/extra.js'], crypto.createHash('sha256').update('payload').digest('hex'));
+    assert.strictEqual(hashes['service/.config/pulse/cookie'], crypto.createHash('sha256').update('service payload').digest('hex'));
+    fs.unlinkSync(cookie); fs.symlinkSync(path.join(app, '.config/pulse/extra.js'), cookie);
+    assert.throws(() => provenance.inventory(app, service), /symbolic/);
+    fs.unlinkSync(cookie); fs.mkdirSync(cookie);
+    assert.throws(() => provenance.inventory(app, service), /regular/);
+  } finally { fs.readFileSync = read; }
+});

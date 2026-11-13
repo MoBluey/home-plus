@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
 const crypto = require('crypto');
+const { RUNTIME_COOKIE } = require('../service/update-archive');
 const { repository, runtimePath } = require('./prepare-fork-update');
 function git(repo, args) { return cp.execFileSync('git', ['-c', 'safe.directory=' + repo, '-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
 function repoName(value) {
@@ -57,6 +58,10 @@ function inventory(application, service) {
       if (name === 'update-info.json' || name === 'api-token' || name === 'cache') continue;
       const file = path.join(dir, name), key = prefix + '/' + name, st = fs.lstatSync(file);
       if (st.isSymbolicLink()) throw new Error('Package payload must not contain symbolic links');
+      if (key === 'application/' + RUNTIME_COOKIE) {
+        if (!st.isFile()) throw new Error('Runtime cookie must be a regular file');
+        continue;
+      }
       if (st.isDirectory()) walk(file, key);
       else if (st.isFile()) hashes[key] = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
       else throw new Error('Package payload must contain regular files');

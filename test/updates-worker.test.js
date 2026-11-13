@@ -360,3 +360,48 @@ test('an unverifiable pre-existing worker lock is never removed blindly', async 
     assert.strictEqual(f.counts().backupInstalls, 0);
   } finally { f.close(); }
 });
+
+test('application PulseAudio cookie is private runtime data, including legacy backup inventories', async () => {
+  const f = await fixture(), relative = '.config/pulse/cookie', key = archive.roots[0] + '/' + relative;
+  const cookie = path.join(f.dirs[0], relative), fake = Buffer.alloc(256, 7);
+  mkdirSync(path.dirname(cookie)); fs.writeFileSync(cookie, fake); fs.chmodSync(cookie, 0o777);
+  const legacy = await archive.inspect(archive.pack(Object.assign({}, f.before, { [key]: { mode: 0o777, data: fake } }), '0.25.0'), '0.25.0');
+  const read = fs.readFileSync;
+  try {
+    fs.readFileSync = function (file) { if (file === cookie) throw new Error('Runtime cookie contents must not be read'); return read.apply(this, arguments); };
+    const snapshot = archive.snapshot(f.dirs);
+    assert.strictEqual(snapshot[key], undefined);
+    assert.deepStrictEqual(Object.keys(snapshot).sort(), Object.keys(f.before).sort());
+    const clean = await archive.inspect(archive.pack(snapshot, '0.25.0'), '0.25.0');
+    assert.strictEqual(clean.files[key], undefined);
+    archive.verifyInstalled(clean.inventory, f.dirs);
+    fs.writeFileSync(cookie, Buffer.alloc(256, 9));
+    archive.verifyInstalled(legacy.inventory, f.dirs);
+    fs.unlinkSync(cookie);
+    archive.verifyInstalled(legacy.inventory, f.dirs);
+    fs.writeFileSync(path.join(f.dirs[0], 'homeplus'), 'changed payload');
+    assert.throws(() => archive.verifyInstalled(legacy.inventory, f.dirs), /verification/);
+  } finally { fs.readFileSync = read; f.close(); }
+});
+test('cookie exception never hides neighbouring code, service paths or non-regular impostors', async () => {
+  const f = await fixture(), expected = (await archive.inspect(archive.pack(f.before, '0.25.0'), '0.25.0')).inventory;
+  const cookie = path.join(f.dirs[0], '.config/pulse/cookie');
+  try {
+    for (const file of [path.join(f.dirs[0], '.config/pulse/extra.js'), path.join(f.dirs[0], '.config/extra.js'), path.join(f.dirs[1], '.config/pulse/cookie')]) {
+      mkdirSync(path.dirname(file)); fs.writeFileSync(file, 'unexpected code');
+      assert.throws(() => archive.verifyInstalled(expected, f.dirs), /Unexpected/);
+      fs.unlinkSync(file);
+    }
+    fs.symlinkSync(path.join(f.dirs[0], 'homeplus'), cookie);
+    assert.throws(() => archive.snapshot(f.dirs), /Unsupported/);
+    assert.throws(() => archive.verifyInstalled(expected, f.dirs), /Unsupported/);
+    fs.unlinkSync(cookie); fs.mkdirSync(cookie);
+    assert.throws(() => archive.snapshot(f.dirs), /Unsupported/);
+    fs.rmdirSync(cookie);
+    if (process.platform === 'linux') {
+      require('child_process').execFileSync('mkfifo', [cookie]);
+      assert.throws(() => archive.snapshot(f.dirs), /Unsupported/);
+      fs.unlinkSync(cookie);
+    }
+  } finally { f.close(); }
+});

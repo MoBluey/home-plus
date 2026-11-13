@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const release = require('./update-release');
+const { RUNTIME_COOKIE } = require('./update-archive');
 const { compareVersions, validateArtifact, UPSTREAM, FORK, plain } = release;
 const DAY = 24 * 60 * 60 * 1000;
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
@@ -18,6 +19,10 @@ function provenance(appDir, serviceDir) {
       for (const name of fs.readdirSync(dir)) {
         if (name === 'update-info.json' || name === 'api-token' || name === 'cache' || name === 'data') continue;
         const file = path.join(dir, name), key = prefix + '/' + name, st = fs.lstatSync(file);
+        if (key === 'application/' + RUNTIME_COOKIE) {
+          if (!st.isFile()) throw new Error('Unverified runtime file');
+          continue;
+        }
         if (prefix === 'application' && /^qml-[a-z0-9]+$/.test(name) && st.isSymbolicLink() && fs.readlinkSync(file) === 'qml') continue;
         if (st.isDirectory()) walk(file, key);
         else if (!st.isFile() || p.fileHashes[key] !== hash(fs.readFileSync(file))) throw new Error('Installed files have unverified changes');
@@ -25,7 +30,7 @@ function provenance(appDir, serviceDir) {
       }
     }
     walk(appDir, 'application'); walk(serviceDir, 'service');
-    if (Object.keys(p.fileHashes).some(k => !seen[k])) throw new Error('Installed file inventory is incomplete');
+    if (Object.keys(p.fileHashes).some(k => k !== 'application/' + RUNTIME_COOKIE && !seen[k])) throw new Error('Installed file inventory is incomplete');
     return { known: true, info: p, label: p.customised ? 'Custom build' : 'Official build' };
   } catch (e) { return { known: false, label: 'Unknown build', warning: 'This installation has unknown or unverified changes. Replacing it will discard those changes.' }; }
 }

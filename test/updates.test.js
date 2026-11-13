@@ -135,3 +135,30 @@ test('installed edits made after the prompt invalidate consent', async () => {
     assert.strictEqual(launched, false); assert.match(c.state().message, /changed/);
   } finally { c.close(); f.close(); }
 });
+
+test('known provenance ignores only a regular application PulseAudio cookie, including legacy hashes', () => {
+  const f = fixture(); known(f, 'MoBluey/home-plus');
+  const app = f.options.appDir, svc = f.options.serviceDir, cookie = path.join(app, '.config/pulse/cookie');
+  const provenance = require('../service/updates').provenance, read = fs.readFileSync;
+  require('../service/mkdir').mkdirSync(path.dirname(cookie)); fs.writeFileSync(cookie, Buffer.alloc(256, 7)); fs.chmodSync(cookie, 0o777);
+  try {
+    fs.readFileSync = function (file) { if (file === cookie) throw new Error('Runtime cookie contents must not be read'); return read.apply(this, arguments); };
+    assert.strictEqual(provenance(app, svc).known, true);
+    const infoPath = path.join(app, 'update-info.json'), info = JSON.parse(read(infoPath));
+    info.fileHashes['application/.config/pulse/cookie'] = 'd'.repeat(64); fs.writeFileSync(infoPath, JSON.stringify(info));
+    assert.strictEqual(provenance(app, svc).known, true);
+    fs.unlinkSync(cookie);
+    assert.strictEqual(provenance(app, svc).known, true);
+    fs.symlinkSync(path.join(app, 'payload'), cookie);
+    assert.strictEqual(provenance(app, svc).known, false);
+    fs.unlinkSync(cookie); fs.mkdirSync(cookie);
+    assert.strictEqual(provenance(app, svc).known, false);
+    fs.rmdirSync(cookie);
+    for (const file of [path.join(app, '.config/pulse/extra.js'), path.join(app, '.config/extra.js'), path.join(svc, '.config/pulse/cookie')]) {
+      require('../service/mkdir').mkdirSync(path.dirname(file)); fs.writeFileSync(file, 'unexpected code');
+      assert.strictEqual(provenance(app, svc).known, false); fs.unlinkSync(file);
+    }
+    fs.writeFileSync(path.join(app, 'payload'), 'unknown edit');
+    assert.strictEqual(provenance(app, svc).known, false);
+  } finally { fs.readFileSync = read; f.close(); }
+});
