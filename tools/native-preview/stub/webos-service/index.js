@@ -25,12 +25,30 @@ module.exports = class Service {
     // ms from when the service subscribed (each is in HOMEPLUS_PREVIEW_LUNA_LOG too, as it comes)
     const script = JSON.parse(process.env.HOMEPLUS_PREVIEW_SUBSCRIPTIONS || '{}')[uri.slice(uri.lastIndexOf('/') + 1)] || [];
     for (const [ms, payload] of script) {
-      setTimeout(() => {
+      const deliver = () => {
         if (process.env.HOMEPLUS_PREVIEW_LUNA_LOG) {
           require('fs').appendFileSync(process.env.HOMEPLUS_PREVIEW_LUNA_LOG, JSON.stringify({ uri, said: payload, t: Date.now() }) + '\n');
         }
         sub.emit('response', { payload });
-      }, ms);
+      };
+      if (process.env.HOMEPLUS_PREVIEW_PACED_SUBSCRIPTIONS === '1') {
+        // Timing-sensitive scenarios share an ordered, paced replay. Independent
+        // subscription clocks can reverse close/standby or compress stale gaps.
+        if (!this.scripted) {
+          this.scripted = [];
+          setImmediate(() => {
+            this.scripted.sort((a, b) => a.ms - b.ms);
+            let previous = 0;
+            const next = () => {
+              const event = this.scripted.shift();
+              if (!event) return;
+              setTimeout(() => { event.deliver(); previous = event.ms; next(); }, event.ms - previous);
+            };
+            next();
+          });
+        }
+        this.scripted.push({ ms, deliver });
+      } else setTimeout(deliver, ms);
     }
     return sub;
   }

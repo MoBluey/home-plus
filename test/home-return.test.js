@@ -311,10 +311,15 @@ describe('getting back to Home+', { concurrency: true }, () => {
         getPowerState: [[100, { state: 'Active' }], [270, { state: 'Active Standby' }], [750, { state: 'Active' }]],
         getForegroundAppInfo: [[120, { appId: HP }], [cleared, { appId: '' }], [850, { appId: 'com.webos.app.livetv' }]],
         getAppLifeEvents: [[closed, { event: 'close', appId: HP }], [closed + 5, { event: 'stop', appId: HP }]]
-      });
+      }, { HOMEPLUS_PREVIEW_PACED_SUBSCRIPTIONS: '1' });
       try {
         await until(() => tv.said('getForegroundAppInfo', 'com.webos.app.livetv'), 2000, 'Live TV after wake');
         await sleep(1100);
+        const standby = tv.lines().find(e => e.said && e.said.state === 'Active Standby');
+        const empty = tv.said('getForegroundAppInfo', '');
+        const closedAt = tv.said('getAppLifeEvents', HP).t;
+        assert.ok(closedAt < standby.t && empty.t < standby.t, 'manual close and empty foreground precede standby');
+        assert.equal(closedAt < empty.t, order === 'close first', 'the requested close order was delivered');
         assert.equal(tv.launches().length, 0, `Service log:\n${tv.log()}\nDelivered bus events:\n${JSON.stringify(tv.lines(), null, 2)}`);
       } finally {
         await tv.stop();
@@ -326,10 +331,13 @@ describe('getting back to Home+', { concurrency: true }, () => {
     const tv = await start({
       getPowerState: [[100, { state: 'Active' }], [2500, { state: 'Active Standby' }], [2750, { state: 'Active' }]],
       getForegroundAppInfo: [[120, { appId: HP }], [250, { appId: '' }], [2850, { appId: 'com.webos.app.livetv' }]]
-    });
+    }, { HOMEPLUS_PREVIEW_PACED_SUBSCRIPTIONS: '1' });
     try {
       await until(() => tv.said('getForegroundAppInfo', 'com.webos.app.livetv'), 3500, 'Live TV after wake');
       await sleep(1100);
+      const standby = tv.lines().find(e => e.said && e.said.state === 'Active Standby');
+      const empty = tv.said('getForegroundAppInfo', '');
+      assert.ok(standby.t - empty.t >= 2000, 'the empty foreground was already stale at standby');
       assert.equal(tv.launches().length, 0, `Service log:\n${tv.log()}\nDelivered bus events:\n${JSON.stringify(tv.lines(), null, 2)}`);
     } finally {
       await tv.stop();
