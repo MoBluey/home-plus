@@ -8,7 +8,7 @@ const cp = require('child_process');
 const crypto = require('crypto');
 const ID = 'com.github.pbalazaar.homeplus';
 const RESULT = ID + '.update.json';
-const repository = value => typeof value === 'string' && /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.includes('..');
+const { repository, forkRepository, UPSTREAM, validateArtifact } = require('../service/update-release');
 // Source preservation includes the producers/inputs that choose packaged bytes,
 // not only the source copied or compiled into the payload.
 const buildInput = /^(tools\/(build\.mjs|build-release\.sh|docker-build\.sh|update-provenance\.js|prepare-fork-update\.js)|docker\/(Dockerfile|toolchain\.sha256)|\.github\/workflows\/(ci|fork-updates)\.yml)$/;
@@ -16,7 +16,7 @@ const runtimePath = name => buildInput.test(name) || /^(service\/|init\.d\/|nati
 function git(repo, args, input) {
   const environment = { ...process.env };
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_PREFIX']) delete environment[key];
-  return cp.execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', '-C', repo, ...args], {
+  return cp.execFileSync('git', ['-c', 'safe.directory=' + repo, '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', '-C', repo, ...args], {
     input, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
     env: { ...environment, GIT_CONFIG_COUNT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1',
       GIT_AUTHOR_NAME: 'Home+ update builder', GIT_AUTHOR_EMAIL: 'builder@invalid', GIT_COMMITTER_NAME: 'Home+ update builder', GIT_COMMITTER_EMAIL: 'builder@invalid' },
@@ -27,14 +27,39 @@ function revision(repo, ref) {
   if (typeof ref !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) || ref.includes('..')) throw new Error('Invalid Git ref');
   return git(repo, ['rev-parse', '--verify', ref + '^{commit}']);
 }
+// Identity comes from the checkout, never from a manifest or a caller's claim.
+function repositoryFromURL(value) {
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:)([^/]+\/[^/]+?)(?:\.git)?$/.exec(value);
+  return match && repository(match[1]) ? match[1] : null;
+}
+function checkoutRepository(repo, source) {
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const identity = process.env.GITHUB_REPOSITORY;
+    if (!repository(identity) || process.env.GITHUB_SHA !== source || revision(repo, 'HEAD') !== source ||
+        repositoryFromURL(git(repo, ['remote', 'get-url', 'origin'])) !== identity) throw new Error('Checkout does not match trusted workflow identity');
+    return identity;
+  }
+  let branches = git(repo, ['for-each-ref', '--format=%(refname:short)', '--points-at', source, 'refs/heads/']).split('\n').filter(Boolean);
+  try { if (revision(repo, 'HEAD') === source) branches = [git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'])]; } catch (_) { /* Detached source: require unambiguous branch provenance. */ }
+  const identities = [];
+  for (const branch of branches) {
+    let identity;
+    try { identity = repositoryFromURL(git(repo, ['remote', 'get-url', git(repo, ['config', 'branch.' + branch + '.remote'])])); }
+    catch (_) { continue; }
+    if (identity && !identities.includes(identity)) identities.push(identity);
+  }
+  if (identities.length !== 1) throw new Error('Source revision needs an unambiguous tracking repository');
+  return identities[0];
+}
 function prepare(options) {
   const { repo, destination, version, sourceRepository, upstreamRepository } = options;
-  if (!repository(sourceRepository) || !repository(upstreamRepository)) throw new Error('Invalid repository');
+  if (!forkRepository(sourceRepository) || upstreamRepository !== UPSTREAM) throw new Error('Invalid repository');
   if (!/^\d+\.\d+\.\d+$/.test(version) || options.upstream !== 'v' + version) throw new Error('Invalid upstream release tag/version');
   if (!path.isAbsolute(repo) || !path.isAbsolute(destination) || fs.existsSync(destination)) throw new Error('Repository/destination must be absolute and destination must not exist');
   const relativeDestination = path.relative(fs.realpathSync(repo), path.join(fs.realpathSync(path.dirname(destination)), path.basename(destination)));
   if (!relativeDestination.startsWith('..' + path.sep) && relativeDestination !== '..' && !path.isAbsolute(relativeDestination)) throw new Error('Candidate must be outside the user repository');
   const source = revision(repo, options.source), upstream = revision(repo, options.upstream), base = revision(repo, options.base);
+  if (checkoutRepository(repo, source) !== sourceRepository) throw new Error('Source repository does not match checkout identity');
   const bases = git(repo, ['merge-base', '--all', source, upstream]).split('\n');
   if (bases.length !== 1 || bases[0] !== base) throw new Error('Ambiguous or unverified upstream integration base');
   for (const target of [source, upstream]) git(repo, ['merge-base', '--is-ancestor', base, target]);
@@ -75,6 +100,7 @@ function prepare(options) {
   return result;
 }
 function finish(result, candidate, passed, official) {
+  if (!result.source || !forkRepository(result.source.repository) || !result.upstream || result.upstream.repository !== UPSTREAM) throw new Error('Invalid result repository');
   if (result.status === 'conflict') throw new Error('Cannot finish a conflicted candidate');
   const completed = { ...result, status: 'failed', message: 'Candidate checks failed.' }; delete completed.artifact;
   if (!passed) return completed;
@@ -96,12 +122,13 @@ function finish(result, candidate, passed, official) {
   completed.status = 'ready'; completed.message = 'Custom source integrated and all required checks passed.';
   const immutableName = ID + '_' + result.upstream.version + '_' + result.source.commit.slice(0, 12) + '_' + hash.slice(0, 12) + '_all.ipk';
   completed.artifact = { url: 'https://github.com/' + result.source.repository + '/releases/download/upstream-v' + result.upstream.version + '/' + immutableName, sha256: hash, size: data.length, version: result.upstream.version };
+  validateArtifact(completed.artifact, result.source.repository, 'upstream-v' + result.upstream.version, result.source.commit);
   return completed;
 }
-function sameCandidate(previous, source, upstream) {
-  return !!previous && previous.schemaVersion === 1 && ['ready', 'failed', 'conflict'].includes(previous.status) && previous.source && previous.source.commit === source && previous.upstream && previous.upstream.commit === upstream;
+function sameCandidate(previous, source, upstream, sourceRepository) {
+  return forkRepository(sourceRepository) && !!previous && previous.schemaVersion === 1 && ['ready', 'failed', 'conflict'].includes(previous.status) && previous.source && previous.source.repository === sourceRepository && previous.source.commit === source && previous.upstream && previous.upstream.repository === UPSTREAM && previous.upstream.commit === upstream;
 }
-module.exports = { prepare, finish, sameCandidate, runtimePath, repository, RESULT };
+module.exports = { prepare, finish, sameCandidate, runtimePath, repository, repositoryFromURL, checkoutRepository, RESULT };
 if (require.main === module) {
   try {
     const [command, ...values] = process.argv.slice(2);

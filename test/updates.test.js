@@ -8,7 +8,7 @@ const { createUpdates, compareVersions, validateArtifact } = require('../service
 const { configStore, until } = require('./helpers');
 const remove = require('../service/remove');
 const APP = 'com.github.pbalazaar.homeplus';
-const release = (version) => ({ version, tag: 'v' + version, commit: 'a'.repeat(40), notes: 'Release notes', artifact: { version, size: 1024, sha256: 'b'.repeat(64), url: 'https://github.com/pbalazaar/home-plus/releases/download/v' + version + '/' + APP + '_' + version + '_all.ipk' } });
+const release = (version) => ({ repository: 'pbalazaar/home-plus', version, tag: 'v' + version, commit: 'a'.repeat(40), notes: 'Release notes', artifact: { version, size: 1024, sha256: 'b'.repeat(64), url: 'https://github.com/pbalazaar/home-plus/releases/download/v' + version + '/' + APP + '_' + version + '_all.ipk' } });
 function fixture(extra) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-updates-'));
   const store = configStore();
@@ -81,12 +81,12 @@ function known(f, repository) {
   f.options.appDir = app; f.options.serviceDir = svc;
 }
 test('verified official and unknown builds use only upstream; known fork selects its fixed result feed', async () => {
-  for (const repository of [null, 'pbalazaar/home-plus', 'MoBluey/home-plus']) {
+  for (const repository of [null, 'pbalazaar/home-plus', 'MoBluey/home-plus', 'Example-Owner/custom.home-plus']) {
     let feed;
     const f = fixture({ fetchRelease: async value => { feed = value; return { upstream: release('0.26.0') }; } });
     if (repository) known(f, repository);
     const c = createUpdates(f.options);
-    try { const s = await check(c); assert.strictEqual(feed, repository === 'MoBluey/home-plus' ? repository : null); assert.strictEqual(s.canInstallPreserved, repository === 'pbalazaar/home-plus'); }
+    try { const s = await check(c); assert.strictEqual(feed, repository && repository !== 'pbalazaar/home-plus' ? repository : null); assert.strictEqual(s.canInstallPreserved, repository === 'pbalazaar/home-plus'); }
     finally { c.close(); f.close(); }
   }
 });
@@ -161,4 +161,26 @@ test('known provenance ignores only a regular application PulseAudio cookie, inc
     fs.writeFileSync(path.join(app, 'payload'), 'unknown edit');
     assert.strictEqual(provenance(app, svc).known, false);
   } finally { fs.readFileSync = read; f.close(); }
+});
+
+test('preserved results and assets must match the installed fork, regardless of request or settings', async () => {
+  for (const repository of ['MoBluey/home-plus', 'Example-Owner/custom.home-plus']) {
+    let feed, mismatch = '';
+    const f = fixture({ fetchRelease: async value => {
+      feed = value;
+      const upstream = release('0.26.0'); upstream.repository = 'pbalazaar/home-plus';
+      const source = { repository: mismatch === 'source' ? 'Other/fork' : repository, commit: 'c'.repeat(40), base: 'a'.repeat(40) };
+      return { upstream, result: { schemaVersion: 1, upstream, source, status: 'ready', conflicts: [], customisations: ['service/custom.js'],
+        artifact: Object.assign({}, upstream.artifact, { url: 'https://github.com/' + (mismatch === 'asset' ? 'Other/fork' : repository) + '/releases/download/upstream-v0.26.0/' + APP + '_0.26.0_cccccccccccc_bbbbbbbbbbbb_all.ipk' }) } };
+    } });
+    known(f, repository);
+    f.store.writeConfig({ updates: { repository: 'Other/fork', feed: 'Other/fork' } });
+    const c = createUpdates(f.options);
+    try {
+      await c.act({ action: 'check', repository: 'Other/fork', url: 'https://evil.invalid' });
+      await until(() => c.state().phase !== 'checking');
+      assert.strictEqual(feed, repository); assert.strictEqual(c.state().canInstallPreserved, true);
+      for (const change of ['source', 'asset']) { mismatch = change; const s = await check(c); assert.strictEqual(s.phase, 'error'); assert.strictEqual(s.canInstallPreserved, false); }
+    } finally { c.close(); f.close(); }
+  }
 });
