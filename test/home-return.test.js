@@ -315,7 +315,7 @@ describe('getting back to Home+', { concurrency: true }, () => {
       try {
         await until(() => tv.said('getForegroundAppInfo', 'com.webos.app.livetv'), 2000, 'Live TV after wake');
         await sleep(1100);
-        assert.equal(tv.launches().length, 0);
+        assert.equal(tv.launches().length, 0, `Service log:\n${tv.log()}\nDelivered bus events:\n${JSON.stringify(tv.lines(), null, 2)}`);
       } finally {
         await tv.stop();
       }
@@ -330,7 +330,7 @@ describe('getting back to Home+', { concurrency: true }, () => {
     try {
       await until(() => tv.said('getForegroundAppInfo', 'com.webos.app.livetv'), 3500, 'Live TV after wake');
       await sleep(1100);
-      assert.equal(tv.launches().length, 0);
+      assert.equal(tv.launches().length, 0, `Service log:\n${tv.log()}\nDelivered bus events:\n${JSON.stringify(tv.lines(), null, 2)}`);
     } finally {
       await tv.stop();
     }
