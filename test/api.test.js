@@ -10,7 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { mockServer, startService, until } = require('./helpers');
+const { mockServer, startService, sleep, until } = require('./helpers');
 
 const ROOT = path.join(__dirname, '..');
 let svc, dir;
@@ -110,6 +110,43 @@ test('api: what\'s popular on a streaming app, and what\'s trending for an app w
   assert.ok(netflix.json.items.every((it) => it.background.startsWith('/img/')));
   assert.equal((await call('GET', '/api/featured?app=youtube')).json.kind, 'trending');
   assert.equal((await call('GET', '/api/featured?app=nothing.installed')).json.items.length, 0);
+});
+
+test('api: recommendation launches open the title without a search hint, or fall back to the app with its hint', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-recommendation-api-'));
+  fs.writeFileSync(path.join(d, 'apps.txt'), 'netflix|Netflix');
+  const log = path.join(d, 'luna.log');
+  const s = await startService(d, { HOMEPLUS_PREVIEW_RECOMMENDATIONS: '1', HOMEPLUS_PREVIEW_LUNA_LOG: log });
+  const lines = () => fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const launches = () => lines().filter((l) => l.uri === 'luna://com.webos.applicationManager/launch');
+  const toasts = () => lines().filter((l) => l.uri.endsWith('/createToast'));
+  try {
+    const shelf = (await s.call('GET', '/api/featured?app=netflix')).json;
+    assert.equal(shelf.kind, 'recommendations');
+    const direct = await s.call('POST', '/api/launch', { body: {
+      id: 'netflix', recommendationId: shelf.items[0].id, toast: 'Search for Northern Lights'
+    } });
+    assert.equal(direct.json.returnValue, true);
+    assert.deepEqual(launches().map((l) => l.params), [{
+      id: 'netflix', replaceParams: { deeplinkingParams: { target: '$CONTENTID', value: 'preview-title-0' } }
+    }]);
+    await sleep(1800);
+    assert.equal(toasts().length, 0, 'a successful title launch needs no search hint');
+
+    const fallback = await s.call('POST', '/api/launch', { body: {
+      id: 'netflix', recommendationId: 'rec:invalid', params: { fallback: true }, toast: 'Search for the title'
+    } });
+    assert.equal(fallback.json.returnValue, true);
+    assert.deepEqual(launches().map((l) => l.params), [
+      { id: 'netflix', replaceParams: { deeplinkingParams: { target: '$CONTENTID', value: 'preview-title-0' } } },
+      { id: 'netflix', params: { fallback: true } }
+    ]);
+    await until(() => toasts().length, 5000, 'the fallback search hint');
+    assert.deepEqual(toasts().map((l) => l.params.message), ['Search for the title']);
+  } finally {
+    await s.stop();
+    fs.rmSync(d, { recursive: true, force: true, maxRetries: 5 });
+  }
 });
 
 test('api: a title\'s picture comes through the service, and is kept for next time', async () => {
@@ -283,4 +320,45 @@ test('api: the Control Center\'s list and gallery, saved, stepped and reset', as
   const reset = await call('POST', '/api/control', { body: { action: 'reset' } });
   assert.equal(reset.json.controls.length, 11);
   assert.ok((await call('POST', '/api/control', { body: { action: 'run', value: 'nothing' } })).status >= 400);
+});
+
+test('api: disabling Home removes only Home+ hook bindings and can be repeated', async () => {
+  const file = path.join(dir, 'lginputhook', 'keybinds.json');
+  const others = { 139: { action: 'exec', command: `sh ${path.join(dir, 'lginputhook', 'homeplus-settings.sh')}` },
+    241: { action: 'launch', id: 'someone.input' }, 42: { action: 'launch', id: 'someone.else' } };
+  for (const home of [{ action: 'launch', id: 'com.github.pbalazaar.homeplus' },
+    { action: 'exec', command: `sh ${path.join(dir, 'lginputhook', 'homeplus-home.sh')}` }]) {
+    fs.writeFileSync(file, JSON.stringify({ ...others, 773: home }));
+    assert.equal((await call('POST', '/api/home', { body: { mode: 'off' } })).status, 200);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), others);
+    assert.equal((await call('POST', '/api/home', { body: { mode: 'off' } })).status, 200);
+    assert.equal((await call('POST', '/api/home', { body: { mode: 'watch' } })).json.mode, 'watch');
+  }
+  fs.writeFileSync(file, JSON.stringify({ ...others, 773: { action: 'launch', id: 'someone.home' } }));
+  await call('POST', '/api/home', { body: { mode: 'off' } });
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8'))[773].id, 'someone.home');
+});
+
+test('api: invalid hook file refuses disabling without overwriting it', async () => {
+  const file = path.join(dir, 'lginputhook', 'keybinds.json');
+  await call('POST', '/api/home', { body: { mode: 'watch' } });
+  fs.writeFileSync(file, '{invalid');
+  const r = await call('POST', '/api/home', { body: { mode: 'off' } });
+  assert.equal(r.status, 500);
+  assert.match(r.json.errorText, /keybinds/);
+  assert.equal(fs.readFileSync(file, 'utf8'), '{invalid');
+  assert.equal((await call('GET', '/api/home')).json.mode, 'watch');
+  fs.writeFileSync(file, '{}');
+});
+
+test('api: choosing LG default Home removes the Home+ binding but preserves startup', async () => {
+  const file = path.join(dir, 'lginputhook', 'keybinds.json');
+  const other = { action: 'launch', id: 'someone.input' };
+  fs.writeFileSync(file, JSON.stringify({ 773: { action: 'launch', id: 'com.github.pbalazaar.homeplus' }, 241: other }));
+  assert.equal((await call('POST', '/api/home', { body: { startupEnabled: true } })).status, 200);
+  const r = await call('POST', '/api/home', { body: { defaultHome: false } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.mode, 'off');
+  assert.equal(r.json.startupEnabled, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { 241: other });
 });

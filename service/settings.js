@@ -38,7 +38,7 @@ function along(list, cur, dir) {
 
 const minutes = (v, dflt) => (v < 0 ? 'Never' : `${v > 0 ? v : dflt} min`);
 
-module.exports = function createSettings({ log, readConfig, setPrefs, home, setHome, apps, tvApps, accounts, version, elevated }) {
+module.exports = function createSettings({ log, readConfig, setPrefs, home, setHome, apps, tvApps, accounts, version, elevated, updates }) {
   const step = (id, label, value, desc, set) => ({ id, kind: 'step', label, value, desc, set });
   const inHome = (id, label, value, desc, page) => ({ id, kind: 'home', label, value, desc, page });
   // a pref that's on or off
@@ -49,7 +49,16 @@ module.exports = function createSettings({ log, readConfig, setPrefs, home, setH
       step('homeButton', 'Home Button', on ? 'Opens Home+' : 'Opens LG Home', 'Home+ in place of LG’s home screen, after apps too.',
         () => setHome({ mode: on ? 'off' : h.noFlashAvailable ? 'redirect' : 'watch', asked: true }))
     ];
-    if (on && h.noFlashAvailable) {
+    rows.push(step('defaultHome', 'Default Home App', h.defaultHomeEnabled ? 'Home+' : 'LG Home',
+      h.defaultHomeAvailable ? 'Use Home+ as the TV’s default Home app. LG Home stays available.' : h.defaultHomeReason || 'Default Home+ isn’t available on this TV.',
+      () => {
+        if (!h.defaultHomeEnabled && !h.defaultHomeAvailable) throw new Error(h.defaultHomeReason || 'Default Home+ isn’t available on this TV.');
+        return setHome({ defaultHome: !h.defaultHomeEnabled });
+      }));
+    rows.push(step('startupHome', 'Open Home+ at Startup', h.startupEnabled ? 'On' : 'Off',
+      'Open Home+ after the TV starts. Off follows the TV’s own startup behaviour.',
+      () => setHome({ startupEnabled: !h.startupEnabled })));
+    if (on && h.noFlashAvailable && !h.defaultHomeEnabled) {
       rows.push(step('noFlash', 'No Flash', h.noFlashActive ? 'On' : 'Off', 'LG’s home screen never shows, not even for a moment.',
         () => setHome({ mode: h.mode === 'watch' ? 'redirect' : 'watch' })));
     }
@@ -120,7 +129,11 @@ module.exports = function createSettings({ log, readConfig, setPrefs, home, setH
   }
 
   const about = () => ({
-    rows: [Object.assign(inHome('remove', 'Remove Home+', '', 'Undoes everything Home+ set up, then uninstalls it.', 'about'), { destructive: true })],
+    rows: (updates ? [
+      inHome('checkUpdates', 'Check for Updates', `Home+ ${version}`, 'Check for a newer Home+ release.', 'updates'),
+      step('automaticUpdates', 'Automatic Update Checks', updates.state().automatic ? 'On' : 'Off',
+        'Check daily. Installation always needs confirmation.', () => updates.act({ action: 'automatic', enabled: !updates.state().automatic }))
+    ] : []).concat([Object.assign(inHome('remove', 'Remove Home+', '', 'Undoes everything Home+ set up, then uninstalls it.', 'about'), { destructive: true })]),
     body: `Home+ ${version}, ${elevated() ? 'set up with Homebrew Channel' : 'not set up yet'}\nMIT licence · github.com/pbalazaar/home-plus\n` +
       'Not affiliated with LG, Apple, Stremio, Trakt, Jellyfin or Plex.\nUses the TMDB API but is not endorsed or certified by TMDB.'
   });

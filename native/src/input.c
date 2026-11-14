@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "home.h"
 
@@ -60,9 +61,14 @@ static void activate(void)
                 resume_title(a, S.rail[S.rail_index].id, 0);
                 return;
             }
-            /* LG's apps can't be sent to a title: open the app and say where the title is */
             char hint[300];
-            const char *name = S.rail[S.rail_index].name;
+            const RailItem *item = &S.rail[S.rail_index];
+            const char *name = item->name;
+            if (S.rail_source == SRC_FEATURED && !strncmp(item->id, "rec:", 4)) {
+                snprintf(hint, sizeof hint, "Search for \xE2\x80\x9C%s\xE2\x80\x9D in %s", name, a->title);
+                launch_recommendation(a->id, item->id, hint);
+                return;
+            }
             if (S.rail_source == SRC_FEATURED && S.rail_trending) { /* not the app's: just open it */
                 launch(a->id, NULL);
                 return;
@@ -185,7 +191,7 @@ static int is_mapped(SDL_Keycode k)
     }
 }
 
-#define PTR_TAKE_PX 40 /* pointer travel (logical px) that hands control back to it */
+#define PTR_TAKE_PX 12 /* pointer travel (logical px) that hands control back to it */
 static int ptr_lx = -1, ptr_ly = -1; /* the pointer's last position */
 
 void keys_take_over(void)
@@ -198,7 +204,7 @@ void keys_take_over(void)
 /* An arrow key hides the Magic Remote's pointer; moving the remote brings it back. LG's
  * SDL has SDL_webOSCursorVisibility (its SDL_webOS.h): looked up at run time, since the
  * vendored 2.0.14 headers and desktop SDL don't have it. */
-static void hide_pointer(void)
+static void pointer_visibility(SDL_bool visible)
 {
     static SDL_bool (*visibility)(SDL_bool);
     static int looked;
@@ -207,8 +213,33 @@ static void hide_pointer(void)
         looked = 1;
         if (self) *(void **)&visibility = dlsym(self, "SDL_webOSCursorVisibility");
     }
-    if (visibility && S.cursor_up) visibility(SDL_FALSE);
-    S.cursor_up = 0;
+    if (visibility) visibility(visible);
+    else SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
+    S.cursor_up = visible != SDL_FALSE;
+}
+
+static void hide_pointer(void)
+{
+    if (S.cursor_up) pointer_visibility(SDL_FALSE);
+}
+
+/* Home can bring back the other app's cursor position. Wait for motion from a fresh
+ * baseline, rather than comparing that position with where the remote was last time. */
+void pointer_home(void)
+{
+    keys_take_over();
+    S.ptr_ax = S.ptr_ay = ptr_lx = ptr_ly = -1;
+    S.ptr_entry = 1;
+    pointer_visibility(SDL_FALSE);
+}
+
+/* webOS is reporting its cursor, not asking us to hide it again. A real show starts
+ * a fresh entry baseline; repeated notifications must preserve movement progress. */
+void pointer_visibility_changed(SDL_bool visible)
+{
+    if (visible && S.ptr_entry && !S.cursor_up)
+        S.ptr_ax = S.ptr_ay = ptr_lx = ptr_ly = -1;
+    S.cursor_up = visible != SDL_FALSE;
 }
 
 /* the pointer moved to mx,my: 1 when it's (now) the one in charge */
@@ -216,7 +247,7 @@ int pointer_moved(int mx, int my)
 {
     ptr_lx = mx;
     ptr_ly = my;
-    S.cursor_up = 1;
+    if (!S.ptr_entry) S.cursor_up = 1;
     if (S.ptr_mode) return 1;
     if (S.ptr_ax < 0) { /* first sighting since the keys took over: just remember it */
         S.ptr_ax = mx;
@@ -226,14 +257,23 @@ int pointer_moved(int mx, int my)
     int dx = mx - S.ptr_ax, dy = my - S.ptr_ay;
     if (dx * dx + dy * dy < PTR_TAKE_PX * PTR_TAKE_PX) return 0; /* a hand's tremor */
     S.ptr_mode = 1;
+    S.ptr_entry = 0;
+    pointer_visibility(SDL_TRUE);
     return 1;
+}
+
+/* OK may still arrive as a mouse click while webOS hides the old pointer. It is the
+ * focused tile's OK until actual motion has handed control back to the pointer. */
+int pointer_click(int mx, int my)
+{
+    return S.ptr_entry ? 0 : pointer_moved(mx, my);
 }
 
 void on_key_down(SDL_KeyboardEvent *e)
 {
     SDL_Keycode k = remote_key(&e->keysym);
     if (k == WEBOS_KEY_CURSOR_SHOW || k == WEBOS_KEY_CURSOR_HIDE) {
-        S.cursor_up = k == WEBOS_KEY_CURSOR_SHOW;
+        pointer_visibility_changed(k == WEBOS_KEY_CURSOR_SHOW ? SDL_TRUE : SDL_FALSE);
         return;
     }
     if (k != SDLK_RETURN && k != SDLK_KP_ENTER) keys_take_over();
@@ -265,6 +305,7 @@ void on_key_down(SDL_KeyboardEvent *e)
             int i = S.icon_tint + (k == SDLK_RIGHT ? 1 : -1);
             if (i >= 0 && i < NTINTS) icon_tint_set(i), snd_play(SND_TICK);
         } else if (is_back(k) && !S.sheet.locked) {
+            if (S.sheet.page == PAGE_UPDATES) { updates_keep(); return; }
             if (S.sheet.page == PAGE_KEYS) keys_close();
             if (S.sheet.parent) settings_page(S.sheet.parent, S.sheet.parent_index);
             else sheet_dismiss();
