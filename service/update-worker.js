@@ -24,6 +24,32 @@ function privateDir(dir) {
 function runFile(command, args) {
   return new Promise((resolve, reject) => execFile(command, args, { timeout: 15000, maxBuffer: 1024 * 1024 }, (err, stdout) => err ? reject(new Error('Required update tool failed: ' + path.basename(command))) : resolve(String(stdout))));
 }
+// webos-service names its process with exactly the service ID. Match that entire
+// cmdline and the actual Node executable, never a substring in a shell/helper.
+function serviceProcess(pid, node) {
+  if (pid === process.pid) return null;
+  try {
+    const args = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').filter(Boolean);
+    if (args.length !== 1 || args[0] !== SERVICE || fs.realpathSync('/proc/' + pid + '/exe') !== node) return null;
+    const start = processStart(pid);
+    if (!start) throw new Error('Cannot identify the running Home+ service');
+    return { pid, start };
+  } catch (e) { if (e.code === 'ENOENT' || e.code === 'ESRCH') return null; throw e; }
+}
+async function stopService() {
+  const node = fs.realpathSync(process.execPath);
+  const owners = fs.readdirSync('/proc').filter(name => /^\d+$/.test(name)).map(name => serviceProcess(Number(name), node)).filter(Boolean);
+  const same = owner => { const current = serviceProcess(owner.pid, node); return current && current.start === owner.start; };
+  for (const owner of owners) {
+    if (!same(owner)) continue;
+    try { process.kill(owner.pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  }
+  const end = Date.now() + 3000;
+  while (owners.some(same)) {
+    if (Date.now() >= end) throw new Error('Home+ service did not stop after elevation');
+    await wait(100);
+  }
+}
 function finalReply(r, local) {
   if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
   if (r.returnValue === false || (r.details && r.details.errorCode !== undefined)) throw new Error('Package installer refused the update');
@@ -64,21 +90,28 @@ function production(state) {
     foreground: front,
     installTarget: () => installSubscription(HBC + 'install', { id: APP, ipkUrl: state.artifact.url, ipkHash: state.artifact.sha256, subscribe: true }, false),
     installBackup: () => installSubscription('luna://com.webos.appInstallService/dev/install', { id: APP, ipkUrl: state.backup, subscribe: true }, true),
-    async elevate() { await runFile(ELEVATE, [SERVICE]); },
+    async elevate() {
+      await runFile(ELEVATE, [SERVICE]);
+      // Like tools/install.sh: role rescanning does not restart a running service.
+      // Called only after final installer completion and payload verification,
+      // for both target and rollback; the independent helper stays alive.
+      await stopService();
+    },
     async health(version) {
-      const end = Date.now() + 20000;
+      const end = Date.now() + 20000; let last = 'no service response';
       while (Date.now() < end) {
         try {
           await accepted('luna://' + SERVICE + '/ping', {});
           const r = await requestJSON('GET', 'http://127.0.0.1:47823/api/status', { timeout: 2000 });
+          last = 'HTTP ' + r.status + ', version ' + release.plain(r.json && r.json.version, 40) + ', elevated ' + !!(r.json && r.json.elevated === true);
           if (r.status === 200 && r.json && r.json.id === SERVICE && r.json.version === version) {
             if (r.json.elevated === true) return;
             await requestJSON('POST', 'http://127.0.0.1:47823/api/restart', { timeout: 2000 });
           }
-        } catch (e) { /* the package manager may still be releasing the old service */ }
+        } catch (e) { last = release.plain(e.message, 160); }
         await wait(500);
       }
-      throw new Error('Updated service health check failed');
+      throw new Error('Updated service health check failed (expected ' + version + '; ' + last + ')');
     },
     async enter() {
       const id = await front();
@@ -247,12 +280,14 @@ async function run(file, injected) {
   try { s = load(file); } catch (e) { releaseWorker(); throw e; }
   if (!s.active) { releaseWorker(); finishHook(s); return; }
   const ops = injected || production(s);
-  let replacing = s.phase !== 'prepared';
+  let replacing = s.phase !== 'prepared', stage = 'resume';
+  const failure = (key, error) => { s[key] = { stage, message: release.plain(error.message, 300), at: Date.now() }; recovery.atomic(file, s); };
   const save = (phase, message) => { s.phase = phase; s.message = message; recovery.atomic(file, s); };
   async function install(kind) {
     s.installBoot = boot; s.installerPending = true; s.installer = kind;
     save(kind === 'target' ? 'installing' : 'recovering', kind === 'target' ?
       'Installing Home+. Recovery continues independently.' : 'Reinstalling the verified previous package.');
+    stage = 'install-' + kind;
     try { await (kind === 'target' ? ops.installTarget() : ops.installBackup()); }
     catch (e) {
       if (!e.installerUncertain) {
@@ -267,8 +302,10 @@ async function run(file, injected) {
   async function cancel(error) {
     s.cancelled = true;
     save('restoring-home', 'Restoring Home settings before cancelling the update');
+    stage = 'restore-home';
     try { await ops.restoreHome(); }
     catch (e) {
+      failure('recoveryFailure', e);
       try { await ops.fallback(); } catch (ignored) { /* retain independent recovery */ }
       save('restoring-home', 'Update cancelled. Home settings need recovery; the backup and recovery hook are retained.');
       return;
@@ -277,11 +314,15 @@ async function run(file, injected) {
   }
   async function complete() {
     const previous = s.recovered ? await archive.inspect(fs.readFileSync(s.backup), s.previousVersion) : null;
+    stage = s.recovered ? 'verify-backup' : 'verify-target';
     archive.verifyInstalled(previous ? previous.inventory : s.targetInventory, s.directories);
+    stage = s.recovered ? 'health-backup' : 'health-target';
     await ops.health(s.recovered ? s.previousVersion : s.artifact.version);
     save('awaiting-entry', 'Open Home+ to finish checking the installation.');
+    stage = 'native-entry';
     while (!await ops.enter()) { await wait(2000); }
     save('restoring-home', 'Checking the requested Home settings');
+    stage = 'restore-home';
     await ops.restoreHome();
     s.active = false;
     save(s.recovered ? 'failed' : 'completed', s.recovered ? 'Update failed. The previous Home+ build was restored.' : 'Home+ updated successfully');
@@ -302,6 +343,7 @@ async function run(file, injected) {
     recovery.atomic(file + '.ready', { id: s.id, pid: process.pid });
     if (s.phase === 'prepared') {
       if (await ops.foreground() !== APP) { await cancel(new Error('Home+ is no longer in front')); return; }
+      stage = 'verify-staged';
       const target = fs.readFileSync(s.targetFile);
       if (archive.hash(target) !== s.artifact.sha256 || target.length !== s.artifact.size) throw new Error('Staged package hash changed');
       await archive.inspect(target, s.artifact.version);
@@ -312,9 +354,9 @@ async function run(file, injected) {
       if (await ops.foreground() !== APP) throw new Error('Update cancelled because Home+ is no longer in front');
       replacing = true;
       await install('target');
-      archive.verifyInstalled(s.targetInventory, s.directories);
-      await ops.elevate();
-      await ops.health(s.artifact.version);
+      stage = 'verify-target'; archive.verifyInstalled(s.targetInventory, s.directories);
+      stage = 'elevate-target'; await ops.elevate();
+      stage = 'health-target'; await ops.health(s.artifact.version);
       save('awaiting-entry', 'Installed. Open Home+ to finish checking the update.');
     } else if (!['awaiting-entry', 'restoring-home'].includes(s.phase)) {
       throw new Error('Interrupted installation requires recovery');
@@ -322,6 +364,7 @@ async function run(file, injected) {
     await complete();
 
   } catch (error) {
+    if (!s.failure) failure('failure', error);
     if (error.installerUncertain) {
       try { await ops.fallback(); } catch (e) { /* the existing independent Home guard also remains effective */ }
       save('uncertain', 'Installer completion is unknown. Recovery needs a full webOS restart, not standby. Your backup is retained.');
@@ -332,16 +375,20 @@ async function run(file, injected) {
     }
     try {
       save('recovering', 'Update did not complete. Restoring the verified previous package.');
-      await ops.fallback();
+      stage = 'fallback'; await ops.fallback();
+      stage = 'verify-backup-archive';
       const backup = fs.readFileSync(s.backup);
       if (archive.hash(backup) !== s.backupHash) throw new Error('Recovery backup hash mismatch');
       const old = await archive.inspect(backup, s.previousVersion);
-      await install('backup'); archive.verifyInstalled(old.inventory, s.directories);
-      await ops.elevate(); await ops.health(s.previousVersion);
+      await install('backup');
+      stage = 'verify-backup'; archive.verifyInstalled(old.inventory, s.directories);
+      stage = 'elevate-backup'; await ops.elevate();
+      stage = 'health-backup'; await ops.health(s.previousVersion);
       s.recovered = true;
       save('awaiting-entry', 'Previous build restored. Open Home+ to finish checking recovery.');
       await complete();
     } catch (rollback) {
+      failure('recoveryFailure', rollback);
       try { await ops.fallback(); } catch (ignored) { /* independent default Home guard also remains installed */ }
       if (rollback.installerUncertain) s.phase = 'uncertain';
       save(rollback.installerUncertain ? 'uncertain' : 'recovering', 'Recovery needs attention. The verified backup and recovery hook have been retained.');

@@ -695,3 +695,70 @@ for (const reply of ['accepted', 'ignored', 'invalid-config']) test('official Ho
     } else assert.strictEqual(fs.readFileSync(f.s.configPath, 'utf8'), reply === 'invalid-config' ? '{' : JSON.stringify(current, null, 2));
   } finally { await server.close(); f.close(); }
 });
+
+
+test('post-install elevation replaces the real stale service process before exact-version health', { skip: process.platform !== 'linux' }, async () => {
+  const cp = require('child_process'), dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-service-restart-'));
+  const runner = path.join(dir, 'restart.js'), version = path.join(dir, 'version');
+  fs.writeFileSync(version, '0.25.0');
+  const code = `const fs=require('fs'),cp=require('child_process'),assert=require('assert'),file=process.argv[2],SERVICE=${JSON.stringify(SERVICE)};
+    const realExec=cp.execFile;let elevations=0,svc,decoy;
+    cp.execFile=(command,args,options,done)=>{if(command.endsWith('/elevate-service')){assert.deepStrictEqual(args,[SERVICE]);elevations++;return done(null,'');}return realExec(command,args,options,done);};
+    const net=require(${JSON.stringify(require.resolve('../service/net'))}),request=net.requestJSON;
+    net.requestJSON=(method,url,options)=>request(method,url.replace(':47823',':'+svc.port),options);
+    const guard=require(${JSON.stringify(require.resolve('../service/default-home-guard'))});
+    function start(title,ignore){return new Promise((resolve,reject)=>{
+      const source="process.title=process.argv[1];const version=require('fs').readFileSync(process.argv[2],'utf8');if(process.argv[3]==='ignore')process.on('SIGTERM',()=>{});const server=require('http').createServer((q,r)=>r.end(JSON.stringify({id:process.argv[4],version,elevated:true})));server.listen(0,'127.0.0.1',()=>console.log(server.address().port));";
+      const child=cp.spawn(process.execPath,['-e',source,title,file,ignore?'ignore':'normal',SERVICE],{stdio:['ignore','pipe','pipe']});
+      child.once('error',reject);child.closed=new Promise(resolve=>child.once('close',resolve));child.stdout.once('data',data=>{child.port=Number(String(data).trim());resolve(child);});
+    });}
+    async function cleanup(child){if(child&&child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');if(child)await child.closed;}
+    guard.luna=async()=>{if(!svc||svc.exitCode!==null||svc.signalCode!==null)svc=await start(SERVICE);return {returnValue:true};};
+    const worker=require(${JSON.stringify(require.resolve('../service/update-worker'))});
+    (async()=>{try{
+      svc=await start(SERVICE);decoy=await start(SERVICE+'.other');
+      const ops=worker.production({});
+      for(const target of ['0.26.0','0.25.0']){
+        const previous=svc;fs.writeFileSync(file,target);
+        const old=await request('GET','http://127.0.0.1:'+svc.port+'/api/status');assert.notStrictEqual(old.json.version,target);
+        await ops.elevate();
+        // /proc can report exit before the parent's asynchronous child event arrives.
+        await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('old service did not exit after elevation')),1000);previous.closed.then(()=>{clearTimeout(timer);resolve();});});
+        assert.strictEqual(previous.signalCode,'SIGTERM');
+        await ops.health(target);assert.notStrictEqual(svc.pid,previous.pid);
+        assert.strictEqual((await request('GET','http://127.0.0.1:'+svc.port+'/api/status')).json.version,target);
+        assert.strictEqual(decoy.exitCode,null);assert.strictEqual(decoy.signalCode,null);
+      }
+      await cleanup(svc);svc=await start(SERVICE,true);const startTime=Date.now();let failed=false;
+      try{await ops.elevate();}catch(e){failed=/did not stop/.test(e.message);}
+      assert(failed,'an uncooperative service must fail, never pass health');assert(Date.now()-startTime<7000);assert.strictEqual(elevations,3);
+      console.log('target and rollback service generations verified; decoy preserved; timeout refused');
+    }finally{await cleanup(svc);await cleanup(decoy);}})().catch(e=>{console.error(e);process.exitCode=1;});`;
+  fs.writeFileSync(runner, code);
+  try {
+    const child = cp.spawn(process.execPath, [runner, version], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
+    const result = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+    assert.deepStrictEqual(result, { code: 0, signal: null }, output);
+    assert.match(output, /target and rollback service generations verified/);
+  } finally { remove.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the original failure stage survives successful rollback and a later recovery failure', async () => {
+  for (const failRecovery of [false, true]) {
+    const f = await fixture();
+    f.ops.health = async version => { throw new Error(version === f.s.artifact.version ? 'target health mismatch' : 'backup health mismatch'); };
+    if (!failRecovery) {
+      const fail = f.ops.health;
+      f.ops.health = async version => { if (version === f.s.artifact.version) await fail(version); };
+    }
+    try {
+      if (failRecovery) await assert.rejects(worker.run(f.file, f.ops), /recovery could not complete/);
+      else await worker.run(f.file, f.ops);
+      const state = worker.load(f.file);
+      assert.strictEqual(state.failure.stage, 'health-target'); assert.strictEqual(state.failure.message, 'target health mismatch');
+      assert.strictEqual(typeof state.failure.at, 'number');
+      if (failRecovery) { assert.strictEqual(state.recoveryFailure.stage, 'health-backup'); assert.strictEqual(state.recoveryFailure.message, 'backup health mismatch'); }
+    } finally { f.close(); }
+  }
+});
