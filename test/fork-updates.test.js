@@ -6,6 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { prepare, finish } = require('../tools/prepare-fork-update');
+const ciNames = ['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF', 'GH_REPO'];
+const ciEnvironment = ciNames.map(name => process.env[name]);
+test.beforeEach(() => ciNames.forEach(name => { delete process.env[name]; }));
+test.afterEach(() => ciNames.forEach((name, i) => { if (ciEnvironment[i] === undefined) delete process.env[name]; else process.env[name] = ciEnvironment[i]; }));
 function git(repo, ...args) { return cp.execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim(); }
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-fork-'));
@@ -18,6 +22,8 @@ function fixture(t) {
   }
   const base = commit({ 'service/a.js': 'base\n', 'native/appinfo.json': '{"version":"1.0.0"}', 'service/package.json': '{"version":"1.0.0"}' }, 'base');
   const source = commit({ 'service/custom.js': 'preserved\n' }, 'custom');
+  git(repo, 'remote', 'add', 'origin', 'https://github.com/MoBluey/home-plus.git');
+  git(repo, 'branch', 'source-identity', source); git(repo, 'config', 'branch.source-identity.remote', 'origin');
   git(repo, 'checkout', '-q', '--detach', base);
   const upstream = commit({ 'service/new.js': 'upstream\n', 'native/appinfo.json': '{"version":"1.1.0"}', 'service/package.json': '{"version":"1.1.0"}' }, 'release');
   git(repo, 'tag', 'v1.1.0');
@@ -48,6 +54,7 @@ test('reports genuine source conflicts and never packages them', t => {
   const f = fixture(t); const upstream = f.commit({ 'service/a.js': 'upstream changed\n' }, 'upstream conflict'); git(f.repo, 'tag', '-f', 'v1.1.0');
   git(f.repo, 'checkout', '-q', '--detach', f.source);
   const source = f.commit({ 'service/a.js': 'fork changed\n' }, 'fork conflict');
+  git(f.repo, 'branch', '-f', 'source-identity', source);
   const result = prepare({ ...f.options, source });
   assert.equal(result.status, 'conflict'); assert.deepEqual(result.conflicts, ['service/a.js']);
   assert.throws(() => finish(result, f.options.destination, true), /conflict/);
@@ -78,8 +85,8 @@ test('ready result verifies bytes and uses immutable source/hash asset name; has
   assert.equal(ready.status, 'ready'); assert.equal(ready.artifact.sha256, sha);
   assert.equal(ready.artifact.url, 'https://github.com/MoBluey/home-plus/releases/download/upstream-v1.1.0/com.github.pbalazaar.homeplus_1.1.0_' + f.source.slice(0, 12) + '_' + sha.slice(0, 12) + '_all.ipk');
   const { sameCandidate } = require('../tools/prepare-fork-update');
-  assert.equal(sameCandidate(ready, f.source, f.upstream), true);
-  assert.equal(sameCandidate(ready, 'a'.repeat(40), f.upstream), false);
+  assert.equal(sameCandidate(ready, f.source, f.upstream, 'MoBluey/home-plus'), true);
+  assert.equal(sameCandidate(ready, 'a'.repeat(40), f.upstream, 'MoBluey/home-plus'), false);
   fs.appendFileSync(path.join(dist, name), 'changed'); assert.throws(() => finish(result, f.options.destination, true), /hash\/size/);
 });
 test('all runtime changes absorbed requires the verified official package', t => {
@@ -104,8 +111,13 @@ test('official detached CI build records verified release, while dirty origin st
   const f = fixture(t), { capture } = require('../tools/update-provenance');
   const names = ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_ACTIONS'], old = names.map(name => process.env[name]);
   try {
+    git(f.repo, 'remote', 'set-url', 'origin', 'https://github.com/pbalazaar/home-plus.git');
     process.env.GITHUB_ACTIONS = 'true'; process.env.GITHUB_REPOSITORY = 'pbalazaar/home-plus'; process.env.GITHUB_SHA = f.upstream; process.env.GITHUB_REF = 'refs/tags/v1.1.0';
     const official = capture(f.repo); assert.equal(official.customised, false); assert.equal(official.upstream.commit, f.upstream); assert.equal(official.source.commit, f.upstream);
+    process.env.GITHUB_REPOSITORY = 'Other/fork';
+    assert.equal(capture(f.repo).source.repository, null);
+    process.env.GITHUB_REPOSITORY = 'pbalazaar/home-plus';
+    process.env.GITHUB_SHA = f.source; assert.equal(capture(f.repo).source.repository, null); process.env.GITHUB_SHA = f.upstream;
     fs.writeFileSync(path.join(f.repo, 'private'), 'untracked modification');
     const dirty = capture(f.repo); assert.equal(dirty.source.commit, null); assert.equal(dirty.customised, true);
   } finally { names.forEach((name, i) => { if (old[i] === undefined) delete process.env[name]; else process.env[name] = old[i]; }); }
@@ -128,6 +140,7 @@ test('build-only retained producer changes publish the custom payload rather tha
   const source = f.commit({ 'tools/build.mjs': builder('preserved custom payload') }, 'custom build producer only');
   git(f.repo, 'checkout', '-q', '--detach', base);
   f.commit({ 'native/appinfo.json': '{"version":"1.1.0"}', 'service/package.json': '{"version":"1.1.0"}' }, 'new official release'); git(f.repo, 'tag', '-f', 'v1.1.0');
+  git(f.repo, 'branch', '-f', 'source-identity', source);
   const result = prepare({ ...f.options, base, source });
   // Run the retained producer through the same Node entry point as production.
   cp.execFileSync(process.execPath, ['tools/build.mjs'], { cwd: f.options.destination });
@@ -155,11 +168,87 @@ test('fork-only reachable version tag cannot claim an official upstream base', t
 test('desktop environment and local tags cannot impersonate an official CI release', t => {
   const f = fixture(t), { capture } = require('../tools/update-provenance');
   git(f.repo, 'checkout', '-q', '-b', 'desktop-source', f.source);
-  git(f.repo, 'remote', 'add', 'origin', 'https://github.com/pbalazaar/home-plus.git');
+  git(f.repo, 'remote', 'set-url', 'origin', 'https://github.com/pbalazaar/home-plus.git');
   git(f.repo, 'config', 'branch.desktop-source.remote', 'origin'); git(f.repo, 'tag', 'v99.0.0');
   const names = ['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF'], old = names.map(name => process.env[name]);
   try {
     process.env.GITHUB_ACTIONS = 'false'; process.env.GITHUB_REPOSITORY = 'pbalazaar/home-plus'; process.env.GITHUB_SHA = f.source; process.env.GITHUB_REF = 'refs/tags/v99.0.0';
     const info = capture(f.repo); assert.equal(info.source.commit, f.source); assert.equal(info.upstream.commit, null); assert.equal(info.source.base, null); assert.equal(info.customised, true);
   } finally { names.forEach((name, i) => { if (old[i] === undefined) delete process.env[name]; else process.env[name] = old[i]; }); }
+});
+
+test('preparation rejects a claimed fork that is not the source checkout identity', t => {
+  const f = fixture(t);
+  assert.throws(() => prepare({ ...f.options, sourceRepository: 'Other/fork' }), /repository|identity/i);
+  assert.equal(fs.existsSync(f.options.destination), false);
+  assert.throws(() => prepare({ ...f.options, upstreamRepository: 'Other/upstream' }), /repository|identity/i);
+});
+
+test('two verified source forks retain schema 1 provenance and reject cross-fork replay', t => {
+  const { capture } = require('../tools/update-provenance'), { sameCandidate } = require('../tools/prepare-fork-update');
+  for (const repository of ['MoBluey/home-plus', 'Example-Owner/custom.home-plus']) {
+    const f = fixture(t);
+    git(f.repo, 'remote', 'set-url', 'origin', 'git@github.com:' + repository + '.git');
+    const result = prepare({ ...f.options, sourceRepository: repository });
+    assert.equal(result.schemaVersion, 1); assert.equal(result.source.repository, repository);
+    const info = JSON.parse(fs.readFileSync(path.join(f.options.destination, 'update-info-build.json')));
+    assert.equal(info.source.repository, repository); assert.equal(info.schemaVersion, 1);
+    git(f.repo, 'checkout', '-q', 'source-identity');
+    assert.equal(capture(f.repo).source.repository, repository);
+    assert.equal(sameCandidate(result, f.source, f.upstream, repository), true);
+    assert.equal(sameCandidate(result, f.source, f.upstream, 'Other/fork'), false);
+  }
+});
+
+test('trusted publisher checks checkout and result identity before writes for either fork', t => {
+  const { publish } = require('../tools/publish-fork-update');
+  const ID = 'com.github.pbalazaar.homeplus', crypto = require('node:crypto');
+  for (const repository of ['MoBluey/home-plus', 'Example-Owner/custom.home-plus']) {
+    const f = fixture(t);
+    git(f.repo, 'remote', 'set-url', 'origin', 'https://github.com/' + repository + '.git');
+    const result = prepare({ ...f.options, sourceRepository: repository });
+    const dist = path.join(f.options.destination, 'dist'); fs.mkdirSync(dist);
+    const data = Buffer.from('checked custom payload'), sha = crypto.createHash('sha256').update(data).digest('hex'), name = ID + '_1.1.0_all.ipk';
+    fs.writeFileSync(path.join(dist, name), data);
+    fs.writeFileSync(path.join(dist, ID + '.manifest.json'), JSON.stringify({ id: ID, version: '1.1.0', ipkUrl: name, ipkSize: data.length, ipkHash: { sha256: sha } }));
+    const ready = finish(result, f.options.destination, true), file = path.join(f.dir, ID + '.update.json');
+    fs.writeFileSync(file, JSON.stringify(ready)); fs.writeFileSync(path.join(f.dir, path.basename(ready.artifact.url)), data);
+    git(f.repo, 'checkout', '-q', 'source-identity');
+    // Stub only network CLI calls. Production publication still reads the real
+    // result/package and verifies the Git checkout, on every supported host.
+    const calls = [], exec = cp.execFileSync;
+    const env = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: repository, GH_REPO: repository, GITHUB_SHA: f.source };
+    const expected = { repository, source: f.source, version: '1.1.0' };
+    const run = changes => {
+      Object.assign(process.env, env, changes);
+      return publish(f.repo, file, { ...expected, repository: process.env.GITHUB_REPOSITORY });
+    };
+    try {
+      cp.execFileSync = function (command, args) {
+        if (command !== 'gh') return exec.apply(this, arguments);
+        calls.push(args); return args[1] === 'view' ? JSON.stringify({ assets: [] }) : '';
+      };
+      run({});
+      assert.equal(calls.length, 3);
+      for (const args of calls) assert.equal(args[args.indexOf('--repo') + 1], repository);
+      assert.equal(calls[1].includes('--clobber'), false); assert.equal(calls[2].includes('--clobber'), true);
+      const before = calls.length;
+      for (const change of [{ GH_REPO: 'Other/fork' }, { GITHUB_REPOSITORY: 'Other/fork', GH_REPO: 'Other/fork' }, { GITHUB_SHA: 'f'.repeat(40) }, { GITHUB_ACTIONS: 'false' }]) assert.throws(() => run(change));
+      for (const change of [{ source: { ...ready.source, repository: 'Other/fork' } }, { artifact: { ...ready.artifact, url: ready.artifact.url.replace(repository, 'Other/fork') } }]) {
+        fs.writeFileSync(file, JSON.stringify({ ...ready, ...change })); assert.throws(() => run({}));
+      }
+      assert.equal(calls.length, before);
+    } finally { cp.execFileSync = exec; ciNames.forEach(name => { delete process.env[name]; }); }
+  }
+});
+
+test('fork workflow keeps candidate code in read-only jobs and publication in trusted checkout', () => {
+  const workflow = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/fork-updates.yml'), 'utf8');
+  assert.match(workflow, /if: github.repository != 'pbalazaar\/home-plus' && github.event.repository.fork == true/);
+  const result = workflow.slice(workflow.indexOf('\n  result:'));
+  const candidates = workflow.slice(0, workflow.indexOf('\n  result:'));
+  assert.match(candidates, /permissions:\n  contents: read/); assert.doesNotMatch(candidates, /contents: write/);
+  assert.match(result, /contents: write/); assert.match(result, /ref: \$\{\{ github.sha \}\}/);
+  assert.doesNotMatch(result, /name: fork-candidate|candidate\.tar|tools\/build-release/);
+  assert.match(result, /persist-credentials: false/);
 });

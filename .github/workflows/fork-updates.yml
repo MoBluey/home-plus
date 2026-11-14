@@ -36,7 +36,7 @@ env:
 
 jobs:
   prepare:
-    if: github.repository == 'MoBluey/home-plus'
+    if: github.repository != 'pbalazaar/home-plus' && github.event.repository.fork == true
     runs-on: ubuntu-24.04
     outputs:
       candidate: ${{ steps.prepare.outputs.candidate }}
@@ -70,7 +70,7 @@ jobs:
           echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/result"
           if gh release download "upstream-v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern com.github.pbalazaar.homeplus.update.json --dir "$RUNNER_TEMP/previous"; then
-            if [ "$EVENT" = schedule ] && node -e 'const p=require(process.argv[1]); process.exit(require("./tools/prepare-fork-update").sameCandidate(p,process.argv[2],process.argv[3])?0:1)' "$RUNNER_TEMP/previous/com.github.pbalazaar.homeplus.update.json" "$SOURCE" "$UPSTREAM"; then
+            if [ "$EVENT" = schedule ] && node -e 'const p=require(process.argv[1]); process.exit(require("./tools/prepare-fork-update").sameCandidate(p,process.argv[2],process.argv[3],process.env.GITHUB_REPOSITORY)?0:1)' "$RUNNER_TEMP/previous/com.github.pbalazaar.homeplus.update.json" "$SOURCE" "$UPSTREAM"; then
               echo 'skip=true' >> "$GITHUB_OUTPUT"
               exit 0
             fi
