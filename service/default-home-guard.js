@@ -107,12 +107,31 @@ function luna(uri, params, onFailure) {
     child.stdin.end();
   });
 }
+function spawnGuard(helper, mode, file) {
+  // Native LS2 sockets may lack CLOEXEC. Close them in the child before Node creates its own FDs.
+  const closeDescriptors = 'descriptorDir=/proc/self/fd\n' +
+    '[ -e "$descriptorDir" ] || descriptorDir=/dev/fd\n' +
+    '[ -d "$descriptorDir" ] && [ -r "$descriptorDir" ] && [ -x "$descriptorDir" ] || exit 1\n' +
+    'for entry in "$descriptorDir"/*; do\n' +
+    '  descriptor=${entry##*/}\n' +
+    '  case "$descriptor" in\n' +
+    '    \'\'|*[!0-9]*) exit 1 ;;\n' +
+    '    0|1|2) continue ;;\n' +
+    '  esac\n' +
+    '  eval "exec $descriptor>&-" || exit 1\n' +
+    'done\nexec "$@"';
+  const out = fs.openSync(file + '.log', 'a', 0o600);
+  try {
+    const child = spawn('/bin/sh', ['-c', closeDescriptors, 'homeplus-guard', process.execPath, helper, mode, file],
+      { detached: true, stdio: ['ignore', out, out] });
+    child.unref();
+    return child;
+  } finally { fs.closeSync(out); }
+}
 async function main(mode, file) {
   if (mode === '--start' && file) {
     const state = load(file);
-    const out = fs.openSync(file + '.log', 'a', 0o600);
-    const child = spawn(process.execPath, [__filename, state.deadline === null ? '--watch' : '--restore', file], { detached: true, stdio: ['ignore', out, out] });
-    child.unref(); fs.closeSync(out);
+    const child = spawnGuard(__filename, state.deadline === null ? '--watch' : '--restore', file);
     console.log(JSON.stringify({ pid: child.pid }));
     return;
   }
@@ -158,5 +177,5 @@ async function main(mode, file) {
     }
   }
 }
-module.exports = { readDefaults, restore, restoreConfig, accepted, atomic, durable, syncDir, load, luna, commandDiagnostic };
+module.exports = { readDefaults, restore, restoreConfig, accepted, atomic, durable, syncDir, load, luna, commandDiagnostic, spawnGuard };
 if (require.main === module) main(process.argv[2], process.argv[3]).catch((e) => { console.error(e.message); process.exitCode = 1; });
