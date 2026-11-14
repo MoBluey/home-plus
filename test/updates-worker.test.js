@@ -762,3 +762,161 @@ test('the original failure stage survives successful rollback and a later recove
     } finally { f.close(); }
   }
 });
+
+
+test('startup diagnostics retain bounded command and activation evidence privately across target and backup', async () => {
+  const f = await fixture(), cp = require('child_process');
+  const activation = path.join(f.dir, 'activation'); mkdirSync(activation);
+  fs.writeFileSync(path.join(activation, 'service'), 'target-service-definition');
+  fs.writeFileSync(path.join(activation, 'manifest'), 'm'.repeat(20000));
+  fs.symlinkSync(f.s.configPath, path.join(activation, 'linked'));
+  const runner = path.join(f.dir, 'diagnostics.js');
+  const code = `const fs=require('fs'),cp=require('child_process'),assert=require('assert'),path=require('path');
+    const file=process.argv[2],dir=path.dirname(file),SERVICE=${JSON.stringify(SERVICE)},APP=${JSON.stringify(APP)};
+    const mapped={};
+    mapped['/var/luna-service2-dev/services.d/'+SERVICE+'.service']=path.join(dir,'activation/service');
+    mapped['/var/luna-service2-dev/manifests.d/'+APP+'.json']=path.join(dir,'activation/manifest');
+    mapped['/var/luna-service2/services.d/'+SERVICE+'.service']=path.join(dir,'activation/linked');
+    mapped['/var/luna-service2/manifests.d/'+APP+'.json']=path.join(dir,'activation/absent');
+    const realOpen=fs.openSync,realStat=fs.lstatSync,realPath=fs.realpathSync,realDirs=fs.readdirSync;
+    fs.openSync=(p,...args)=>realOpen(mapped[p]||p,...args);
+    fs.lstatSync=p=>realStat(mapped[p]||p);
+    fs.realpathSync=p=>mapped[p]&&!realStat(mapped[p]).isSymbolicLink()?p:realPath(mapped[p]||p);
+    fs.readdirSync=p=>p==='/proc'?[]:realDirs(p);
+    const realExec=cp.execFile;let phase='target';
+    cp.execFile=(command,args,options,done)=>{
+      if(command.endsWith('/elevate-service'))return realExec(process.execPath,['-e',"process.stdout.write(process.argv[1]+'-elevation-'+ 'x'.repeat(20000));process.stderr.write('elevation-stderr')",phase],options,done);
+      if(command==='script')return realExec(process.execPath,['-e',"process.stdout.write('raw-'+process.argv[1]+'-'+ 'y'.repeat(20000));process.stderr.write('ping-stderr')",phase],options,done);
+      throw new Error('Unexpected command '+command);
+    };
+    const worker=require(${JSON.stringify(require.resolve('../service/update-worker'))});
+    const state=worker.load(file),ops=worker.production(state,file),now=Date.now;
+    (async()=>{for(const kind of ['target','backup']){
+      phase=kind;state.installer=kind;
+      fs.writeFileSync(mapped['/var/luna-service2-dev/services.d/'+SERVICE+'.service'],kind+'-service-definition');
+      await ops.elevate();
+      let time=0;Date.now=()=>time+=10001;
+      try{await ops.health('0.26.0');throw new Error('health unexpectedly succeeded');}
+      catch(e){assert.strictEqual(e.message,'Updated service health check failed (expected 0.26.0; Home recovery returned no JSON)');}
+      finally{Date.now=now;}
+    }
+    phase='later';state.installer='target';await ops.elevate();
+    // Existing records (including links) are never overwritten or followed.
+    state.id='b'.repeat(24);const link=path.join(dir,state.id+'-target-elevation.json');
+    fs.symlinkSync(state.configPath,link);const config=fs.readFileSync(state.configPath,'utf8');
+    await ops.elevate();assert.strictEqual(fs.readFileSync(state.configPath,'utf8'),config);assert(fs.lstatSync(link).isSymbolicLink());
+    if(process.platform!=='win32'){
+      state.id='c'.repeat(24);fs.chmodSync(dir,0o755);await ops.elevate();fs.chmodSync(dir,0o700);
+      assert.strictEqual(fs.existsSync(path.join(dir,state.id+'-target-elevation.json')),false);
+      assert.strictEqual(fs.existsSync(path.join(dir,state.id+'-target-activation.json')),false);
+    }
+    console.log('diagnostics complete');})().catch(e=>{console.error(e);process.exitCode=1;});`;
+  fs.writeFileSync(runner, code);
+  try {
+    const child = cp.spawn(process.execPath, [runner, f.file], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });
+    const result = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+    assert.deepStrictEqual(result, { code: 0, signal: null }, output);
+    const names = fs.readdirSync(f.dir).filter(n => n.indexOf(f.s.id + '-') === 0);
+    assert.strictEqual(names.length, 6);
+    for (const kind of ['target', 'backup']) {
+      const get = name => {
+        const file = path.join(f.dir, f.s.id + '-' + kind + '-' + name + '.json');
+        if (process.platform !== 'win32') assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+        const text = fs.readFileSync(file, 'utf8');
+        assert(text.length < 100000); assert(!text.includes('private-sentinel')); return JSON.parse(text);
+      };
+      const elevate = get('elevation'), ping = get('ping'), activation = get('activation');
+      assert(elevate.stdout.startsWith(kind + '-elevation-')); assert.strictEqual(elevate.stderr, 'elevation-stderr');
+      assert.strictEqual(elevate.stdout.length, 16384); assert.strictEqual(elevate.stdoutTruncated, true); assert.strictEqual(elevate.code, 0);
+      assert(ping.stdout.startsWith('raw-' + kind)); assert.strictEqual(ping.stderr, 'ping-stderr'); assert.strictEqual(ping.stdout.length, 16384);
+      assert.strictEqual(activation.files.length, 4);
+      assert.strictEqual(activation.files[0].contents, kind + '-service-definition');
+      assert.strictEqual(activation.files[1].contents.length, 16384); assert.strictEqual(activation.files[1].truncated, true);
+      assert.strictEqual(activation.files[2].error, 'not a regular canonical file'); assert.strictEqual(activation.files[3].error, 'ENOENT');
+    }
+    assert(!fs.readFileSync(f.file, 'utf8').includes('raw-target'));
+  } finally { f.close(); }
+});
+
+
+test('standalone guard retains actual PTY failure evidence only when requested', { skip: process.platform !== 'linux' }, async () => {
+  const cp = require('child_process'), dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeplus-ping-diagnostic-'));
+  const guard = path.join(dir, 'guard.js'), binary = path.join(dir, 'luna-fixture'), runner = path.join(dir, 'probe.js');
+  fs.copyFileSync(require.resolve('../service/default-home-guard'), guard);
+  fs.writeFileSync(binary, '#!/bin/sh\nprintf "raw-luna-failure\\n"\nprintf "raw-luna-stderr\\n" >&2\nexit 7\n', { mode: 0o755 });
+  fs.writeFileSync(runner, `const assert=require('assert'),fs=require('fs'),guard=require('./guard');
+    (async()=>{let captures=[];
+      await guard.luna('luna://fixture/ping',{},d=>captures.push(d)).then(()=>assert.fail('ping unexpectedly succeeded'),e=>assert.strictEqual(e.message,'Home recovery returned no JSON'));
+      assert.strictEqual(captures.length,1);assert(captures[0].stdout.includes('raw-luna-failure'));assert(captures[0].stdout.includes('raw-luna-stderr'));
+      assert.strictEqual(captures[0].code,0); // script masks the CLI exit: retain the actual observed PTY outcome.
+      await guard.luna('luna://fixture/ping',{},()=>{throw new Error('diagnostic storage unavailable');}).then(()=>assert.fail('ping unexpectedly succeeded'),e=>assert.strictEqual(e.message,'Home recovery returned no JSON'));
+      fs.writeFileSync(process.env.HOMEPLUS_RECOVERY_LUNA,${JSON.stringify('#!/bin/sh\nprintf \'{"returnValue":true}\\n\'\n')});
+      let successCaptures=0;assert.strictEqual((await guard.luna('luna://fixture/ping',{},()=>{successCaptures++;})).returnValue,true);assert.strictEqual(successCaptures,0);
+      console.log('standalone PTY evidence preserved');
+    })().catch(e=>{console.error(e);process.exitCode=1;});`);
+  try {
+    const child = cp.spawn(process.execPath, [runner], { env: Object.assign({}, process.env, { HOMEPLUS_RECOVERY_LUNA: binary }), stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });
+    const result = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+    assert.deepStrictEqual(result, { code: 0, signal: null }, output);
+    assert(output.includes('standalone PTY evidence preserved'));
+  } finally { remove.rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+for (const blocked of ['diagnostic', 'mandatory']) test('preparation cleanup failure: ' + blocked, { skip: process.platform !== 'linux' }, async () => {
+  const f = await fixture(), cp = require('child_process');
+  f.s.active = false; recovery.atomic(f.file, f.s);
+  const stale = path.join(f.dir, f.s.id + (blocked === 'diagnostic' ? '-target-ping.json' : '-previous.ipk'));
+  fs.writeFileSync(stale, 'retained-old-evidence');
+  const runner = path.join(f.dir, 'prepare-probe.js'), childRunner = path.join(f.dir, 'installed-worker-probe.js');
+  fs.writeFileSync(childRunner, `const fs=require('fs'),path=require('path'),worker=require('./update-worker'),archive=require('./update-archive'),mkdir=require('./mkdir').mkdirSync;
+    const file=process.argv[2],state=worker.load(file);
+    process.stdin.resume();process.stdin.on('end',()=>process.exit(0));
+    worker.run(file,{bootId:()=> 'runtime-v2:'+ 'f'.repeat(64),foreground:async()=>${JSON.stringify(APP)},
+      installTarget:async()=>{const target=await archive.inspect(fs.readFileSync(state.targetFile),state.artifact.version);
+        Object.keys(target.files).forEach(name=>{const i=archive.roots.findIndex(r=>name.indexOf(r+'/')===0),dest=path.join(state.directories[i],name.slice(archive.roots[i].length+1));mkdir(path.dirname(dest));fs.writeFileSync(dest,target.files[name].data,{mode:target.files[name].mode});});},
+      installBackup:async()=>{throw new Error('unexpected rollback');},elevate:async()=>{},health:async()=>{},enter:async()=>true,restoreHome:async()=>{},fallback:async()=>{}
+    }).then(()=>console.log('completed'),e=>{console.error(e);process.exit(1);});`);
+  fs.writeFileSync(runner, `const fs=require('fs'),cp=require('child_process'),assert=require('assert'),path=require('path');
+    const file=process.argv[2],stale=process.argv[3],blocked=process.argv[4],dir=path.dirname(file);
+    const read=fs.readFileSync,stat=fs.lstatSync,mkdir=fs.mkdirSync,realpath=fs.realpathSync,access=fs.accessSync,unlink=fs.unlinkSync;
+    const boot='/dev/homeplus-update-boot',service=${JSON.stringify(SERVICE)};
+    fs.readFileSync=(p,...args)=>p==='/proc/self/mountinfo'?'1 2 0:1 / /dev rw - tmpfs tmpfs rw':p===boot+'/generation.json'?JSON.stringify({schemaVersion:1,generation:'f'.repeat(64)}):read(p,...args);
+    fs.lstatSync=p=>p==='/dev'||p===boot?{uid:0,mode:0o700,isDirectory:()=>true,isSymbolicLink:()=>false}:p===boot+'/generation.json'?{uid:0,mode:0o600,size:120,isFile:()=>true}:stat(p);
+    fs.mkdirSync=(p,...args)=>{if(p===boot){const e=new Error('exists');e.code='EEXIST';throw e;}return mkdir(p,...args);};
+    fs.realpathSync=p=>p==='/dev'?p:realpath(p);
+    fs.accessSync=(p,...args)=>p.endsWith('/elevate-service')||p==='/usr/bin/luna-send'?undefined:access(p,...args);
+    fs.unlinkSync=p=>{if(p===stale){const e=new Error('injected stale unlink failure');e.code='EACCES';throw e;}return unlink(p);};
+    const release=require(${JSON.stringify(require.resolve('../service/update-release'))});
+    const prior=JSON.parse(read(file)),target=read(prior.targetFile);release.download=async()=>target;
+    const guard=require(${JSON.stringify(require.resolve('../service/default-home-guard'))});let launched=0,child,closed,completed;
+    guard.luna=async(uri,params)=>{
+      if(uri.endsWith('/getConfiguration'))return {returnValue:true,root:true};
+      assert(uri.endsWith('/exec'));
+      if(params.command.indexOf(' --start ')>=0){launched++;child=cp.spawn(process.execPath,[path.join(dir,'installed-worker-probe.js'),file],{stdio:['pipe','pipe','pipe']});
+        let output='';child.stdout.on('data',b=>{output+=b;});child.stderr.on('data',b=>{output+=b;});
+        closed=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal,output})));
+        completed=new Promise((resolve,reject)=>{child.stdout.on('data',b=>{if(String(b).includes('completed'))resolve();});child.once('exit',code=>{if(code)reject(new Error(output));});});
+      }return {returnValue:true};
+    };
+    const worker=require(${JSON.stringify(require.resolve('../service/update-worker'))});
+    (async()=>{let failure;
+      try{await worker.prepare({isRoot:()=>true,stateDir:dir,appDir:prior.directories[0],serviceDir:prior.directories[1],packageDir:prior.directories[2],configPath:prior.configPath,initDir:dir,
+        readConfig:()=>JSON.parse(read(prior.configPath)),writeConfig:()=>{throw new Error('unexpected config write');},foreground:()=>true,version:prior.previousVersion,artifact:prior.artifact});}catch(e){failure=e;}
+      if(blocked==='diagnostic'){
+        assert.ifError(failure);assert.strictEqual(launched,1);await completed;assert.strictEqual(worker.load(file).phase,'completed');assert.strictEqual(worker.load(file).active,false);
+      }else{assert(failure);assert.strictEqual(failure.code,'EACCES');assert.strictEqual(launched,0);}
+      assert.strictEqual(read(stale,'utf8'),'retained-old-evidence');
+      if(child){child.stdin.end();const result=await closed;assert.strictEqual(result.code,0,result.output);assert.strictEqual(result.signal,null);}
+      console.log(blocked+' cleanup outcome verified');
+    })().catch(e=>{console.error(e);if(child)child.kill('SIGKILL');process.exitCode=1;});`);
+  try {
+    const child = cp.spawn(process.execPath, [runner, f.file, stale, blocked], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });
+    const result = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+    assert.deepStrictEqual(result, { code: 0, signal: null }, output);
+    assert(output.includes(blocked + ' cleanup outcome verified'));
+  } finally { f.close(); }
+});

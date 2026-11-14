@@ -21,8 +21,47 @@ function privateDir(dir) {
   if (!st.isDirectory() || st.isSymbolicLink() || (process.getuid && st.uid !== process.getuid())) throw new Error('Unsafe recovery directory');
   fs.chmodSync(dir, 0o700);
 }
-function runFile(command, args) {
-  return new Promise((resolve, reject) => execFile(command, args, { timeout: 15000, maxBuffer: 1024 * 1024 }, (err, stdout) => err ? reject(new Error('Required update tool failed: ' + path.basename(command))) : resolve(String(stdout))));
+function runFile(command, args, onResult) {
+  return new Promise((resolve, reject) => execFile(command, args, { timeout: 15000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    if (onResult) { try { onResult(recovery.commandDiagnostic(err, stdout, stderr)); } catch (ignored) { /* diagnostics cannot change installation */ } }
+    if (err) reject(new Error('Required update tool failed: ' + path.basename(command))); else resolve(String(stdout));
+  }));
+}
+// Only these generated public activation files, never paths read from a manifest.
+function activationDiagnostic() {
+  const files = [];
+  for (const base of ['/var/luna-service2-dev', '/var/luna-service2']) {
+    for (const name of ['/services.d/' + SERVICE + '.service', '/manifests.d/' + APP + '.json']) {
+      const file = base + name, record = { file }; let fd;
+      try {
+        const before = fs.lstatSync(file);
+        if (!before.isFile() || fs.realpathSync(file) !== file) throw new Error('not a regular canonical file');
+        fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+        const st = fs.fstatSync(fd);
+        if (!st.isFile() || st.dev !== before.dev || st.ino !== before.ino) throw new Error('activation file changed while opening');
+        const data = Buffer.alloc(Math.min(st.size, 16384)), bytes = fs.readSync(fd, data, 0, data.length, 0);
+        Object.assign(record, { mode: st.mode, uid: st.uid, gid: st.gid, size: st.size, contents: data.slice(0, bytes).toString(), truncated: st.size > data.length });
+      } catch (e) { record.error = e.code || e.message; }
+      finally { if (fd !== undefined) fs.closeSync(fd); }
+      files.push(record);
+    }
+  }
+  return { files };
+}
+function startupDiagnostic(file, state, kind, data) {
+  // Write once per phase: recovery must never overwrite the failed target evidence.
+  // This is private evidence, not transaction/API state, and failure is non-fatal.
+  let fd;
+  try {
+    if (!file || !/^[0-9a-f]{24}$/.test(state.id)) return;
+    const dir = path.dirname(file), st = fs.lstatSync(dir);
+    if (!st.isDirectory() || st.isSymbolicLink() || (process.getuid && st.uid !== process.getuid()) || (process.platform !== 'win32' && (st.mode & 0o077))) return;
+    const phase = state.installer === 'backup' ? 'backup' : 'target';
+    fd = fs.openSync(path.join(dir, state.id + '-' + phase + '-' + kind + '.json'), 'wx', 0o600);
+    fs.writeFileSync(fd, JSON.stringify(Object.assign({ at: Date.now() }, typeof data === 'function' ? data() : data)));
+    fs.fsyncSync(fd); recovery.syncDir(dir);
+  } catch (ignored) { /* preserve existing evidence, never change update/recovery outcome */ }
+  finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch (ignored) { /* diagnostic only */ } } }
 }
 // webos-service names its process with exactly the service ID. Match that entire
 // cmdline and the actual Node executable, never a substring in a shell/helper.
@@ -82,8 +121,9 @@ function installSubscription(uri, params, local, options) {
     child.on('exit', () => { if (!done) finish(uncertain('Installer exited without final completion')); });
   });
 }
-function production(state) {
+function production(state, file) {
   const luna = recovery.luna;
+  const diagnose = (kind, data) => startupDiagnostic(file, state, kind, data);
   const accepted = (uri, params) => recovery.accepted(luna, uri, params);
   const front = async () => { const r = await accepted(MANAGER + 'getForegroundAppInfo', {}); return r.appId || (r.foregroundAppInfo && r.foregroundAppInfo[0] && r.foregroundAppInfo[0].appId) || ''; };
   return {
@@ -91,7 +131,8 @@ function production(state) {
     installTarget: () => installSubscription(HBC + 'install', { id: APP, ipkUrl: state.artifact.url, ipkHash: state.artifact.sha256, subscribe: true }, false),
     installBackup: () => installSubscription('luna://com.webos.appInstallService/dev/install', { id: APP, ipkUrl: state.backup, subscribe: true }, true),
     async elevate() {
-      await runFile(ELEVATE, [SERVICE]);
+      try { await runFile(ELEVATE, [SERVICE], result => diagnose('elevation', result)); }
+      finally { diagnose('activation', activationDiagnostic); }
       // Like tools/install.sh: role rescanning does not restart a running service.
       // Called only after final installer completion and payload verification,
       // for both target and rollback; the independent helper stays alive.
@@ -101,7 +142,7 @@ function production(state) {
       const end = Date.now() + 20000; let last = 'no service response';
       while (Date.now() < end) {
         try {
-          await accepted('luna://' + SERVICE + '/ping', {});
+          await recovery.accepted((uri, params) => luna(uri, params, result => diagnose('ping', result)), 'luna://' + SERVICE + '/ping', {});
           const r = await requestJSON('GET', 'http://127.0.0.1:47823/api/status', { timeout: 2000 });
           last = 'HTTP ' + r.status + ', version ' + release.plain(r.json && r.json.version, 40) + ', elevated ' + !!(r.json && r.json.elevated === true);
           if (r.status === 200 && r.json && r.json.id === SERVICE && r.json.version === version) {
@@ -279,7 +320,7 @@ async function run(file, injected) {
   const releaseWorker = acquireWorker(file, boot);
   try { s = load(file); } catch (e) { releaseWorker(); throw e; }
   if (!s.active) { releaseWorker(); finishHook(s); return; }
-  const ops = injected || production(s);
+  const ops = injected || production(s, file);
   let replacing = s.phase !== 'prepared', stage = 'resume';
   const failure = (key, error) => { s[key] = { stage, message: release.plain(error.message, 300), at: Date.now() }; recovery.atomic(file, s); };
   const save = (phase, message) => { s.phase = phase; s.message = message; recovery.atomic(file, s); };
@@ -469,6 +510,9 @@ async function prepare(options) {
       try { fs.unlinkSync(path.join(dir, previous.id + suffix)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     }
     recovery.syncDir(dir);
+    for (const suffix of ['-target-elevation.json', '-target-activation.json', '-target-ping.json', '-backup-elevation.json', '-backup-activation.json', '-backup-ping.json']) {
+      try { fs.unlinkSync(path.join(dir, previous.id + suffix)); } catch (ignored) { /* optional evidence must not prevent the next update */ }
+    }
   }
   try { if (options.suspendHome) await options.suspendHome(); }
   catch (e) {
