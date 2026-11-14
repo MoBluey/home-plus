@@ -91,49 +91,52 @@ function production(state) {
     },
     async restoreHome() {
       const saved = read(state.configBackup);
-      restoreHomeConfig(state);
+      let suspendDefault = false, preserveDefault = false;
       const defaults = state.defaultHome ? await recovery.readDefaults(luna) : {};
       if (state.defaultHome && defaults.home !== APP) {
         if (!state.homeStateFile || !fs.existsSync(state.homeStateFile)) throw new Error('Original Home recovery state is unavailable');
         const home = recovery.load(state.homeStateFile);
-        if (defaults.home && defaults.home !== home.stockHome && defaults.home !== home.before.home) return;
-        const cfg = currentConfig(state); // defaults lookup awaited the bus; keep any intervening user writes
-        if (cfg.defaultHomeEnabled === true) { cfg.defaultHomeEnabled = false; cfg.homeOverride = false; recovery.atomic(state.configPath, cfg); }
-        if (await front() !== APP) throw new Error('Home restoration waits for Home+ to be in front');
+        preserveDefault = !!(defaults.home && defaults.home !== home.stockHome && defaults.home !== home.before.home);
+        suspendDefault = true;
+        if (!preserveDefault && await front() !== APP) throw new Error('Home restoration waits for Home+ to be in front');
       }
       const token = fs.readFileSync(path.join(state.directories[0], 'api-token'), 'utf8').trim();
-      const r = await requestJSON('POST', 'http://127.0.0.1:47823/api/home', { timeout: 45000, headers: { 'X-Homeplus-Token': token }, body: Object.assign({ updateTransaction: state.id }, state.defaultHome ? { defaultHome: true } : { mode: saved.homeOverride === false ? 'off' : saved.homeMode || 'watch' }) });
-      if (r.status !== 200 || !r.json || r.json.returnValue === false || (state.defaultHome && (await recovery.readDefaults(luna)).home !== APP)) throw new Error('Default Home compatibility restoration failed');
+      const post = body => requestJSON('POST', 'http://127.0.0.1:47823/api/home', { timeout: 45000, headers: { 'X-Homeplus-Token': token }, body });
+      const acceptedHome = r => r.status === 200 && r.json && r.json.returnValue !== false;
+      const status = await requestJSON('GET', 'http://127.0.0.1:47823/api/status', { timeout: 2000 });
+      if (status.status !== 200 || !status.json || status.json.id !== SERVICE ||
+          ![state.previousVersion, state.artifact.version].includes(status.json.version)) throw new Error('Home restoration service is unavailable');
+      let r;
+      if (status.json.updateRecovery === 1) {
+        // The service owns the complete synchronous read/modify/write, alongside
+        // account and layout saves. No private settings cross the HTTP boundary.
+        r = await post({ updateTransaction: state.id, updateConfig: suspendDefault ? 'suspend' : 'restore', defaultHome: state.defaultHome && !preserveDefault });
+        if (!acceptedHome(r) || r.json.updateRecovery !== 1) throw new Error('Home configuration restoration was not acknowledged');
+      } else {
+        // Official 0.25 has no updater route. Use its existing Home API, never
+        // interpret ignored updater fields as success or write behind its back.
+        const cfg = read(state.configPath);
+        if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('Home configuration requires recovery by the previous service');
+        if (suspendDefault) {
+          r = await post({ defaultHome: false });
+          if (!acceptedHome(r) || r.json.defaultHomeEnabled !== false) throw new Error('Previous Home settings could not be reconciled');
+        }
+        const mode = preserveDefault || saved.homeOverride === false ? 'off' : saved.homeMode || 'watch';
+        const defaultHome = state.defaultHome && !preserveDefault;
+        r = await post(defaultHome ? { defaultHome: true } : { mode });
+        if (!acceptedHome(r) || (defaultHome ? r.json.defaultHomeEnabled !== true : r.json.mode !== mode)) throw new Error('Home configuration restoration was not acknowledged');
+      }
+      if (state.defaultHome && !preserveDefault && (await recovery.readDefaults(luna)).home !== APP) throw new Error('Default Home compatibility restoration failed');
     },
     async fallback() {
-      currentConfig(state); // the Home guard also needs usable config, without replacing newer valid fields
-      // Keep the existing independent Home guard effective; explicitly use its saved restoration if present.
+      // Platform recovery is independent of the service. Its config is left to
+      // that service: being unreachable does not prove its writers have stopped.
       if (!state.homeStateFile || !fs.existsSync(state.homeStateFile)) return;
       const s = recovery.load(state.homeStateFile);
       await recovery.restore(luna, s.before, s.stockHome);
-      recovery.restoreConfig(s); s.active = false; recovery.atomic(state.homeStateFile, s);
+      s.active = false; recovery.atomic(state.homeStateFile, s);
     }
   };
-}
-// Other service routes may keep saving accounts and preferences throughout recovery.
-function currentConfig(state) {
-  let cfg;
-  try { cfg = read(state.configPath); }
-  catch (e) { if (e.code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e; }
-  if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) return cfg;
-  cfg = read(state.configBackup);
-  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('Recovery config snapshot is unusable');
-  recovery.atomic(state.configPath, cfg);
-  return cfg;
-}
-function restoreHomeConfig(state, suspendDefault) {
-  const cfg = currentConfig(state), saved = read(state.configBackup);
-  for (const key of ['homeMode', 'homeOverride']) {
-    if (Object.prototype.hasOwnProperty.call(saved, key)) cfg[key] = saved[key]; else delete cfg[key];
-  }
-  if (suspendDefault && state.defaultHome) { cfg.defaultHomeEnabled = false; cfg.homeOverride = false; }
-  recovery.atomic(state.configPath, cfg);
-  return cfg;
 }
 function ownHook(s) {
   try { return fs.readlinkSync(s.hook) === s.boot; } catch (e) { if (e.code === 'ENOENT') return false; throw e; }
@@ -261,6 +264,17 @@ async function run(file, injected) {
     s.installerPending = false;
     save('verifying', 'Checking the installed package and service');
   }
+  async function cancel(error) {
+    s.cancelled = true;
+    save('restoring-home', 'Restoring Home settings before cancelling the update');
+    try { await ops.restoreHome(); }
+    catch (e) {
+      try { await ops.fallback(); } catch (ignored) { /* retain independent recovery */ }
+      save('restoring-home', 'Update cancelled. Home settings need recovery; the backup and recovery hook are retained.');
+      return;
+    }
+    s.active = false; save('error', 'Update stopped before replacement: ' + release.plain(error.message, 200)); finishHook(s);
+  }
   async function complete() {
     const previous = s.recovered ? await archive.inspect(fs.readFileSync(s.backup), s.previousVersion) : null;
     archive.verifyInstalled(previous ? previous.inventory : s.targetInventory, s.directories);
@@ -274,6 +288,7 @@ async function run(file, injected) {
     finishHook(s);
   }
   try {
+    if (s.cancelled) { await cancel(new Error('Update cancelled')); return; }
     const pending = s.installerPending === true || ['installing', 'uncertain'].includes(s.phase);
     if (pending && (!generationId(s.installBoot) || s.installBoot === boot)) {
       // A killed helper cannot record uncertainty. Both installers may still be running.
@@ -286,7 +301,7 @@ async function run(file, injected) {
     }
     recovery.atomic(file + '.ready', { id: s.id, pid: process.pid });
     if (s.phase === 'prepared') {
-      if (await ops.foreground() !== APP) { restoreHomeConfig(s); save('restoring-home', 'Cancelling update before replacement'); await ops.restoreHome(); s.active = false; save('error', 'Update cancelled because Home+ is no longer in front'); finishHook(s); return; }
+      if (await ops.foreground() !== APP) { await cancel(new Error('Home+ is no longer in front')); return; }
       const target = fs.readFileSync(s.targetFile);
       if (archive.hash(target) !== s.artifact.sha256 || target.length !== s.artifact.size) throw new Error('Staged package hash changed');
       await archive.inspect(target, s.artifact.version);
@@ -300,7 +315,6 @@ async function run(file, injected) {
       archive.verifyInstalled(s.targetInventory, s.directories);
       await ops.elevate();
       await ops.health(s.artifact.version);
-      currentConfig(s); // only an absent or unusable config needs the complete snapshot
       save('awaiting-entry', 'Installed. Open Home+ to finish checking the update.');
     } else if (!['awaiting-entry', 'restoring-home'].includes(s.phase)) {
       throw new Error('Interrupted installation requires recovery');
@@ -314,10 +328,7 @@ async function run(file, injected) {
       return;
     }
     if (!replacing) {
-      restoreHomeConfig(s);
-      save('restoring-home', 'Restoring Home settings before cancelling the update');
-      try { await ops.restoreHome(); } catch (e) { error = new Error(error.message + '; Home settings need attention'); }
-      s.active = false; save('error', 'Update stopped before replacement: ' + release.plain(error.message, 200)); finishHook(s); return;
+      await cancel(error); return;
     }
     try {
       save('recovering', 'Update did not complete. Restoring the verified previous package.');
@@ -326,7 +337,6 @@ async function run(file, injected) {
       if (archive.hash(backup) !== s.backupHash) throw new Error('Recovery backup hash mismatch');
       const old = await archive.inspect(backup, s.previousVersion);
       await install('backup'); archive.verifyInstalled(old.inventory, s.directories);
-      restoreHomeConfig(s, true);
       await ops.elevate(); await ops.health(s.previousVersion);
       s.recovered = true;
       save('awaiting-entry', 'Previous build restored. Open Home+ to finish checking recovery.');
@@ -415,7 +425,7 @@ async function prepare(options) {
   }
   try { if (options.suspendHome) await options.suspendHome(); }
   catch (e) {
-    restoreHomeConfig(s);
+    require('./updates').restoreConfig(s, options.writeConfig);
     s.active = false; s.phase = 'error'; s.message = 'Update stopped before replacement'; recovery.atomic(file, s); finishHook(s);
     if (options.resumeHome) await options.resumeHome();
     throw e;
