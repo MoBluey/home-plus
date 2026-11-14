@@ -1854,18 +1854,20 @@ async function handleApi(req, res) {
       const cfg = readConfig();
       if (b && b.updateTransaction) {
         const transaction = require('./update-worker').load(path.join(process.env.HOMEPLUS_UPDATE_DIR || path.join(path.dirname(findConfigPath()), 'updater'), 'transaction.json'));
-        if (!transaction.active || transaction.phase !== 'restoring-home' || transaction.id !== b.updateTransaction) throw new Error('Invalid update Home restoration');
+        if (!transaction.active || transaction.phase !== 'restoring-home' || transaction.id !== b.updateTransaction || transaction.configPath !== findConfigPath()) throw new Error('Invalid update Home restoration');
         if (updateReconcile) throw new Error('Home restoration is already running');
+        if (b.updateConfig !== undefined && !['restore', 'suspend'].includes(b.updateConfig)) throw new Error('Invalid update config restoration');
         updateReconcile = true;
         try {
-          if (b.defaultHome === true) {
+          require('./updates').restoreConfig(transaction, writeConfig, b.updateConfig === 'suspend');
+          if (transaction.defaultHome && b.defaultHome === true) {
             if (lastForeground !== NATIVE_ID && !readConfig().defaultHomeEnabled) throw new Error('Default Home restoration waits for Home+');
             await systemHome.setEnabled(true, UPDATE_HOME_CAPABILITY);
           }
           await applyHomeMode();
         } finally { updateReconcile = false; }
       } else if (b) await setHome(b, cfg);
-      return sendJSON(res, 200, await homeState());
+      return sendJSON(res, 200, Object.assign(await homeState(), b && b.updateTransaction ? { updateRecovery: 1 } : {}));
     }
     if (url.pathname === '/api/settings' && req.method === 'POST') { /* Settings over other apps: its pages, {row, dir} changes one first */
       const b = await readBody(req);
@@ -1937,7 +1939,7 @@ const imageServer = http.createServer(async (req, res) => {
     const cfg = readConfig();
     return sendJSON(res, 200, {
       id: pkg.name, /* (the launcher checks it's its own: the old Home+'s, still installed, takes the same port) */
-      version: pkg.version, elevated: isRoot(), token: tokenWritten,
+      version: pkg.version, elevated: isRoot(), token: tokenWritten, updateRecovery: 1,
       bootScript: fs.existsSync(INITD), homeAsked: !!cfg.homeAsked, homeMode: homeMode(cfg), onboarded: onboarded(cfg),
       tmdbConfigured: !!cfg.tmdbKey
     });

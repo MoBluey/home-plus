@@ -37,7 +37,7 @@ async function fixture(failure) {
     async installBackup() { backupInstalls++; put(before, dirs); },
     async elevate() { if (failure === 'elevate' && !backupInstalls) throw new Error('elevation failed'); },
     async health(v) { assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dirs[0], 'appinfo.json'))).version, v); if (failure === 'health' && !backupInstalls) throw new Error('health failed'); },
-    async enter() { return true; }, async restoreHome() {}, async fallback() { fallback = true; } };
+    async enter() { return true; }, async restoreHome() { require('../service/updates').restoreConfig(s, cfg => recovery.atomic(s.configPath, cfg)); }, async fallback() { fallback = true; } };
   return { dir, dirs, file, s, before, after, ops, config, counts: () => ({ targetInstalls, backupInstalls, fallback }), close() { remove.rmSync(dir, { recursive: true, force: true }); } };
 }
 test('archive rejects wrong identity, paths and damaged headers; backup is reinstallable', async () => {
@@ -618,4 +618,80 @@ test('runtime-v1 live worker ownership survives migration to the /dev v2 family'
     assert.strictEqual(f.counts().targetInstalls, 0);
     assert.strictEqual(JSON.parse(fs.readFileSync(f.file + '.worker')).pid, process.pid);
   } finally { f.close(); }
+});
+
+
+test('unavailable service retains cancelled transaction and hook without an offline config write', async () => {
+  const f = await fixture('left'), cp = require('child_process'), current = laterConfig(f);
+  const originalRestore = f.ops.restoreHome;
+  f.ops.restoreHome = async () => {
+    // Another real process is still saving even though the Home API is unavailable.
+    cp.execFileSync(process.execPath, ['-e', "const fs=require('fs');const p=process.argv[1];fs.writeFileSync(p+'.new',process.argv[2]);fs.renameSync(p+'.new',p);", f.s.configPath, JSON.stringify(current)]);
+    throw new Error('service unavailable');
+  };
+  try {
+    await worker.run(f.file, f.ops);
+    let state = worker.load(f.file);
+    assert.strictEqual(state.active, true); assert.strictEqual(state.cancelled, true); assert.strictEqual(state.phase, 'restoring-home');
+    assert.strictEqual(fs.existsSync(f.s.hook), true); assert.strictEqual(f.counts().fallback, true);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), current);
+    // When its owner returns, cancellation finishes without installing either package.
+    f.ops.restoreHome = originalRestore; await worker.run(f.file, f.ops); state = worker.load(f.file);
+    assert.strictEqual(state.active, false); assert.strictEqual(state.phase, 'error');
+    assert.strictEqual(f.counts().targetInstalls, 0); assert.strictEqual(f.counts().backupInstalls, 0);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), current);
+  } finally { f.close(); }
+});
+
+test('independent LG Home fallback never writes private settings while another process saves', async t => {
+  const f = await fixture(), cp = require('child_process'), current = laterConfig(f);
+  f.s.homeStateFile = path.join(f.dir, 'home-state.json');
+  recovery.atomic(f.s.homeStateFile, { version: 1, active: true, deadline: null, stockHome: 'com.webos.app.lghome',
+    before: { home: 'com.webos.app.lghome' }, previous: { homeOverride: false }, applicationDir: f.dirs[0], configPath: f.s.configPath });
+  let restored = false;
+  t.mock.method(recovery, 'restore', async () => {
+    cp.execFileSync(process.execPath, ['-e', "const fs=require('fs');const p=process.argv[1];fs.writeFileSync(p+'.new',process.argv[2]);fs.renameSync(p+'.new',p);", f.s.configPath, JSON.stringify(current)]);
+    restored = true;
+  });
+  const atomic = recovery.atomic;
+  t.mock.method(recovery, 'atomic', (file, value) => { assert.notEqual(file, f.s.configPath, 'detached fallback cannot own config'); return atomic(file, value); });
+  try {
+    await worker.production(f.s).fallback();
+    assert.strictEqual(restored, true);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), current);
+    assert.strictEqual(worker.load(f.file).active, true);
+    assert.strictEqual(fs.existsSync(f.s.hook), true);
+    assert.strictEqual(recovery.load(f.s.homeStateFile).active, false);
+  } finally { f.close(); }
+});
+
+// Run production restoration in a separate process, with only its loopback
+// destination changed to a bounded stand-in for the official 0.25 service.
+for (const reply of ['accepted', 'ignored', 'invalid-config']) test('official Home API fallback: ' + reply, async () => {
+  const f = await fixture(), cp = require('child_process'), { mockServer } = require('./helpers');
+  const current = laterConfig(f); recovery.atomic(f.s.configPath, current);
+  if (reply === 'invalid-config') fs.writeFileSync(f.s.configPath, '{');
+  fs.writeFileSync(path.join(f.dirs[0], 'api-token'), 'fixture-token');
+  let calls = 0;
+  const server = await mockServer((req, url, body) => {
+    if (url.pathname === '/api/status') return { json: { id: SERVICE, version: '0.25.0' } };
+    assert.strictEqual(req.headers['x-homeplus-token'], 'fixture-token');
+    const action = JSON.parse(body); assert.deepStrictEqual(action, { mode: 'watch' }); calls++;
+    if (reply === 'ignored') return { json: { returnValue: true } };
+    const cfg = JSON.parse(fs.readFileSync(f.s.configPath)); cfg.homeMode = action.mode; cfg.homeOverride = true; recovery.atomic(f.s.configPath, cfg);
+    return { json: { mode: action.mode } };
+  });
+  try {
+    const code = "const net=require(" + JSON.stringify(require.resolve('../service/net')) + "),request=net.requestJSON;net.requestJSON=(m,u,o)=>request(m,u.replace('http://127.0.0.1:47823',process.argv[2]),o);" +
+      "const w=require(" + JSON.stringify(require.resolve('../service/update-worker')) + ");w.production(w.load(process.argv[1])).restoreHome().then(()=>console.log('restored'),()=>{process.exitCode=2;});";
+    const child = cp.spawn(process.execPath, ['-e', code, f.file, server.base], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; child.stdout.on('data', data => { output += data; });
+    const result = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+    assert.strictEqual(result.signal, null); assert.strictEqual(result.code, reply === 'accepted' ? 0 : 2);
+    assert.strictEqual(calls, reply === 'invalid-config' ? 0 : 1);
+    if (reply === 'accepted') {
+      assert.strictEqual(output.trim(), 'restored');
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.s.configPath)), Object.assign({}, current, { homeMode: 'watch', homeOverride: true }));
+    } else assert.strictEqual(fs.readFileSync(f.s.configPath, 'utf8'), reply === 'invalid-config' ? '{' : JSON.stringify(current, null, 2));
+  } finally { await server.close(); f.close(); }
 });
