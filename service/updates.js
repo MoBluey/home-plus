@@ -5,13 +5,13 @@ const path = require('path');
 const crypto = require('crypto');
 const release = require('./update-release');
 const { RUNTIME_COOKIE } = require('./update-archive');
-const { compareVersions, validateArtifact, UPSTREAM, FORK, plain } = release;
+const { compareVersions, validateArtifact, UPSTREAM, repository, forkRepository, plain } = release;
 const DAY = 24 * 60 * 60 * 1000;
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
 function provenance(appDir, serviceDir) {
   try {
     const p = JSON.parse(fs.readFileSync(path.join(appDir, 'update-info.json'), 'utf8'));
-    if (p.schemaVersion !== 1 || !p.upstream || p.upstream.repository !== UPSTREAM || !p.source || ![UPSTREAM, FORK].includes(p.source.repository) ||
+    if (p.schemaVersion !== 1 || !p.upstream || p.upstream.repository !== UPSTREAM || !p.source || !repository(p.source.repository) ||
         !/^[0-9a-f]{40}$/.test(p.source.commit) || !/^[0-9a-f]{40}$/.test(p.upstream.commit) || !p.fileHashes || !Object.keys(p.fileHashes).length || typeof p.customised !== 'boolean' || !Array.isArray(p.customisations)) throw new Error('Unknown build provenance');
     release.version(p.upstream.version);
     const seen = {};
@@ -38,12 +38,12 @@ function createUpdates(options) {
   const now = options.now || Date.now;
   const fetchRelease = options.fetchRelease || release.fetchRelease;
   let current = provenance(options.appDir, options.serviceDir || __dirname), candidate = null, checking = false, installing = false, timer = null, closed = false;
-  let feed = current.known && current.info.source.repository === FORK ? FORK : null;
+  let feed = current.known && forkRepository(current.info.source.repository) ? current.info.source.repository : null;
   let view = { returnValue: true, currentVersion: options.version, upstreamVersion: '', phase: 'idle', currentSource: current.label,
     automatic: true, prompt: false, ignoredVersion: '', confirmation: '', title: 'Home+ Updates', summary: '', notes: '', warning: current.warning || '', message: '', canInstallPreserved: false, canInstallUpstream: false, progress: '' };
   function refreshProvenance() {
     current = provenance(options.appDir, options.serviceDir || __dirname);
-    feed = current.known && current.info.source.repository === FORK ? FORK : null;
+    feed = current.known && forkRepository(current.info.source.repository) ? current.info.source.repository : null;
     view.currentSource = current.label;
     view.warning = current.warning || '';
   }
@@ -67,15 +67,15 @@ function createUpdates(options) {
   }
   function normalise(data) {
     const u = data && data.upstream;
-    if (!u || u.tag !== 'v' + u.version || !/^[0-9a-f]{40}$/.test(u.commit)) throw new Error('Invalid upstream release');
+    if (!u || u.repository !== UPSTREAM || u.tag !== 'v' + u.version || !/^[0-9a-f]{40}$/.test(u.commit)) throw new Error('Invalid upstream release');
     validateArtifact(u.artifact, UPSTREAM, u.tag);
     if (u.artifact.version !== u.version) throw new Error('Upstream version mismatch');
-    const r = feed === FORK ? data.result : null;
+    const r = feed ? data.result : null;
     if (r && (r.schemaVersion !== 1 || !r.upstream || r.upstream.repository !== UPSTREAM || r.upstream.version !== u.version || r.upstream.tag !== u.tag || r.upstream.commit !== u.commit ||
-        !r.source || r.source.repository !== FORK || !/^[0-9a-f]{40}$/.test(r.source.commit) || !/^[0-9a-f]{40}$/.test(r.source.base) || !['ready', 'conflict', 'failed'].includes(r.status) || !Array.isArray(r.customisations) || !Array.isArray(r.conflicts))) throw new Error('Custom build result does not match the upstream release');
+        !r.source || r.source.repository !== feed || !/^[0-9a-f]{40}$/.test(r.source.commit) || !/^[0-9a-f]{40}$/.test(r.source.base) || !['ready', 'conflict', 'failed'].includes(r.status) || !Array.isArray(r.customisations) || !Array.isArray(r.conflicts))) throw new Error('Custom build result does not match the upstream release');
     let preserved = current.known && current.info.source.repository === UPSTREAM && !current.info.customised ? u.artifact : null;
     if (r && r.status === 'ready') {
-      if (r.artifact) { if (r.artifact.version !== u.version) throw new Error('Custom package version mismatch'); validateArtifact(r.artifact, FORK, 'upstream-v' + u.version, r.source.commit); preserved = r.artifact; }
+      if (r.artifact) { if (r.artifact.version !== u.version) throw new Error('Custom package version mismatch'); validateArtifact(r.artifact, feed, 'upstream-v' + u.version, r.source.commit); preserved = r.artifact; }
       else if (!r.customisations.length) preserved = u.artifact;
       else throw new Error('Custom build package is missing');
     }

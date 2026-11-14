@@ -1,11 +1,12 @@
-/* Fixed release feeds. No caller-supplied network locations enter the updater. */
+/* Fixed upstream and a packaged-provenance-bound fork; never request-supplied feeds. */
 'use strict';
 const https = require('https');
 const { URL } = require('url');
 const { requestOptions } = require('./net');
 const APP = 'com.github.pbalazaar.homeplus';
 const UPSTREAM = 'pbalazaar/home-plus';
-const FORK = 'MoBluey/home-plus';
+const repository = value => typeof value === 'string' && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_.-]{1,100}$/.test(value) && !value.includes('..') && !/\.git$/i.test(value) && value.split('/')[1] !== '.';
+const forkRepository = value => repository(value) && value.toLowerCase() !== UPSTREAM;
 const MAX_IPK = 128 * 1024 * 1024;
 const plain = (value, limit) => String(value || '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').slice(0, limit || 4000);
 function version(value) {
@@ -20,13 +21,14 @@ function validURL(value, redirects) {
   return u;
 }
 function validateArtifact(a, repo, tag, sourceCommit) {
-  if (!a || ![UPSTREAM, FORK].includes(repo)) throw new Error('Invalid update artifact');
+  if (!a || !repository(repo) || (repo !== UPSTREAM && !forkRepository(repo))) throw new Error('Invalid update artifact');
   version(a.version);
+  if (tag !== (repo === UPSTREAM ? 'v' : 'upstream-v') + a.version) throw new Error('Invalid update artifact tag');
   const u = validURL(a.url, false);
-  const suffix = repo === FORK ? '_' + String(sourceCommit || '').slice(0, 12) + '_' + String(a.sha256 || '').slice(0, 12) : '';
-  if (repo === FORK && !/^[0-9a-f]{40}$/.test(sourceCommit)) throw new Error('Missing custom build source revision');
+  const suffix = repo !== UPSTREAM ? '_' + String(sourceCommit || '').slice(0, 12) + '_' + String(a.sha256 || '').slice(0, 12) : '';
+  if (repo !== UPSTREAM && !/^[0-9a-f]{40}$/.test(sourceCommit)) throw new Error('Missing custom build source revision');
   const expected = '/' + repo + '/releases/download/' + tag + '/' + APP + '_' + a.version + suffix + '_all.ipk';
-  if (u.hostname !== 'github.com' || u.pathname !== expected || u.search || !/^[0-9a-f]{64}$/.test(a.sha256) || !Number.isInteger(a.size) || a.size < 1 || a.size > MAX_IPK) throw new Error('Invalid update artifact identity, size or hash');
+  if (u.hostname !== 'github.com' || a.url !== 'https://github.com' + expected || u.pathname !== expected || u.search || !/^[0-9a-f]{64}$/.test(a.sha256) || !Number.isInteger(a.size) || a.size < 1 || a.size > MAX_IPK) throw new Error('Invalid update artifact identity, size or hash');
   return a;
 }
 function download(url, limit) {
@@ -59,7 +61,8 @@ function asset(release, name, repo) {
   if (a.length !== 1 || a[0].browser_download_url !== 'https://github.com/' + repo + '/releases/download/' + release.tag_name + '/' + name) throw new Error('Release asset is missing or ambiguous');
   return a[0];
 }
-async function fetchRelease(forkRepository) {
+async function fetchRelease(fork) {
+  if (fork !== null && fork !== undefined && !forkRepository(fork)) throw new Error('Invalid managed fork repository');
   const r = await json('https://api.github.com/repos/' + UPSTREAM + '/releases/latest');
   if (!r || r.draft !== false || r.prerelease !== false || typeof r.tag_name !== 'string' || r.tag_name[0] !== 'v') throw new Error('No stable upstream release');
   const v = r.tag_name.slice(1); version(v);
@@ -70,16 +73,19 @@ async function fetchRelease(forkRepository) {
   const artifact = validateArtifact({ url: ipk.browser_download_url, size: m.ipkSize, sha256: m.ipkHash && m.ipkHash.sha256, version: v }, UPSTREAM, r.tag_name);
   if (ipk.size !== artifact.size) throw new Error('Upstream asset size mismatch');
   let ref = await json('https://api.github.com/repos/' + UPSTREAM + '/git/ref/tags/' + r.tag_name);
-  for (let i = 0; ref.object && ref.object.type === 'tag' && i < 3; i++) ref = await json('https://api.github.com/repos/' + UPSTREAM + '/git/tags/' + ref.object.sha);
+  for (let i = 0; ref.object && ref.object.type === 'tag' && i < 3; i++) {
+    if (!/^[0-9a-f]{40}$/.test(ref.object.sha)) throw new Error('Invalid release tag object');
+    ref = await json('https://api.github.com/repos/' + UPSTREAM + '/git/tags/' + ref.object.sha);
+  }
   if (!ref.object || ref.object.type !== 'commit' || !/^[0-9a-f]{40}$/.test(ref.object.sha)) throw new Error('Cannot resolve release commit');
   const upstream = { repository: UPSTREAM, version: v, tag: r.tag_name, commit: ref.object.sha, artifact, notes: plain(r.body) };
-  if (forkRepository !== FORK) return { upstream, result: null };
+  if (!fork) return { upstream, result: null };
   let result = null, resultMessage = '';
   try {
-    const fork = await json('https://api.github.com/repos/' + FORK + '/releases/tags/upstream-v' + v);
-    if (fork.draft || fork.prerelease || fork.tag_name !== 'upstream-v' + v) throw new Error('Custom build is not published');
-    result = await json(asset(fork, APP + '.update.json', FORK).browser_download_url);
+    const custom = await json('https://api.github.com/repos/' + fork + '/releases/tags/upstream-v' + v);
+    if (custom.draft !== false || custom.prerelease !== false || custom.tag_name !== 'upstream-v' + v) throw new Error('Custom build is not published');
+    result = await json(asset(custom, APP + '.update.json', fork).browser_download_url);
   } catch (e) { resultMessage = 'Custom build result is unavailable. ' + plain(e.message, 200); }
   return { upstream, result, resultMessage };
 }
-module.exports = { APP, UPSTREAM, FORK, MAX_IPK, plain, version, compareVersions, validURL, validateArtifact, download, fetchRelease };
+module.exports = { APP, UPSTREAM, repository, forkRepository, MAX_IPK, plain, version, compareVersions, validURL, validateArtifact, download, fetchRelease };

@@ -5,12 +5,8 @@ const path = require('path');
 const cp = require('child_process');
 const crypto = require('crypto');
 const { RUNTIME_COOKIE } = require('../service/update-archive');
-const { repository, runtimePath } = require('./prepare-fork-update');
+const { repository, runtimePath, checkoutRepository } = require('./prepare-fork-update');
 function git(repo, args) { return cp.execFileSync('git', ['-c', 'safe.directory=' + repo, '-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
-function repoName(value) {
-  const match = /^(?:https:\/\/github\.com\/|git@github\.com:)([^/]+\/[^/]+?)(?:\.git)?$/.exec(value);
-  return match && repository(match[1]) ? match[1] : null;
-}
 function capture(repo) {
   const result = { schemaVersion: 1, upstream: { repository: 'pbalazaar/home-plus', version: null, tag: null, commit: null },
     source: { repository: null, commit: null, base: null }, customised: true, customisations: [], updater: fs.existsSync(path.join(repo, 'service/updates.js')) };
@@ -18,14 +14,8 @@ function capture(repo) {
     // Dirty or exported source cannot be attributed to a committed revision.
     if (git(repo, ['status', '--porcelain', '--untracked-files=normal']).split('\n').some(line => line && !/^(\?\?) (update-info-build\.json|com\.github\.pbalazaar\.homeplus\.update\.json)$/.test(line))) return result;
     const commit = git(repo, ['rev-parse', 'HEAD']);
-    let sourceRepo;
-    const ciSource = process.env.GITHUB_ACTIONS === 'true' && process.env.GITHUB_SHA === commit && repository(process.env.GITHUB_REPOSITORY);
-    if (ciSource) sourceRepo = process.env.GITHUB_REPOSITORY;
-    else {
-      const branch = git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
-      const remote = git(repo, ['config', 'branch.' + branch + '.remote']);
-      sourceRepo = repoName(git(repo, ['remote', 'get-url', remote]));
-    }
+    const sourceRepo = checkoutRepository(repo, commit);
+    const ciSource = process.env.GITHUB_ACTIONS === 'true';
     if (!sourceRepo) return result;
     result.source.repository = sourceRepo; result.source.commit = commit;
     if (ciSource && sourceRepo === 'pbalazaar/home-plus' && /^refs\/tags\/v\d+\.\d+\.\d+$/.test(process.env.GITHUB_REF || '')) {
