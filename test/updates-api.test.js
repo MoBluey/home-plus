@@ -41,7 +41,7 @@ for (const ordering of ['before', 'after']) test('cancellation preserves service
   const configPath = path.join(configDir, 'config.json');
   const saved = { homeMode: 'watch', homeOverride: true, onboarded: true, stremioEmail: 'synthetic@example.invalid', layout: { order: ['old'], hidden: [] }, prefs: { sounds: true } };
   recovery.atomic(configPath, Object.assign({}, saved, { homeOverride: false }));
-  const s = { schemaVersion: 1, id: 'a'.repeat(24), active: true, phase: 'prepared', previousVersion: '0.25.0', artifact: { version: '0.26.0' },
+  const s = { schemaVersion: 1, id: 'a'.repeat(24), active: true, phase: 'prepared', previousVersion: require('../service/package.json').version, artifact: { version: '0.26.0' },
     configPath, configBackup: path.join(dir, 'snapshot.json'), directories: [dir, dir, dir], backup: path.join(dir, 'backup.ipk'), targetFile: path.join(dir, 'target.ipk'),
     hook: path.join(dir, 'hook'), boot: path.join(dir, 'boot'), defaultHome: false };
   recovery.atomic(s.configBackup, saved); const file = path.join(stateDir, 'transaction.json'); recovery.atomic(file, s);
@@ -86,7 +86,7 @@ test('only the live service restores an unusable config from its validated trans
   try {
     svc = await startService(dir, { HOMEPLUS_UPDATE_DIR: stateDir, HOMEPLUS_INITD_DIR: path.join(dir, 'init.d'), HOMEPLUS_DEFAULT_HOME_DIR: path.join(dir, 'home-state'), HOMEPLUS_INPUTHOOK_BINDS: path.join(dir, 'keys.json') });
     const configPath = path.join(dir, 'config', 'config.json'), saved = { accounts: { fixture: 'snapshot' }, layout: { order: ['saved-app'], hidden: [] }, prefs: { sounds: false }, homeOverride: false, homeMode: 'watch' };
-    const s = { schemaVersion: 1, id: 'a'.repeat(24), active: true, phase: 'restoring-home', previousVersion: '0.25.0', artifact: { version: '0.26.0' },
+    const s = { schemaVersion: 1, id: 'a'.repeat(24), active: true, phase: 'restoring-home', previousVersion: require('../service/package.json').version, artifact: { version: '0.26.0' },
       configPath, configBackup: path.join(dir, 'snapshot.json'), directories: [dir, dir, dir], backup: path.join(dir, 'backup.ipk'), targetFile: path.join(dir, 'target.ipk'), hook: path.join(dir, 'hook'), boot: path.join(dir, 'boot'), defaultHome: false };
     const file = path.join(stateDir, 'transaction.json'); recovery.atomic(s.configBackup, saved); recovery.atomic(file, s);
     const body = { updateTransaction: s.id, updateConfig: 'restore' };
