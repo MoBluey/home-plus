@@ -68,17 +68,17 @@ If something stops it, the screen says what and offers **Try Again**:
 
 Updates install the same way. An update resets the service's root access, and Home+ sets it up again the next time it starts.
 
-### Confirmed updates in this fork
+### Confirmed updates
 
-**Settings → About → Check for Updates** checks the packaged upstream feed. **Automatic Update Checks** checks daily; it never installs automatically. A notice appears only on the Home+ screen when no menu or editor is open. Home opens from cached state without waiting for a release check.
+**Settings → About → Check for Updates** checks the latest stable Home+ release. **Automatic Update Checks** checks daily; it never installs automatically. A notice appears only on the Home+ screen when no menu or editor is open. Home opens from cached state without waiting for a release check.
 
 **Keep current build**, including **Back** on the notice, remembers that upstream version across restarts. Only a newer upstream version prompts again. A manual check can still show a kept release. A prepared custom build identifies its upstream base and preserves tracked customisations. Conflicts or failed checks explain the cause and offer an explicit **Install upstream** choice, which drops custom code. Unknown installed edits receive a replacement warning.
 
 Installation requires the displayed version and package confirmation, a verified private backup and an independent recovery helper. Progress remains visible while Home+ is running; installation and recovery continue after the package closes. Keep the recovery backup private: it can contain account settings. This updates Home+ only.
 
-If Homebrew Channel never reports a final install result, the backup and recovery hook stay armed. Cancelling its subscription does not cancel installation, so rollback waits for a full webOS restart and a changed boot ID. Standby and wake are insufficient. Home+ does not force a restart.
+If Homebrew Channel never reports a final install result, the backup and recovery hook stay armed. Cancelling its subscription does not cancel installation, so rollback waits for a full webOS restart and a new runtime boot generation. Standby and wake are insufficient. Home+ does not force a restart.
 
-This fork's updater is locally verified with an isolated desktop service and installer fixtures. It has not completed a physical TV update/rollback trial; TV deployment needs separate approval.
+Custom-build maintainers can enable the **Fork upstream updates** workflow in their own fork. Its scheduled checks start once the workflow is on the default branch. Manual runs default to checks only; publishing requires a successful build, service/runtime checks, launcher checks and firmware compatibility checks. The TV follows only the fork recorded in its verified package provenance.
 
 ## Using Home+
 
