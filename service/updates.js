@@ -34,6 +34,21 @@ function provenance(appDir, serviceDir) {
     return { known: true, info: p, label: p.customised ? 'Custom build' : 'Official build' };
   } catch (e) { return { known: false, label: 'Unknown build', warning: 'This installation has unknown or unverified changes. Replacing it will discard those changes.' }; }
 }
+// Called only by the live service, synchronously with its other config writers.
+// The detached installer must never replace config.json, even during recovery.
+function restoreConfig(state, writeConfig, suspendDefault) {
+  const saved = JSON.parse(fs.readFileSync(state.configBackup, 'utf8'));
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw new Error('Recovery config snapshot is unusable');
+  let cfg;
+  try { cfg = JSON.parse(fs.readFileSync(state.configPath, 'utf8')); }
+  catch (e) { if (e.code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e; }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) cfg = saved;
+  for (const key of ['homeMode', 'homeOverride']) {
+    if (Object.prototype.hasOwnProperty.call(saved, key)) cfg[key] = saved[key]; else delete cfg[key];
+  }
+  if (suspendDefault && state.defaultHome) { cfg.defaultHomeEnabled = false; cfg.homeOverride = false; }
+  writeConfig(cfg);
+}
 function createUpdates(options) {
   const now = options.now || Date.now;
   const fetchRelease = options.fetchRelease || release.fetchRelease;
@@ -149,4 +164,4 @@ function createUpdates(options) {
   }
   return { state, act, start, busy, close() { closed = true; clearTimeout(timer); timer = null; } };
 }
-module.exports = { createUpdates, compareVersions, validateArtifact, provenance };
+module.exports = { restoreConfig, createUpdates, compareVersions, validateArtifact, provenance };
