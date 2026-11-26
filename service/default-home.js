@@ -215,7 +215,10 @@ module.exports = function defaultHome(options) {
         if (id) return { launched: false }; // somebody opened an app while the TV was starting
         await wait(250);
       } while (Date.now() < end);
-      throw new Error('The TV did not finish choosing its startup screen');
+      // A panel still in standby or starting has not failed to launch Home+.
+      // Keep its confirmed default so the normal power-on watch can open it later.
+      log('startup screen not ready; keeping the confirmed Home setting');
+      return { launched: false };
     } catch (e) {
       if (readConfig().defaultHomeEnabled) await disable();
       throw e;

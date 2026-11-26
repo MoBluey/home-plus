@@ -123,6 +123,23 @@ test('startup failure restores an active default before reporting the error', as
     assert.equal(t.readConfig().startupEnabled, true);
   } finally { t.close(); }
 });
+test('startup screen timeout preserves a confirmed default for the next power-on', async () => {
+  const t = fixture();
+  try {
+    await t.home.setEnabled(true);
+    const cfg = t.readConfig(); cfg.startupEnabled = true; t.writeConfig(cfg);
+    t.model.foreground = '';
+    t.model.powerState = 'Standby';
+    assert.deepEqual(await t.home.startup(), { launched: false });
+    assert.equal(t.state().active, true);
+    assert.equal(t.state().deadline, null);
+    assert.equal(t.model.defaults.home, APP);
+    assert.equal(t.readConfig().defaultHomeEnabled, true);
+    assert.equal(t.readConfig().account.token, 'keep');
+    t.model.powerState = 'Active';
+    assert.equal(await t.home.powerOnHome(), true);
+  } finally { t.close(); }
+});
 test('service restart retains a confirmed default and does not renew a trial', async () => {
   const t = fixture();
   try {
